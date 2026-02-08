@@ -21,7 +21,7 @@ from backend.app.schemas.photo import (
     TagSummary,
     LibraryStats,
 )
-from backend.app.services.thumbnail import get_thumbnail_path
+from backend.app.services.thumbnail import get_thumbnail_path, generate_thumbnails
 
 router = APIRouter(prefix="/api/photos", tags=["photos"])
 
@@ -272,10 +272,13 @@ async def get_photo(file_hash: str, session: AsyncSession = Depends(get_session)
 
 @router.get("/{file_hash}/thumbnail/{size}")
 async def get_thumbnail(file_hash: str, size: int = 600):
-    """Serve a photo thumbnail."""
+    """Serve a photo thumbnail, generating on-demand if needed."""
     thumb_path = get_thumbnail_path(file_hash, size)
     if not thumb_path:
-        raise HTTPException(status_code=404, detail="Thumbnail not found")
+        await generate_thumbnails(file_hash)
+        thumb_path = get_thumbnail_path(file_hash, size)
+        if not thumb_path:
+            raise HTTPException(status_code=404, detail="Thumbnail not found")
     return FileResponse(thumb_path, media_type="image/webp")
 
 

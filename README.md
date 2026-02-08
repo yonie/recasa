@@ -30,7 +30,7 @@ Runs as a single Docker container. Your photos are mounted read-only. All proces
 
 ```bash
 # Clone the repo
-git clone https://github.com/youruser/recasa.git
+git clone https://github.com/yonie/recasa.git
 cd recasa
 
 # Configure
