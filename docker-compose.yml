@@ -1,0 +1,19 @@
+services:
+  recasa:
+    build: .
+    ports:
+      - "${RECASA_PORT}:8080"
+    volumes:
+      - "${PHOTOS_PATH}:/photos:ro"
+      - recasa_data:/data
+    environment:
+      - PHOTOS_DIR=/photos
+      - DATA_DIR=/data
+      - OLLAMA_URL=${OLLAMA_URL}
+      - WATCH_INTERVAL=${WATCH_INTERVAL}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - WORKERS=${WORKERS}
+    restart: unless-stopped
+
+volumes:
+  recasa_data:

@@ -1,0 +1,47 @@
+[project]
+name = "recasa"
+version = "0.1.0"
+description = "Recasa - Intelligent Local Photo Explorer"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "sqlalchemy>=2.0,<3",
+    "aiosqlite>=0.20,<1",
+    "pillow>=10.0,<11",
+    "pillow-heif>=0.18,<1",
+    "exifread>=3.0,<4",
+    "imagehash>=4.3,<5",
+    "watchdog>=4.0,<6",
+    "reverse-geocoder>=1.5,<2",
+    "pydantic>=2.0,<3",
+    "pydantic-settings>=2.0,<3",
+    "websockets>=12.0,<14",
+    "httpx>=0.27,<1",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+ml = [
+    "face-recognition>=1.3,<2",
+    "scikit-learn>=1.5,<2",
+    "open-clip-torch>=2.26,<3",
+    "torch>=2.0",
+    "numpy>=1.26,<3",
+]
+dev = [
+    "pytest>=8.0,<9",
+    "pytest-asyncio>=0.24,<1",
+    "ruff>=0.6,<1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

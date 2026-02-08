@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Leaflet map overrides */
+.custom-cluster-icon {
+  background: transparent !important;
+  border: none !important;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 12px !important;
+}
+
+.leaflet-popup-content {
+  margin: 8px 12px !important;
+}
+
+@layer base {
+  body {
+    @apply min-h-screen;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    @apply w-2;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-gray-100;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 rounded-full hover:bg-gray-400;
+  }
+}
+
+@layer components {
+  .photo-grid-item {
+    @apply relative overflow-hidden rounded-lg cursor-pointer
+           transition-transform duration-200 hover:scale-[1.02]
+           hover:shadow-lg;
+  }
+
+  .sidebar-link {
+    @apply flex items-center gap-3 px-4 py-2.5 rounded-lg
+           text-gray-600 hover:bg-gray-100 hover:text-gray-900
+           transition-colors duration-150;
+  }
+
+  .sidebar-link.active {
+    @apply bg-primary-50 text-primary-700 font-medium;
+  }
+}
