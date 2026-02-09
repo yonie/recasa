@@ -9,7 +9,6 @@ import {
   Info,
   ChevronLeft,
   ChevronRight,
-  Tag,
   MessageSquare,
   Users,
 } from "lucide-react";
@@ -214,6 +213,13 @@ export function PhotoViewer() {
             <ChevronRight className="w-6 h-6" />
           </button>
         )}
+
+        {/* Caption overlay at bottom */}
+        {detail.caption && !showInfo && (
+          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-6 py-4 pointer-events-none">
+            <p className="text-white/90 text-sm italic max-w-2xl">{detail.caption}</p>
+          </div>
+        )}
       </div>
 
       {/* Info panel */}
@@ -293,27 +299,6 @@ export function PhotoViewer() {
                     <span>{detail.exif.shutter_speed}s</span>
                   )}
                   {detail.exif.iso && <span>ISO {detail.exif.iso}</span>}
-                </div>
-              </section>
-            )}
-
-            {/* Tags */}
-            {detail.tags.length > 0 && (
-              <section>
-                <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-2 flex items-center gap-1.5">
-                  <Tag className="w-3.5 h-3.5" />
-                  Tags
-                </h3>
-                <div className="flex flex-wrap gap-1.5">
-                  {detail.tags.map((tag) => (
-                    <span
-                      key={tag.tag_id}
-                      className="px-2 py-0.5 bg-gray-700 rounded-full text-xs"
-                      title={tag.confidence ? `${(tag.confidence * 100).toFixed(0)}% confidence` : undefined}
-                    >
-                      {tag.name}
-                    </span>
-                  ))}
                 </div>
               </section>
             )}

@@ -20,6 +20,7 @@ class Photo(Base):
 
     # EXIF metadata
     date_taken: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    date_source: Mapped[str | None] = mapped_column(String(20))  # "exif" or "filesystem"
     camera_make: Mapped[str | None] = mapped_column(String(100))
     camera_model: Mapped[str | None] = mapped_column(String(100))
     lens_model: Mapped[str | None] = mapped_column(String(100))
@@ -47,7 +48,6 @@ class Photo(Base):
     thumbnail_generated: Mapped[bool] = mapped_column(Boolean, default=False)
     exif_extracted: Mapped[bool] = mapped_column(Boolean, default=False)
     faces_detected: Mapped[bool] = mapped_column(Boolean, default=False)
-    clip_tagged: Mapped[bool] = mapped_column(Boolean, default=False)
     ollama_captioned: Mapped[bool] = mapped_column(Boolean, default=False)
     perceptual_hashed: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -66,9 +66,6 @@ class Photo(Base):
         back_populates="photo", cascade="all, delete", uselist=False
     )
     faces: Mapped[list["Face"]] = relationship(  # noqa: F821
-        back_populates="photo", cascade="all, delete"
-    )
-    tags: Mapped[list["PhotoTag"]] = relationship(  # noqa: F821
         back_populates="photo", cascade="all, delete"
     )
     caption: Mapped["Caption | None"] = relationship(  # noqa: F821

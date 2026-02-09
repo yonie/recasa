@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_url: str = "http://ollama:11434"
-    ollama_model: str = "llava"
+    ollama_model: str = "qwen3-vl:30b-a3b-instruct"
 
     # Processing
     workers: int = 2

@@ -43,6 +43,7 @@ async def detect_events() -> int:
         result = await session.execute(
             select(Photo)
             .where(Photo.date_taken.is_not(None))
+            .where(Photo.date_source == "exif")
             .order_by(Photo.date_taken.asc())
         )
         photos = result.scalars().all()

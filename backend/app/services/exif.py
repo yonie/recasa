@@ -83,6 +83,7 @@ def _extract_exif_data(filepath: Path) -> dict:
         "width": None,
         "height": None,
         "date_taken": None,
+        "date_source": None,
         "camera_make": None,
         "camera_model": None,
         "lens_model": None,
@@ -106,6 +107,8 @@ def _extract_exif_data(filepath: Path) -> dict:
             if not exif_data:
                 # No EXIF at all -- fall back to filesystem date
                 result["date_taken"] = _get_filesystem_date(filepath)
+                if result["date_taken"]:
+                    result["date_source"] = "filesystem"
                 return result
 
             # Decode EXIF tags
@@ -130,6 +133,7 @@ def _extract_exif_data(filepath: Path) -> dict:
                     dt = _parse_exif_datetime(str(decoded[date_tag]))
                     if dt:
                         result["date_taken"] = dt
+                        result["date_source"] = "exif"
                         break
 
             # Exposure info
@@ -190,6 +194,7 @@ def _extract_exif_data(filepath: Path) -> dict:
     if result["date_taken"] is None:
         result["date_taken"] = _get_filesystem_date(filepath)
         if result["date_taken"]:
+            result["date_source"] = "filesystem"
             logger.debug("No EXIF date for %s, using filesystem date: %s", filepath, result["date_taken"])
 
     return result

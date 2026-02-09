@@ -20,6 +20,7 @@ class PhotoSummary(PhotoBase):
 
     thumbnail_url: str | None = None
     has_live_photo: bool = False
+    caption: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -56,15 +57,6 @@ class FaceSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class TagSummary(BaseModel):
-    tag_id: int
-    name: str
-    category: str | None = None
-    confidence: float | None = None
-
-    model_config = {"from_attributes": True}
-
-
 class PhotoDetail(PhotoBase):
     """Full photo data for detail view."""
 
@@ -72,7 +64,6 @@ class PhotoDetail(PhotoBase):
     location: PhotoLocation | None = None
     exif: PhotoExif | None = None
     faces: list[FaceSummary] = []
-    tags: list[TagSummary] = []
     caption: str | None = None
     live_photo_video: str | None = None
     motion_photo: bool = False
@@ -127,15 +118,6 @@ class PersonMerge(BaseModel):
     target_id: int
 
 
-class TagCount(BaseModel):
-    tag_id: int
-    name: str
-    category: str | None = None
-    count: int
-
-    model_config = {"from_attributes": True}
-
-
 class EventSummary(BaseModel):
     event_id: int
     name: str | None = None
@@ -158,7 +140,7 @@ class ScanStatus(BaseModel):
     total_files: int = 0
     processed_files: int = 0
     current_file: str | None = None
-    phase: str | None = None  # "discovery", "exif", "geocoding", "thumbnails", "motion_photos", "hashing", "clip", "faces", "captioning", "events"
+    phase: str | None = None  # "discovery", "exif", "geocoding", "thumbnails", "motion_photos", "hashing", "faces", "captioning", "events"
     phase_progress: int = 0
     phase_total: int = 0
 
@@ -168,7 +150,6 @@ class LibraryStats(BaseModel):
     total_size_bytes: int = 0
     total_faces: int = 0
     total_persons: int = 0
-    total_tags: int = 0
     total_events: int = 0
     total_duplicates: int = 0
     oldest_photo: datetime | None = None

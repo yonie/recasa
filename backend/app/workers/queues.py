@@ -1,7 +1,7 @@
 """Pipeline queue system for parallel photo processing.
 
 Architecture:
-  Discovery → EXIF → Geocoding → Thumbnail → [Hashing / CLIP / Faces / Captioning] → Events
+  Discovery → EXIF → Geocoding → Thumbnail → Hashing → Faces → Captioning → Events
                         ↓
                     Motion Photos
 
@@ -25,7 +25,6 @@ class QueueType(Enum):
     THUMBNAILS = "thumbnails"
     MOTION_PHOTOS = "motion_photos"
     HASHING = "hashing"
-    CLIP = "clip"
     FACES = "faces"
     CAPTIONING = "captioning"
     EVENTS = "events"
@@ -167,8 +166,7 @@ class Pipeline:
             QueueType.GEOCODING: [QueueType.THUMBNAILS],
             QueueType.THUMBNAILS: [QueueType.MOTION_PHOTOS],
             QueueType.MOTION_PHOTOS: [QueueType.HASHING],
-            QueueType.HASHING: [QueueType.CLIP],
-            QueueType.CLIP: [QueueType.FACES],
+            QueueType.HASHING: [QueueType.FACES],
             QueueType.FACES: [QueueType.CAPTIONING],
             QueueType.CAPTIONING: [QueueType.EVENTS],
             QueueType.EVENTS: [],

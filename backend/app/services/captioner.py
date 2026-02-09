@@ -30,6 +30,12 @@ CAPTION_PROMPT = (
 )
 
 
+def _strip_think_blocks(text: str) -> str:
+    """Strip <think>...</think> blocks from qwen3-vl responses."""
+    import re
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
 def _prepare_image_base64(filepath: Path) -> str | None:
     """Load and resize an image, returning base64-encoded JPEG."""
     try:
@@ -92,7 +98,7 @@ async def _generate_caption(image_base64: str) -> str | None:
 
             if response.status_code == 200:
                 data = response.json()
-                caption = data.get("response", "").strip()
+                caption = _strip_think_blocks(data.get("response", ""))
                 if caption:
                     return caption
             else:

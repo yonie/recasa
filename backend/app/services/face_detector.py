@@ -32,8 +32,8 @@ FACE_THUMB_SIZE = 150
 
 # DBSCAN clustering parameters
 # Using cosine distance since insightface produces normalized embeddings
-CLUSTER_DISTANCE_THRESHOLD = 0.4  # Cosine distance; lower = stricter matching
-CLUSTER_MIN_SAMPLES = 2  # Minimum faces to form a person cluster
+CLUSTER_DISTANCE_THRESHOLD = 0.5  # Cosine distance; lower = stricter matching
+CLUSTER_MIN_SAMPLES = 1  # Allow single-appearance faces to form their own cluster
 
 
 def _load_insightface():
@@ -45,8 +45,10 @@ def _load_insightface():
     try:
         from insightface.app import FaceAnalysis
 
+        models_dir = str(settings.data_dir / "models")
         app = FaceAnalysis(
             name="buffalo_l",
+            root=models_dir,
             allowed_modules=["detection", "recognition"],
             providers=["CPUExecutionProvider"],
         )
@@ -96,7 +98,8 @@ def _detect_faces(filepath: Path) -> list[dict]:
         for face in faces:
             # face.bbox is [x1, y1, x2, y2] as float
             x1, y1, x2, y2 = face.bbox.astype(int)
-            x, y, w, h = x1, y1, x2 - x1, y2 - y1
+            # Convert to native Python int (numpy int64 gets stored as bytes in SQLite)
+            x, y, w, h = int(x1), int(y1), int(x2 - x1), int(y2 - y1)
 
             # face.normed_embedding is a 512-dim normalized vector
             embedding = face.normed_embedding
@@ -195,7 +198,9 @@ async def detect_faces(file_hash: str) -> bool:
         await session.commit()
 
         if faces:
-            logger.debug("Detected %d faces in %s", len(faces), file_hash)
+            logger.info("Detected %d face(s) in %s", len(faces), file_hash)
+        else:
+            logger.debug("No faces detected in %s", file_hash)
         return True
 
 
@@ -303,7 +308,11 @@ async def cluster_faces() -> int:
 
         await session.commit()
 
-    logger.info("Face clustering: %d clusters, %d new persons", n_clusters, new_persons)
+    noise_count = sum(1 for l in labels if l == -1)
+    logger.info(
+        "Face clustering: %d total faces, %d clusters, %d noise (unmatched), %d new persons",
+        len(encodings), n_clusters, noise_count, new_persons,
+    )
     return new_persons
 
 

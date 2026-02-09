@@ -12,7 +12,6 @@ from backend.app.services.exif import extract_exif
 from backend.app.services.thumbnail import generate_thumbnails
 from backend.app.services.hasher import compute_hashes
 from backend.app.services.geocoder import geocode_photo
-from backend.app.services.clip_tagger import tag_photo
 from backend.app.services.face_detector import detect_faces, cluster_faces
 from backend.app.services.captioner import caption_photo
 from backend.app.services.event_detector import detect_events
@@ -157,32 +156,6 @@ class Worker:
             await self.queue.mark_failed(file_hash)
             return False
 
-    async def _process_clip(self, file_hash: str) -> bool:
-        """Process CLIP tagging stage."""
-        await self.queue.mark_processing(file_hash, None)
-
-        # Check if already tagged
-        async with async_session() as session:
-            photo = await session.get(Photo, file_hash)
-            if photo and photo.clip_tagged:
-                await self.queue.mark_completed(file_hash)
-                await self.pipeline.route_to_next(file_hash, QueueType.CLIP)
-                return True
-
-        try:
-            result = await tag_photo(file_hash)
-            if not result:
-                logger.warning("CLIP tagging returned False for %s (model may not be available)", file_hash)
-            await self.queue.mark_completed(file_hash)
-            await self.pipeline.route_to_next(file_hash, QueueType.CLIP)
-            return True
-        except Exception:
-            logger.exception("CLIP tagging failed for %s", file_hash)
-            # CLIP is optional -- don't block the pipeline
-            await self.queue.mark_completed(file_hash)
-            await self.pipeline.route_to_next(file_hash, QueueType.CLIP)
-            return True
-
     async def _process_faces(self, file_hash: str) -> bool:
         """Process face detection stage."""
         await self.queue.mark_processing(file_hash, None)
@@ -252,7 +225,6 @@ class Worker:
             QueueType.THUMBNAILS: self._process_thumbnails,
             QueueType.MOTION_PHOTOS: self._process_motion_photos,
             QueueType.HASHING: self._process_hashing,
-            QueueType.CLIP: self._process_clip,
             QueueType.FACES: self._process_faces,
             QueueType.CAPTIONING: self._process_captioning,
             QueueType.EVENTS: self._process_events,
@@ -324,7 +296,7 @@ class EventDetectionWorker:
             for qt in [
                 QueueType.DISCOVERY, QueueType.EXIF, QueueType.GEOCODING,
                 QueueType.THUMBNAILS, QueueType.MOTION_PHOTOS,
-                QueueType.HASHING, QueueType.CLIP, QueueType.FACES,
+                QueueType.HASHING, QueueType.FACES,
                 QueueType.CAPTIONING,
             ]
         )

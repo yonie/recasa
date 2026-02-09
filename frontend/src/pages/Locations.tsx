@@ -134,15 +134,13 @@ export function Locations() {
   );
 
   const handleMarkerClick = useCallback(
-    async (hash: string) => {
-      try {
-        const detail = await api.getPhoto(hash);
-        openViewer(detail);
-      } catch {
-        // ignore
+    (city: string | null, country: string | null) => {
+      if (city) {
+        setSelectedCountry(country);
+        handleSelectCity(city);
       }
     },
-    [openViewer]
+    [handleSelectCity]
   );
 
   if (loading) {
@@ -314,7 +312,7 @@ export function Locations() {
                       src={thumbnailUrl(point.representative_hash, 200)}
                       alt=""
                       className="w-32 h-24 object-cover rounded mb-2 cursor-pointer mx-auto"
-                      onClick={() => handleMarkerClick(point.representative_hash)}
+                      onClick={() => handleMarkerClick(point.city, point.country)}
                     />
                     {(point.city || point.country) && (
                       <p className="text-sm font-medium">
@@ -324,6 +322,12 @@ export function Locations() {
                     <p className="text-xs text-gray-500">
                       {point.count} photo{point.count !== 1 ? "s" : ""}
                     </p>
+                    <button 
+                      onClick={() => handleMarkerClick(point.city, point.country)}
+                      className="text-xs text-blue-500 hover:text-blue-700 mt-1"
+                    >
+                      View all photos →
+                    </button>
                   </div>
                 </Popup>
               </Marker>

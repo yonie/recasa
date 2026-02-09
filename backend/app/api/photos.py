@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.config import settings
 from backend.app.database import get_session
-from backend.app.models import Photo, PhotoTag, Tag, Face, Person, Caption
+from backend.app.models import Photo, Face, Person, Caption
 from backend.app.schemas.photo import (
     FaceSummary,
     PhotoDetail,
@@ -18,7 +18,6 @@ from backend.app.schemas.photo import (
     PhotoLocation,
     PhotoPage,
     PhotoSummary,
-    TagSummary,
     LibraryStats,
 )
 from backend.app.services.thumbnail import get_thumbnail_path, generate_thumbnails
@@ -72,14 +71,7 @@ async def list_photos(
         query = query.where(Photo.location_city == city)
     if search:
         search_term = f"%{search}%"
-        # Search across file name, location, tags, captions, and people
-        tag_match = (
-            select(PhotoTag.file_hash)
-            .join(Tag, Tag.tag_id == PhotoTag.tag_id)
-            .where(Tag.name.ilike(search_term))
-            .where(PhotoTag.file_hash == Photo.file_hash)
-            .correlate(Photo)
-        )
+        # Search across file name, location, captions, and people
         caption_match = (
             select(Caption.file_hash)
             .where(Caption.caption.ilike(search_term))
@@ -99,7 +91,6 @@ async def list_photos(
                 Photo.location_city.ilike(search_term),
                 Photo.location_country.ilike(search_term),
                 Photo.location_address.ilike(search_term),
-                exists(tag_match),
                 exists(caption_match),
                 exists(person_match),
             )
@@ -139,7 +130,6 @@ async def get_stats(session: AsyncSession = Depends(get_session)):
     total_size = (await session.execute(select(func.sum(Photo.file_size)))).scalar() or 0
     total_faces = (await session.execute(select(func.count(Face.face_id)))).scalar() or 0
     total_persons = (await session.execute(select(func.count(Person.person_id)))).scalar() or 0
-    total_tags = (await session.execute(select(func.count(Tag.tag_id)))).scalar() or 0
     favorites = (
         await session.execute(
             select(func.count(Photo.file_hash)).where(Photo.is_favorite == True)  # noqa: E712
@@ -170,7 +160,7 @@ async def get_stats(session: AsyncSession = Depends(get_session)):
         total_size_bytes=total_size,
         total_faces=total_faces,
         total_persons=total_persons,
-        total_tags=total_tags,
+
         oldest_photo=oldest,
         newest_photo=newest,
         locations_count=locations,
@@ -191,34 +181,25 @@ async def get_photo(file_hash: str, session: AsyncSession = Depends(get_session)
     )
     faces = faces_result.scalars().all()
 
+    def _safe_int(val) -> int | None:
+        """Convert a value to int, handling numpy int64 stored as bytes in SQLite."""
+        if val is None:
+            return None
+        if isinstance(val, bytes):
+            return int.from_bytes(val, byteorder="little", signed=True)
+        return int(val)
+
     face_summaries = [
         FaceSummary(
             face_id=f.face_id,
             person_id=f.person_id,
             person_name=f.person.name if f.person else None,
-            bbox_x=f.bbox_x,
-            bbox_y=f.bbox_y,
-            bbox_w=f.bbox_w,
-            bbox_h=f.bbox_h,
+            bbox_x=_safe_int(f.bbox_x),
+            bbox_y=_safe_int(f.bbox_y),
+            bbox_w=_safe_int(f.bbox_w),
+            bbox_h=_safe_int(f.bbox_h),
         )
         for f in faces
-    ]
-
-    # Load tags
-    tags_result = await session.execute(
-        select(PhotoTag, Tag)
-        .join(Tag, PhotoTag.tag_id == Tag.tag_id)
-        .where(PhotoTag.file_hash == file_hash)
-    )
-    tag_rows = tags_result.all()
-    tag_summaries = [
-        TagSummary(
-            tag_id=t.tag_id,
-            name=t.name,
-            category=t.category,
-            confidence=pt.confidence,
-        )
-        for pt, t in tag_rows
     ]
 
     # Load caption
@@ -261,7 +242,7 @@ async def get_photo(file_hash: str, session: AsyncSession = Depends(get_session)
         location=location,
         exif=exif,
         faces=face_summaries,
-        tags=tag_summaries,
+
         caption=caption_text,
         live_photo_video=photo.live_photo_video,
         motion_photo=photo.motion_photo,

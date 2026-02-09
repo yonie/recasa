@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.config import settings
 from backend.app.database import init_db
-from backend.app.api import photos, directories, timeline, scan, duplicates, persons, tags, events, locations, pipeline
+from backend.app.api import photos, directories, timeline, scan, duplicates, persons, events, locations, pipeline
 from backend.app.workers.queues import pipeline as pipeline_instance
 from backend.app.workers.worker import start_pipeline_workers
 from backend.app.workers.pipeline import run_initial_scan, start_file_watcher
@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
     # Initialize database
     await init_db()
 
-    # Start the pipeline workers (face detection, CLIP tagging, event detection, etc.)
+    # Start the pipeline workers (face detection, event detection, etc.)
     workers = await start_pipeline_workers(pipeline_instance)
 
     # Start initial scan in background -- feeds discovered files to pipeline
@@ -95,7 +95,6 @@ app.include_router(timeline.router)
 app.include_router(scan.router)
 app.include_router(duplicates.router)
 app.include_router(persons.router)
-app.include_router(tags.router)
 app.include_router(events.router)
 app.include_router(locations.router)
 app.include_router(pipeline.router)

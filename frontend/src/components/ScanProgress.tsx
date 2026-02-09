@@ -30,8 +30,6 @@ export function ScanProgress() {
         return { label: "Processing motion photos", sublabel: "Extracting video from live photos" };
       case "hashing":
         return { label: "Computing hashes", sublabel: "Finding duplicate photos" };
-      case "clip":
-        return { label: "Analyzing images", sublabel: "Tagging photos with AI" };
       case "faces":
         return { label: "Detecting faces", sublabel: "Finding and clustering faces" };
       case "captioning":

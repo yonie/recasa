@@ -8,7 +8,6 @@ import {
   HardDrive,
   Camera,
   Users,
-  Tag,
   CalendarDays,
   Map,
   Activity,
@@ -22,7 +21,6 @@ const navItems = [
   { to: "/years", icon: Calendar, label: "Years" },
   { to: "/favorites", icon: Star, label: "Favorites" },
   { to: "/people", icon: Users, label: "People" },
-  { to: "/tags", icon: Tag, label: "Tags" },
   { to: "/events", icon: CalendarDays, label: "Events" },
   { to: "/locations", icon: Map, label: "Locations" },
   { to: "/duplicates", icon: Copy, label: "Duplicates" },
@@ -80,14 +78,6 @@ export function Sidebar() {
               <span>People</span>
               <span className="font-medium text-gray-700">
                 {stats.total_persons.toLocaleString()}
-              </span>
-            </div>
-          )}
-          {stats.total_tags > 0 && (
-            <div className="flex justify-between">
-              <span>Tags</span>
-              <span className="font-medium text-gray-700">
-                {stats.total_tags.toLocaleString()}
               </span>
             </div>
           )}

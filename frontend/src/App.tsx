@@ -13,7 +13,6 @@ import { Duplicates } from "./pages/Duplicates";
 import { LargeFiles } from "./pages/LargeFiles";
 import { SearchResults } from "./pages/SearchResults";
 import { People } from "./pages/People";
-import { Tags } from "./pages/Tags";
 import { Events } from "./pages/Events";
 import { Locations } from "./pages/Locations";
 import { Pipeline } from "./pages/Pipeline";
@@ -57,7 +56,6 @@ function AppContent() {
             <Route path="/years" element={<Years />} />
             <Route path="/favorites" element={<Favorites />} />
             <Route path="/people" element={<People />} />
-            <Route path="/tags" element={<Tags />} />
             <Route path="/events" element={<Events />} />
             <Route path="/locations" element={<Locations />} />
             <Route path="/duplicates" element={<Duplicates />} />

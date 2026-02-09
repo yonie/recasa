@@ -27,8 +27,6 @@ ml = [
     "onnxruntime>=1.16,<2",
     "opencv-python-headless>=4.8",
     "scikit-learn>=1.5,<2",
-    "open-clip-torch>=2.26",
-    "torch>=2.0",
     "numpy>=1.26,<3",
 ]
 dev = [

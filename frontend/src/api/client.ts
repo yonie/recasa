@@ -35,6 +35,7 @@ export interface PhotoSummary {
   is_favorite: boolean;
   thumbnail_url: string | null;
   has_live_photo: boolean;
+  caption: string | null;
 }
 
 export interface PhotoLocation {
@@ -67,19 +68,11 @@ export interface FaceSummary {
   bbox_h: number | null;
 }
 
-export interface TagSummary {
-  tag_id: number;
-  name: string;
-  category: string | null;
-  confidence: number | null;
-}
-
 export interface PhotoDetail extends PhotoSummary {
   file_modified: string | null;
   location: PhotoLocation | null;
   exif: PhotoExif | null;
   faces: FaceSummary[];
-  tags: TagSummary[];
   caption: string | null;
   live_photo_video: string | null;
   motion_photo: boolean;
@@ -153,7 +146,6 @@ export interface LibraryStats {
   total_size_bytes: number;
   total_faces: number;
   total_persons: number;
-  total_tags: number;
   total_events: number;
   total_duplicates: number;
   oldest_photo: string | null;
@@ -172,13 +164,6 @@ export interface PersonSummary {
   name: string | null;
   photo_count: number;
   face_thumbnail_url: string | null;
-}
-
-export interface TagCount {
-  tag_id: number;
-  name: string;
-  category: string | null;
-  count: number;
 }
 
 export interface EventSummary {
@@ -290,15 +275,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ source_id: sourceId, target_id: targetId }),
     }),
-
-  // Tags
-  getTags: (category?: string) =>
-    request<TagCount[]>(`/tags${category ? `?category=${encodeURIComponent(category)}` : ""}`),
-
-  getTagCategories: () => request<string[]>("/tags/categories"),
-
-  getTagPhotos: (tagId: number, params?: Record<string, string | number>) =>
-    request<PhotoPage>(`/tags/${tagId}/photos${buildQuery(params)}`),
 
   // Events
   getEvents: (params?: Record<string, string | number>) =>

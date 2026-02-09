@@ -9,7 +9,7 @@ from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifi
 
 from backend.app.config import settings
 from backend.app.services.scanner import scan_directory, index_single_file, is_supported_photo
-from backend.app.workers.queues import pipeline, QueueType
+from backend.app.workers.queues import pipeline, QueueType, QueueStats
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,16 @@ async def run_initial_scan() -> dict:
     scan_state.phase = "discovery"
     scan_state.phase_progress = 0
     scan_state.phase_total = 0
+
+    # Reset pipeline counters for a fresh scan
+    pipeline._total_discovered = 0
+    pipeline._completed_time = None
+    for qtype in QueueType:
+        q = pipeline.queues[qtype]
+        q._processed.clear()
+        q._processing.clear()
+        q.stats = QueueStats(queue_type=qtype)
+
     await scan_state.notify()
 
     async def progress_callback(processed: int, total: int, current_file: str):
