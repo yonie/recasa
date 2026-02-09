@@ -90,6 +90,8 @@ Each photo goes through these stages (ML stages gracefully skip if dependencies 
 
 ![Pipeline Status](screenshot2.png)
 
+![Pipeline Status](screenshot-2.png)
+
 1. **Discovery** -- walk directory, compute SHA-256 hashes, index new files
 2. **EXIF extraction** -- camera metadata, GPS, dates via Pillow
 3. **Geocoding** -- offline reverse geocoding via `reverse_geocoder`
