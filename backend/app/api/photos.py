@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.config import settings
 from backend.app.database import get_session
-from backend.app.models import Photo, Face, Person, Caption
+from backend.app.models import Photo, Face, Person, Caption, PhotoTag, Tag
 from backend.app.schemas.photo import (
     FaceSummary,
     PhotoDetail,
@@ -85,6 +85,13 @@ async def list_photos(
             .where(Face.file_hash == Photo.file_hash)
             .correlate(Photo)
         )
+        tag_match = (
+            select(PhotoTag.file_hash)
+            .join(Tag, Tag.tag_id == PhotoTag.tag_id)
+            .where(Tag.name.ilike(search_term))
+            .where(PhotoTag.file_hash == Photo.file_hash)
+            .exists()
+        )
         query = query.where(
             or_(
                 Photo.file_name.ilike(search_term),
@@ -93,6 +100,7 @@ async def list_photos(
                 Photo.location_address.ilike(search_term),
                 exists(caption_match),
                 exists(person_match),
+                tag_match,
             )
         )
 
@@ -130,6 +138,7 @@ async def get_stats(session: AsyncSession = Depends(get_session)):
     total_size = (await session.execute(select(func.sum(Photo.file_size)))).scalar() or 0
     total_faces = (await session.execute(select(func.count(Face.face_id)))).scalar() or 0
     total_persons = (await session.execute(select(func.count(Person.person_id)))).scalar() or 0
+    total_tags = (await session.execute(select(func.count(Tag.tag_id)))).scalar() or 0
     favorites = (
         await session.execute(
             select(func.count(Photo.file_hash)).where(Photo.is_favorite == True)  # noqa: E712
@@ -160,7 +169,7 @@ async def get_stats(session: AsyncSession = Depends(get_session)):
         total_size_bytes=total_size,
         total_faces=total_faces,
         total_persons=total_persons,
-
+        total_tags=total_tags,
         oldest_photo=oldest,
         newest_photo=newest,
         locations_count=locations,
@@ -174,6 +183,18 @@ async def get_photo(file_hash: str, session: AsyncSession = Depends(get_session)
     photo = await session.get(Photo, file_hash)
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
+
+    # Load tags
+    tags_result = await session.execute(
+        select(Tag.tag_id, Tag.name, Tag.category)
+        .join(PhotoTag, PhotoTag.tag_id == Tag.tag_id)
+        .where(PhotoTag.file_hash == file_hash)
+    )
+    tag_rows = tags_result.all()
+    tag_list = [
+        {"tag_id": t.tag_id, "name": t.name, "category": t.category}
+        for t in tag_rows
+    ]
 
     # Load faces with person info
     faces_result = await session.execute(
@@ -242,7 +263,7 @@ async def get_photo(file_hash: str, session: AsyncSession = Depends(get_session)
         location=location,
         exif=exif,
         faces=face_summaries,
-
+        tags=tag_list,
         caption=caption_text,
         live_photo_video=photo.live_photo_video,
         motion_photo=photo.motion_photo,

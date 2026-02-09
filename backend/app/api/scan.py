@@ -9,7 +9,7 @@ from backend.app.schemas.photo import ScanStatus
 from backend.app.workers.pipeline import run_initial_scan, scan_state
 from backend.app.workers.queues import pipeline, QueueType
 from backend.app.database import async_session
-from backend.app.models import Photo, PhotoPath, PhotoHash, Face, Person, Event, EventPhoto, Caption, DuplicateGroup, DuplicateMember
+from backend.app.models import Photo, PhotoPath, PhotoHash, Face, Person, Tag, PhotoTag, Event, EventPhoto, Caption, DuplicateGroup, DuplicateMember
 
 router = APIRouter(prefix="/api/scan", tags=["scan"])
 
@@ -42,6 +42,8 @@ async def clear_index():
         await session.execute(DuplicateGroup.__table__.delete())
         await session.execute(EventPhoto.__table__.delete())
         await session.execute(Event.__table__.delete())
+        await session.execute(PhotoTag.__table__.delete())
+        await session.execute(Tag.__table__.delete())
         await session.execute(Face.__table__.delete())
         await session.execute(Person.__table__.delete())
         await session.execute(Caption.__table__.delete())

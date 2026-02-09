@@ -11,6 +11,7 @@ import {
   ChevronRight,
   MessageSquare,
   Users,
+  Tag,
 } from "lucide-react";
 import { clsx } from "clsx";
 import { useStore } from "../store/useStore";
@@ -311,6 +312,26 @@ export function PhotoViewer() {
                   AI Caption
                 </h3>
                 <p className="text-sm text-gray-300 italic">{detail.caption}</p>
+              </section>
+            )}
+
+            {/* Tags */}
+            {detail.tags && detail.tags.length > 0 && (
+              <section>
+                <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-2 flex items-center gap-2">
+                  <Tag className="w-3.5 h-3.5" />
+                  Tags
+                </h3>
+                <div className="flex flex-wrap gap-1.5">
+                  {detail.tags.map((t) => (
+                    <span
+                      key={t.tag_id}
+                      className="px-2 py-0.5 bg-gray-700 rounded-full text-xs text-gray-200"
+                    >
+                      {t.name}
+                    </span>
+                  ))}
+                </div>
               </section>
             )}
 

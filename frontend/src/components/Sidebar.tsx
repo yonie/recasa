@@ -10,6 +10,7 @@ import {
   Users,
   CalendarDays,
   Map,
+  Tag,
   Activity,
 } from "lucide-react";
 import { clsx } from "clsx";
@@ -23,6 +24,7 @@ const navItems = [
   { to: "/people", icon: Users, label: "People" },
   { to: "/events", icon: CalendarDays, label: "Events" },
   { to: "/locations", icon: Map, label: "Locations" },
+  { to: "/tags", icon: Tag, label: "Tags" },
   { to: "/duplicates", icon: Copy, label: "Duplicates" },
   { to: "/large-files", icon: HardDrive, label: "Large Files" },
   { to: "/pipeline", icon: Activity, label: "Pipeline" },

@@ -68,11 +68,19 @@ export interface FaceSummary {
   bbox_h: number | null;
 }
 
+export interface TagCount {
+  tag_id: number;
+  name: string;
+  category: string | null;
+  count: number;
+}
+
 export interface PhotoDetail extends PhotoSummary {
   file_modified: string | null;
   location: PhotoLocation | null;
   exif: PhotoExif | null;
   faces: FaceSummary[];
+  tags: { tag_id: number; name: string; category: string | null }[];
   caption: string | null;
   live_photo_video: string | null;
   motion_photo: boolean;
@@ -146,6 +154,7 @@ export interface LibraryStats {
   total_size_bytes: number;
   total_faces: number;
   total_persons: number;
+  total_tags: number;
   total_events: number;
   total_duplicates: number;
   oldest_photo: string | null;
@@ -295,6 +304,12 @@ export const api = {
 
   getLocationPhotos: (params?: Record<string, string | number>) =>
     request<PhotoPage>(`/locations/photos${buildQuery(params)}`),
+
+  // Tags
+  getTags: () => request<TagCount[]>("/tags"),
+
+  getTagPhotos: (tagId: number, params?: Record<string, string | number>) =>
+    request<PhotoPage>(`/tags/${tagId}/photos${buildQuery(params)}`),
 
   // Health
   health: () => request<{ status: string; app: string; version: string }>("/health"),

@@ -68,6 +68,9 @@ class Photo(Base):
     faces: Mapped[list["Face"]] = relationship(  # noqa: F821
         back_populates="photo", cascade="all, delete"
     )
+    tags: Mapped[list["PhotoTag"]] = relationship(  # noqa: F821
+        back_populates="photo", cascade="all, delete-orphan"
+    )
     caption: Mapped["Caption | None"] = relationship(  # noqa: F821
         back_populates="photo", cascade="all, delete", uselist=False
     )

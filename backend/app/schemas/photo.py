@@ -64,6 +64,7 @@ class PhotoDetail(PhotoBase):
     location: PhotoLocation | None = None
     exif: PhotoExif | None = None
     faces: list[FaceSummary] = []
+    tags: list[dict] = []
     caption: str | None = None
     live_photo_video: str | None = None
     motion_photo: bool = False
@@ -150,6 +151,7 @@ class LibraryStats(BaseModel):
     total_size_bytes: int = 0
     total_faces: int = 0
     total_persons: int = 0
+    total_tags: int = 0
     total_events: int = 0
     total_duplicates: int = 0
     oldest_photo: datetime | None = None

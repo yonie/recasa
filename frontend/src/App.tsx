@@ -16,6 +16,7 @@ import { People } from "./pages/People";
 import { Events } from "./pages/Events";
 import { Locations } from "./pages/Locations";
 import { Pipeline } from "./pages/Pipeline";
+import { Tags } from "./pages/Tags";
 
 import { useScanStatus } from "./hooks/useScanStatus";
 import { useStore } from "./store/useStore";
@@ -58,6 +59,7 @@ function AppContent() {
             <Route path="/people" element={<People />} />
             <Route path="/events" element={<Events />} />
             <Route path="/locations" element={<Locations />} />
+            <Route path="/tags" element={<Tags />} />
             <Route path="/duplicates" element={<Duplicates />} />
             <Route path="/large-files" element={<LargeFiles />} />
             <Route path="/search" element={<SearchResults />} />
