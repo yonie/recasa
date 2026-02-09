@@ -13,6 +13,8 @@ services:
       - WATCH_INTERVAL=${WATCH_INTERVAL}
       - LOG_LEVEL=${LOG_LEVEL}
       - WORKERS=${WORKERS}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 volumes:

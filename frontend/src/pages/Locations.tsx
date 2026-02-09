@@ -1,29 +1,68 @@
 import { useEffect, useState, useCallback } from "react";
-import { api, type CountryCount, type CityCount, type PhotoSummary } from "../api/client";
+import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import L from "leaflet";
+import { api, type CountryCount, type CityCount, type PhotoSummary, type MapPoint, thumbnailUrl } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
-import { Loader2, MapPin, ArrowLeft, Globe } from "lucide-react";
+import { Loader2, MapPin, ArrowLeft, Globe, Map, List } from "lucide-react";
+import "leaflet/dist/leaflet.css";
 
-type ViewMode = "countries" | "cities" | "photos";
+// Fix default marker icon issue with bundlers
+delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
+  iconUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
+  shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
+});
+
+function createClusterIcon(count: number): L.DivIcon {
+  const size = count > 100 ? 50 : count > 10 ? 40 : 30;
+  return L.divIcon({
+    html: `<div style="
+      background: #3b82f6;
+      color: white;
+      border-radius: 50%;
+      width: ${size}px;
+      height: ${size}px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: ${size > 40 ? 14 : 12}px;
+      font-weight: 600;
+      border: 2px solid white;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    ">${count}</div>`,
+    className: "custom-cluster-icon",
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
+
+type ViewMode = "countries" | "cities" | "photos" | "map";
 
 export function Locations() {
   const [countries, setCountries] = useState<CountryCount[]>([]);
   const [cities, setCities] = useState<CityCount[]>([]);
   const [photos, setPhotos] = useState<PhotoSummary[]>([]);
   const [photosTotal, setPhotosTotal] = useState(0);
+  const [mapPoints, setMapPoints] = useState<MapPoint[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewMode, setViewMode] = useState<ViewMode>("countries");
+  const [viewMode, setViewMode] = useState<ViewMode>("map");
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
   const openViewer = useStore((s) => s.openViewer);
 
-  // Load countries
+  // Load countries and map points
   useEffect(() => {
     async function load() {
       try {
         setLoading(true);
-        const data = await api.getCountries();
-        setCountries(data);
+        const [countriesData, mapData] = await Promise.all([
+          api.getCountries(),
+          api.getMapPoints(),
+        ]);
+        setCountries(countriesData);
+        setMapPoints(mapData);
       } catch {
         // ignore
       } finally {
@@ -77,6 +116,8 @@ export function Locations() {
       setViewMode("countries");
       setSelectedCountry(null);
       setCities([]);
+    } else if (viewMode === "map") {
+      setViewMode("countries");
     }
   }, [viewMode]);
 
@@ -84,6 +125,18 @@ export function Locations() {
     async (photo: PhotoSummary) => {
       try {
         const detail = await api.getPhoto(photo.file_hash);
+        openViewer(detail);
+      } catch {
+        // ignore
+      }
+    },
+    [openViewer]
+  );
+
+  const handleMarkerClick = useCallback(
+    async (hash: string) => {
+      try {
+        const detail = await api.getPhoto(hash);
         openViewer(detail);
       } catch {
         // ignore
@@ -165,6 +218,128 @@ export function Locations() {
     );
   }
 
+  // Map view
+  if (viewMode === "map") {
+    if (mapPoints.length === 0) {
+      return (
+        <div className="h-full flex flex-col">
+          <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleBack}
+                className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+              <Map className="w-5 h-5 text-gray-400" />
+              <h1 className="text-lg font-semibold">Map</h1>
+            </div>
+            <div className="flex gap-1">
+              <button
+                onClick={() => setViewMode("countries")}
+                className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                title="List view"
+              >
+                <List className="w-5 h-5 text-gray-400" />
+              </button>
+              <button
+                className="p-2 rounded-lg bg-gray-100 transition-colors"
+                title="Map view"
+              >
+                <Map className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+          <div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-2">
+            <Map className="w-12 h-12 text-gray-300" />
+            <p className="text-lg">No geotagged photos</p>
+            <p className="text-sm">Photos with GPS data will appear on the map</p>
+          </div>
+        </div>
+      );
+    }
+
+    const avgLat = mapPoints.reduce((sum, p) => sum + p.latitude, 0) / mapPoints.length;
+    const avgLng = mapPoints.reduce((sum, p) => sum + p.longitude, 0) / mapPoints.length;
+
+    return (
+      <div className="h-full flex flex-col">
+        <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleBack}
+              className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <Map className="w-5 h-5 text-gray-400" />
+            <h1 className="text-lg font-semibold">Map</h1>
+          </div>
+          <div className="flex gap-1">
+            <button
+              onClick={() => setViewMode("countries")}
+              className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+              title="List view"
+            >
+              <List className="w-5 h-5 text-gray-400" />
+            </button>
+            <button
+              className="p-2 rounded-lg bg-gray-100 transition-colors"
+              title="Map view"
+            >
+              <Map className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 relative">
+          <MapContainer
+            center={[avgLat, avgLng]}
+            zoom={4}
+            className="h-full w-full z-0"
+            scrollWheelZoom={true}
+          >
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+            {mapPoints.map((point, i) => (
+              <Marker
+                key={i}
+                position={[point.latitude, point.longitude]}
+                icon={point.count > 1 ? createClusterIcon(point.count) : new L.Icon.Default()}
+              >
+                <Popup>
+                  <div className="text-center min-w-[140px]">
+                    <img
+                      src={thumbnailUrl(point.representative_hash, 200)}
+                      alt=""
+                      className="w-32 h-24 object-cover rounded mb-2 cursor-pointer mx-auto"
+                      onClick={() => handleMarkerClick(point.representative_hash)}
+                    />
+                    {(point.city || point.country) && (
+                      <p className="text-sm font-medium">
+                        {[point.city, point.country].filter(Boolean).join(", ")}
+                      </p>
+                    )}
+                    <p className="text-xs text-gray-500">
+                      {point.count} photo{point.count !== 1 ? "s" : ""}
+                    </p>
+                  </div>
+                </Popup>
+              </Marker>
+            ))}
+          </MapContainer>
+          <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-2 shadow-md z-[1000]">
+            <p className="text-xs text-gray-600">
+              <span className="font-semibold">{mapPoints.length}</span> locations,{" "}
+              <span className="font-semibold">{mapPoints.reduce((s, p) => s + p.count, 0)}</span> photos
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Countries list
   if (countries.length === 0) {
     return (
@@ -178,13 +353,30 @@ export function Locations() {
 
   return (
     <div className="overflow-y-auto h-full">
-      <div className="px-4 py-3 border-b border-gray-100">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
         <h1 className="text-lg font-semibold">
           Locations
           <span className="ml-2 text-gray-400 font-normal text-sm">
             {countries.length} countr{countries.length !== 1 ? "ies" : "y"}
           </span>
         </h1>
+        {mapPoints.length > 0 && (
+          <div className="flex gap-1">
+            <button
+              className="p-2 rounded-lg bg-gray-100 transition-colors"
+              title="List view"
+            >
+              <List className="w-5 h-5" />
+            </button>
+            <button
+              onClick={() => setViewMode("map")}
+              className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+              title="Map view"
+            >
+              <Map className="w-5 h-5 text-gray-400" />
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="divide-y divide-gray-50">

@@ -33,7 +33,7 @@ class Face(Base):
     bbox_w: Mapped[int | None] = mapped_column(Integer)
     bbox_h: Mapped[int | None] = mapped_column(Integer)
 
-    # 128-dimensional face encoding from dlib
+    # 512-dimensional face encoding from insightface
     encoding: Mapped[bytes | None] = mapped_column(LargeBinary)
 
     # Assigned person

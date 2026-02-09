@@ -79,14 +79,14 @@ async def scan_directory(progress_callback=None) -> dict:
     """Scan the photos directory and index all photos.
 
     Returns:
-        dict with scan statistics.
+        dict with scan statistics and discovered files.
     """
     photos_dir = settings.photos_dir
     if not photos_dir.exists():
         logger.error("Photos directory does not exist: %s", photos_dir)
-        return {"error": "Photos directory not found", "total": 0, "new": 0, "updated": 0}
+        return {"error": "Photos directory not found", "total": 0, "new": 0, "updated": 0, "discovered_files": {}}
 
-    stats = {"total": 0, "new": 0, "updated": 0, "skipped": 0, "errors": 0}
+    stats = {"total": 0, "new": 0, "updated": 0, "skipped": 0, "errors": 0, "discovered_files": {}}
 
     # Collect all photo files
     photo_files: list[Path] = []
@@ -99,6 +99,9 @@ async def scan_directory(progress_callback=None) -> dict:
     stats["total"] = len(photo_files)
     logger.info("Found %d photo files in %s", stats["total"], photos_dir)
 
+    # Collect discovered files for pipeline
+    discovered: dict[str, str] = {}
+
     # Process in batches
     batch_size = settings.batch_size
     for i in range(0, len(photo_files), batch_size):
@@ -106,7 +109,9 @@ async def scan_directory(progress_callback=None) -> dict:
         async with async_session() as session:
             for filepath in batch:
                 try:
-                    await _index_photo(session, filepath, stats)
+                    file_hash = await _index_photo(session, filepath, stats)
+                    if file_hash:
+                        discovered[file_hash] = str(filepath)
                 except Exception:
                     logger.exception("Error indexing %s", filepath)
                     stats["errors"] += 1
@@ -119,6 +124,8 @@ async def scan_directory(progress_callback=None) -> dict:
                     )
 
             await session.commit()
+
+    stats["discovered_files"] = discovered
 
     # Clean up photos whose files no longer exist
     await _cleanup_removed_files()
@@ -134,17 +141,39 @@ async def scan_directory(progress_callback=None) -> dict:
     return stats
 
 
-async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> None:
-    """Index a single photo file."""
+async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> str | None:
+    """Index a single photo file. Returns file_hash or None if skipped."""
     relative_path = str(filepath.relative_to(settings.photos_dir))
 
-    # Compute file hash
+    # Get file metadata first (fast)
+    file_stat = filepath.stat()
+    file_size = file_stat.st_size
+    file_mtime = file_stat.st_mtime
+
+    # Check if this path already exists in PhotoPath
+    path_result = await session.execute(
+        select(PhotoPath).where(PhotoPath.file_path == relative_path)
+    )
+    existing_path = path_result.scalar_one_or_none()
+
+    if existing_path:
+        # Path exists - check if photo was modified
+        existing_photo = await session.get(Photo, existing_path.file_hash)
+        if existing_photo and existing_photo.file_size == file_size:
+            # Check mtime if available
+            if existing_photo.file_modified and existing_photo.file_modified.timestamp() == file_mtime:
+                # Photo unchanged - just mark as skipped
+                stats["skipped"] += 1
+                return None
+            # Size matches but mtime different - will update file_modified below
+
+    # Compute file hash (slow - only when needed)
     file_hash = await asyncio.to_thread(compute_file_hash, filepath)
 
-    # Check if this hash already exists
-    existing = await session.get(Photo, file_hash)
+    # Check if this hash already exists (different path, same content)
+    existing_by_hash = await session.get(Photo, file_hash)
 
-    if existing:
+    if existing_by_hash:
         # Photo content already known - just ensure the path is tracked
         path_result = await session.execute(
             select(PhotoPath).where(
@@ -154,13 +183,16 @@ async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> No
         )
         if not path_result.scalar_one_or_none():
             session.add(PhotoPath(file_hash=file_hash, file_path=relative_path))
+            # Update primary path if old one no longer exists
+            old_path = settings.photos_dir / existing_by_hash.file_path
+            if not old_path.exists():
+                existing_by_hash.file_path = relative_path
             stats["updated"] += 1
         else:
             stats["skipped"] += 1
-        return
+        return file_hash
 
     # New photo
-    file_stat = filepath.stat()
     mime_type, _ = mimetypes.guess_type(str(filepath))
 
     # Detect Live Photo / Motion Photo
@@ -178,8 +210,8 @@ async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> No
         file_hash=file_hash,
         file_path=relative_path,
         file_name=filepath.name,
-        file_size=file_stat.st_size,
-        file_modified=datetime.fromtimestamp(file_stat.st_mtime),
+        file_size=file_size,
+        file_modified=datetime.fromtimestamp(file_mtime),
         mime_type=mime_type,
         live_photo_video=live_photo_video,
         motion_photo=motion_photo,
@@ -190,6 +222,7 @@ async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> No
     session.add(PhotoPath(file_hash=file_hash, file_path=relative_path))
 
     stats["new"] += 1
+    return file_hash
 
 
 async def _cleanup_removed_files() -> None:

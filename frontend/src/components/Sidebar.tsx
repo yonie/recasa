@@ -11,7 +11,7 @@ import {
   Tag,
   CalendarDays,
   Map,
-  MapPin,
+  Activity,
 } from "lucide-react";
 import { clsx } from "clsx";
 import { useStore } from "../store/useStore";
@@ -24,10 +24,10 @@ const navItems = [
   { to: "/people", icon: Users, label: "People" },
   { to: "/tags", icon: Tag, label: "Tags" },
   { to: "/events", icon: CalendarDays, label: "Events" },
-  { to: "/locations", icon: MapPin, label: "Locations" },
-  { to: "/map", icon: Map, label: "Map" },
+  { to: "/locations", icon: Map, label: "Locations" },
   { to: "/duplicates", icon: Copy, label: "Duplicates" },
   { to: "/large-files", icon: HardDrive, label: "Large Files" },
+  { to: "/pipeline", icon: Activity, label: "Pipeline" },
 ];
 
 export function Sidebar() {

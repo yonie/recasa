@@ -118,6 +118,34 @@ export interface ScanStatus {
   processed_files: number;
   current_file: string | null;
   phase: string | null;
+  phase_progress: number;
+  phase_total: number;
+}
+
+export interface QueueStats {
+  queue_type: string;
+  pending: number;
+  processing: number;
+  completed_total: number;
+  skipped_total: number;
+  failed_total: number;
+  last_processed_at: string | null;
+  last_file_hash: string | null;
+  current_file_hash: string | null;
+  current_file_path: string | null;
+  throughput_per_minute: number;
+}
+
+export interface PipelineStats {
+  is_running: boolean;
+  status: "idle" | "processing" | "done";
+  total_files_discovered: number;
+  total_files_completed: number;
+  start_time: string | null;
+  uptime_seconds: number;
+  bottleneck: { queue_type: string | null; ratio: number };
+  queues: Record<string, QueueStats>;
+  flow: Record<string, string[]>;
 }
 
 export interface LibraryStats {
@@ -227,6 +255,12 @@ export const api = {
   // Scan
   getScanStatus: () => request<ScanStatus>("/scan/status"),
   triggerScan: () => request<{ status: string }>("/scan/trigger", { method: "POST" }),
+  clearIndex: () => request<{ status: string }>("/scan/clear-index", { method: "POST" }),
+
+  // Pipeline
+  getPipelineStatus: () => request<PipelineStats>("/pipeline/status"),
+  getQueueStatus: () => request<Record<string, QueueStats>>("/pipeline/queues"),
+  getPipelineFlow: () => request<{ stages: { id: string; name: string; next: string[] }[] }>("/pipeline/flow"),
 
   // Duplicates
   getDuplicates: (params?: Record<string, string | number>) =>

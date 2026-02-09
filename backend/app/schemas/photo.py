@@ -158,14 +158,9 @@ class ScanStatus(BaseModel):
     total_files: int = 0
     processed_files: int = 0
     current_file: str | None = None
-    phase: str | None = None  # "discovery", "exif", "thumbnails", "faces", "clip", "ollama"
-
-    # Processing stats
-    pending_exif: int = 0
-    pending_thumbnails: int = 0
-    pending_faces: int = 0
-    pending_clip: int = 0
-    pending_ollama: int = 0
+    phase: str | None = None  # "discovery", "exif", "geocoding", "thumbnails", "motion_photos", "hashing", "clip", "faces", "captioning", "events"
+    phase_progress: int = 0
+    phase_total: int = 0
 
 
 class LibraryStats(BaseModel):

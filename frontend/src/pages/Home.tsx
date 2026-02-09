@@ -85,6 +85,9 @@ export function Home() {
 }
 
 function formatGroupDate(dateStr: string): string {
+  if (dateStr === "unknown") {
+    return "Unknown Date";
+  }
   const parts = dateStr.split("-");
   if (parts.length === 1) {
     return parts[0]!;

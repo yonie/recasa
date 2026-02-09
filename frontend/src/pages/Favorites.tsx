@@ -55,7 +55,7 @@ export function Favorites() {
       <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-2">
         <Star className="w-12 h-12 text-gray-300" />
         <p className="text-lg">No favorites yet</p>
-        <p className="text-sm">Star photos to add them to your favorites</p>
+        <p className="text-sm">Hover over photos and click the star icon, or press F while viewing</p>
       </div>
     );
   }

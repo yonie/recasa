@@ -1,8 +1,8 @@
 """Face detection and recognition service.
 
-Uses the face_recognition library (dlib) to:
+Uses the insightface library (ONNX Runtime) to:
 1. Detect faces in photos
-2. Compute 128-dimensional face encodings
+2. Compute 512-dimensional face encodings
 3. Cluster faces into persons using DBSCAN
 4. Generate face thumbnail crops
 """
@@ -24,36 +24,46 @@ from backend.app.models import Photo, Face, Person
 
 logger = logging.getLogger(__name__)
 
-# Lazy-loaded face_recognition module
-_face_recognition = None
+# Lazy-loaded insightface FaceAnalysis app
+_face_app = None
 
 # Face thumbnail size
 FACE_THUMB_SIZE = 150
 
 # DBSCAN clustering parameters
-CLUSTER_DISTANCE_THRESHOLD = 0.6  # Lower = stricter matching
+# Using cosine distance since insightface produces normalized embeddings
+CLUSTER_DISTANCE_THRESHOLD = 0.4  # Cosine distance; lower = stricter matching
 CLUSTER_MIN_SAMPLES = 2  # Minimum faces to form a person cluster
 
 
-def _load_face_recognition():
-    """Lazy-load the face_recognition library."""
-    global _face_recognition
-    if _face_recognition is not None:
-        return True
+def _load_insightface():
+    """Lazy-load the insightface FaceAnalysis app."""
+    global _face_app
+    if _face_app is not None:
+        return _face_app is not False
 
     try:
-        import face_recognition
-        _face_recognition = face_recognition
-        logger.info("face_recognition library loaded successfully")
-        return True
-    except ImportError:
-        logger.warning(
-            "face_recognition not installed. "
-            "Install with: pip install 'recasa[ml]'"
+        from insightface.app import FaceAnalysis
+
+        app = FaceAnalysis(
+            name="buffalo_l",
+            allowed_modules=["detection", "recognition"],
+            providers=["CPUExecutionProvider"],
         )
+        app.prepare(ctx_id=-1, det_size=(640, 640))
+        _face_app = app
+        logger.info("insightface FaceAnalysis loaded successfully (buffalo_l)")
+        return True
+    except ImportError as e:
+        logger.error(
+            "insightface not installed -- face detection will be DISABLED. "
+            "Install with: pip install 'recasa[ml]'. Error: %s", e
+        )
+        _face_app = False
         return False
-    except Exception:
-        logger.exception("Failed to load face_recognition")
+    except Exception as e:
+        logger.exception("Failed to load insightface model: %s", e)
+        _face_app = False
         return False
 
 
@@ -61,34 +71,45 @@ def _detect_faces(filepath: Path) -> list[dict]:
     """Detect faces in an image and compute encodings.
 
     Returns list of dicts with keys: bbox, encoding.
-    bbox is (x, y, w, h), encoding is 128-dim numpy array.
+    bbox is (x, y, w, h), encoding is 512-dim numpy array.
     """
-    if not _load_face_recognition():
+    if not _load_insightface():
+        return []
+
+    if _face_app is False:
         return []
 
     try:
-        # Load image
-        img = _face_recognition.load_image_file(str(filepath))
-
-        # Detect face locations (returns list of (top, right, bottom, left))
-        locations = _face_recognition.face_locations(img, model="hog")
-        if not locations:
+        # Load image as BGR numpy array (insightface expects BGR from OpenCV)
+        import cv2
+        img = cv2.imread(str(filepath))
+        if img is None:
+            logger.error("Could not read image: %s", filepath)
             return []
 
-        # Compute face encodings
-        encodings = _face_recognition.face_encodings(img, locations)
+        # Detect faces and compute embeddings in one call
+        faces = _face_app.get(img)
+        if not faces:
+            return []
 
-        faces = []
-        for (top, right, bottom, left), encoding in zip(locations, encodings):
-            faces.append({
-                "bbox": (left, top, right - left, bottom - top),  # x, y, w, h
-                "encoding": encoding,
+        results = []
+        for face in faces:
+            # face.bbox is [x1, y1, x2, y2] as float
+            x1, y1, x2, y2 = face.bbox.astype(int)
+            x, y, w, h = x1, y1, x2 - x1, y2 - y1
+
+            # face.normed_embedding is a 512-dim normalized vector
+            embedding = face.normed_embedding
+
+            results.append({
+                "bbox": (x, y, w, h),
+                "encoding": embedding,
             })
 
-        return faces
+        return results
 
-    except Exception:
-        logger.exception("Error detecting faces in %s", filepath)
+    except Exception as e:
+        logger.error("Error detecting faces in %s: %s", filepath, e)
         return []
 
 
@@ -183,9 +204,6 @@ async def cluster_faces() -> int:
 
     Returns the number of new person clusters created.
     """
-    if not _load_face_recognition():
-        return 0
-
     async with async_session() as session:
         # Get all faces with encodings that aren't yet assigned to a person
         result = await session.execute(
@@ -210,7 +228,7 @@ async def cluster_faces() -> int:
     if len(encodings) < CLUSTER_MIN_SAMPLES:
         return 0
 
-    # DBSCAN clustering
+    # DBSCAN clustering with cosine distance (insightface produces normalized embeddings)
     try:
         from sklearn.cluster import DBSCAN
 
@@ -218,7 +236,7 @@ async def cluster_faces() -> int:
         clustering = DBSCAN(
             eps=CLUSTER_DISTANCE_THRESHOLD,
             min_samples=CLUSTER_MIN_SAMPLES,
-            metric="euclidean",
+            metric="cosine",
         ).fit(encodings_array)
 
         labels = clustering.labels_
@@ -294,8 +312,8 @@ async def process_pending_faces(batch_size: int | None = None) -> int:
     if batch_size is None:
         batch_size = settings.batch_size
 
-    if not _load_face_recognition():
-        logger.info("face_recognition not available, skipping face detection")
+    if not _load_insightface():
+        logger.info("insightface not available, skipping face detection")
         return 0
 
     async with async_session() as session:

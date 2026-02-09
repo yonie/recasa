@@ -53,7 +53,7 @@ async def get_timeline(
     session: AsyncSession = Depends(get_session),
 ):
     """Get photos grouped by time period."""
-    query = select(Photo).where(Photo.date_taken.is_not(None))
+    query = select(Photo)
 
     if year:
         query = query.where(extract("year", Photo.date_taken) == year)
@@ -69,9 +69,8 @@ async def get_timeline(
     groups: dict[str, list[Photo]] = {}
     for photo in photos:
         if not photo.date_taken:
-            continue
-
-        if group_by == "year":
+            key = "unknown"
+        elif group_by == "year":
             key = str(photo.date_taken.year)
         elif group_by == "month":
             key = f"{photo.date_taken.year}-{photo.date_taken.month:02d}"
@@ -83,7 +82,9 @@ async def get_timeline(
         groups[key].append(photo)
 
     # Convert to response format (apply offset/limit to groups)
-    sorted_keys = sorted(groups.keys(), reverse=True)
+    # Sort normally but put "unknown" at the end
+    dated_keys = sorted([k for k in groups.keys() if k != "unknown"], reverse=True)
+    sorted_keys = dated_keys + (["unknown"] if "unknown" in groups else [])
     paginated_keys = sorted_keys[offset : offset + limit]
 
     return [

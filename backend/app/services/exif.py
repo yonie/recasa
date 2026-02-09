@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -18,17 +19,41 @@ from backend.app.models import Photo
 logger = logging.getLogger(__name__)
 
 
+def _get_filesystem_date(filepath: Path) -> datetime | None:
+    """Get the best available filesystem date for a file.
+
+    Prefers the earlier of creation time and modification time,
+    since the creation time is often when the file was copied
+    and mtime can be the original date.
+    """
+    try:
+        stat = filepath.stat()
+        # st_mtime = last modification, st_ctime = creation on Windows / metadata change on Unix
+        mtime = stat.st_mtime
+        ctime = stat.st_ctime
+        # Use the earlier timestamp (more likely to be the original date)
+        best = min(mtime, ctime)
+        return datetime.fromtimestamp(best)
+    except OSError:
+        return None
+
+
 def _dms_to_decimal(dms, ref: str) -> float | None:
     """Convert GPS DMS (degrees, minutes, seconds) to decimal degrees."""
     try:
+        if not dms or len(dms) < 3:
+            return None
         degrees = float(dms[0])
         minutes = float(dms[1])
         seconds = float(dms[2])
+        # Reject only if all components are zero (invalid/placeholder GPS data)
+        if degrees == 0 and minutes == 0 and seconds == 0:
+            return None
         decimal = degrees + minutes / 60 + seconds / 3600
         if ref in ("S", "W"):
             decimal = -decimal
         return decimal
-    except (TypeError, ValueError, IndexError):
+    except (TypeError, ValueError, IndexError, ZeroDivisionError):
         return None
 
 
@@ -49,7 +74,11 @@ def _parse_exif_datetime(value: str) -> datetime | None:
 
 
 def _extract_exif_data(filepath: Path) -> dict:
-    """Extract EXIF metadata from an image file."""
+    """Extract EXIF metadata from an image file.
+
+    Falls back to the file's filesystem modification time if no EXIF date is found,
+    so that every photo gets a date_taken for timeline/event grouping.
+    """
     result = {
         "width": None,
         "height": None,
@@ -72,8 +101,11 @@ def _extract_exif_data(filepath: Path) -> dict:
             result["width"] = img.width
             result["height"] = img.height
 
-            exif_data = img.getexif()
+            # Use _getexif() for full EXIF data (getexif() is incomplete)
+            exif_data = img._getexif()
             if not exif_data:
+                # No EXIF at all -- fall back to filesystem date
+                result["date_taken"] = _get_filesystem_date(filepath)
                 return result
 
             # Decode EXIF tags
@@ -126,33 +158,39 @@ def _extract_exif_data(filepath: Path) -> dict:
             if "ISOSpeedRatings" in decoded:
                 result["iso"] = int(decoded["ISOSpeedRatings"])
 
-            # GPS data
-            gps_ifd = exif_data.get_ifd(0x8825)  # GPSInfo IFD
-            if gps_ifd:
-                gps_decoded = {}
-                for tag_id, value in gps_ifd.items():
-                    tag_name = GPSTAGS.get(tag_id, str(tag_id))
-                    gps_decoded[tag_name] = value
+            # GPS data - _getexif() nests GPS tags inside the GPSInfo tag (34853)
+            try:
+                gps_info = exif_data.get(34853)  # GPSInfo tag
+                if gps_info and isinstance(gps_info, dict):
+                    gps_latitude = gps_info.get(2)  # GPSLatitude
+                    gps_latitude_ref = gps_info.get(1)  # GPSLatitudeRef
+                    gps_longitude = gps_info.get(4)  # GPSLongitude
+                    gps_longitude_ref = gps_info.get(3)  # GPSLongitudeRef
+                    gps_altitude = gps_info.get(6)  # GPSAltitude
 
-                if "GPSLatitude" in gps_decoded and "GPSLatitudeRef" in gps_decoded:
-                    result["gps_latitude"] = _dms_to_decimal(
-                        gps_decoded["GPSLatitude"], gps_decoded["GPSLatitudeRef"]
-                    )
+                    if gps_latitude and gps_latitude_ref:
+                        result["gps_latitude"] = _dms_to_decimal(gps_latitude, gps_latitude_ref)
 
-                if "GPSLongitude" in gps_decoded and "GPSLongitudeRef" in gps_decoded:
-                    result["gps_longitude"] = _dms_to_decimal(
-                        gps_decoded["GPSLongitude"], gps_decoded["GPSLongitudeRef"]
-                    )
+                    if gps_longitude and gps_longitude_ref:
+                        result["gps_longitude"] = _dms_to_decimal(gps_longitude, gps_longitude_ref)
 
-                if "GPSAltitude" in gps_decoded:
-                    alt = gps_decoded["GPSAltitude"]
-                    if isinstance(alt, tuple):
-                        result["gps_altitude"] = float(alt[0]) / float(alt[1]) if alt[1] else None
-                    else:
-                        result["gps_altitude"] = float(alt)
+                    if gps_altitude is not None:
+                        if isinstance(gps_altitude, tuple):
+                            result["gps_altitude"] = float(gps_altitude[0]) / float(gps_altitude[1]) if gps_altitude[1] else None
+                        else:
+                            result["gps_altitude"] = float(gps_altitude)
+            except (TypeError, ValueError):
+                pass
 
     except Exception:
         logger.exception("Error extracting EXIF from %s", filepath)
+
+    # Fallback: if no EXIF date was found, use filesystem date so the photo
+    # still appears in timelines and can be grouped into events.
+    if result["date_taken"] is None:
+        result["date_taken"] = _get_filesystem_date(filepath)
+        if result["date_taken"]:
+            logger.debug("No EXIF date for %s, using filesystem date: %s", filepath, result["date_taken"])
 
     return result
 

@@ -81,7 +81,7 @@ function PhotoGridItem({ photo, onClick, onFavoriteToggle }: PhotoGridItemProps)
       onMouseLeave={handleMouseLeave}
     >
       <img
-        src={thumbnailUrl(photo.file_hash, 200)}
+        src={thumbnailUrl(photo.file_hash, 600)}
         alt={photo.file_name}
         loading="lazy"
         className={clsx(

@@ -15,8 +15,8 @@ import { SearchResults } from "./pages/SearchResults";
 import { People } from "./pages/People";
 import { Tags } from "./pages/Tags";
 import { Events } from "./pages/Events";
-import { MapView } from "./pages/MapView";
 import { Locations } from "./pages/Locations";
+import { Pipeline } from "./pages/Pipeline";
 
 import { useScanStatus } from "./hooks/useScanStatus";
 import { useStore } from "./store/useStore";
@@ -60,10 +60,10 @@ function AppContent() {
             <Route path="/tags" element={<Tags />} />
             <Route path="/events" element={<Events />} />
             <Route path="/locations" element={<Locations />} />
-            <Route path="/map" element={<MapView />} />
             <Route path="/duplicates" element={<Duplicates />} />
             <Route path="/large-files" element={<LargeFiles />} />
             <Route path="/search" element={<SearchResults />} />
+            <Route path="/pipeline" element={<Pipeline />} />
           </Routes>
         </main>
       </div>

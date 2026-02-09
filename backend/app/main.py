@@ -9,7 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.config import settings
 from backend.app.database import init_db
-from backend.app.api import photos, directories, timeline, scan, duplicates, persons, tags, events, locations
+from backend.app.api import photos, directories, timeline, scan, duplicates, persons, tags, events, locations, pipeline
+from backend.app.workers.queues import pipeline as pipeline_instance
+from backend.app.workers.worker import start_pipeline_workers
 from backend.app.workers.pipeline import run_initial_scan, start_file_watcher
 
 logger = logging.getLogger("recasa")
@@ -37,20 +39,37 @@ async def lifespan(app: FastAPI):
     # Initialize database
     await init_db()
 
-    # Start initial scan in background
-    scan_task = asyncio.create_task(run_initial_scan())
+    # Start the pipeline workers (face detection, CLIP tagging, event detection, etc.)
+    workers = await start_pipeline_workers(pipeline_instance)
 
-    # Start file watcher
+    # Start initial scan in background -- feeds discovered files to pipeline
+    async def _initial_scan():
+        try:
+            stats = await run_initial_scan()
+            logger.info(
+                "Initial scan complete: %d total, %d new, %d updated",
+                stats.get("total", 0),
+                stats.get("new", 0),
+                stats.get("updated", 0),
+            )
+        except Exception:
+            logger.exception("Initial scan failed")
+
+    scan_task = asyncio.create_task(_initial_scan())
+
+    # Start file watcher for live-detecting new photos
     observer = await start_file_watcher()
 
     yield
 
     # Shutdown
     logger.info("Shutting down Recasa")
+    scan_task.cancel()
+    for worker in workers:
+        worker.stop()
     if observer:
         observer.stop()
         observer.join(timeout=5)
-    scan_task.cancel()
 
 
 app = FastAPI(
@@ -79,6 +98,7 @@ app.include_router(persons.router)
 app.include_router(tags.router)
 app.include_router(events.router)
 app.include_router(locations.router)
+app.include_router(pipeline.router)
 
 
 @app.get("/api/health")

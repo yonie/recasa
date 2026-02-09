@@ -83,7 +83,7 @@ export function Duplicates() {
                 >
                   <div className="aspect-square rounded-lg overflow-hidden bg-gray-100">
                     <img
-                      src={thumbnailUrl(photo.file_hash, 200)}
+                      src={thumbnailUrl(photo.file_hash, 600)}
                       alt={photo.file_name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                     />

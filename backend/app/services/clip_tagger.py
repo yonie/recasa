@@ -61,11 +61,14 @@ TAG_VOCABULARY = {
     ],
 }
 
-# Minimum confidence threshold to assign a tag
-CONFIDENCE_THRESHOLD = 0.15
-
 # Maximum tags per photo
-MAX_TAGS_PER_PHOTO = 10
+MAX_TAGS_PER_PHOTO = 5
+
+# Minimum confidence multiplier over uniform baseline per category.
+# A tag must have probability at least (CONFIDENCE_MULTIPLIER / num_labels_in_category)
+# to be considered. This adapts to category size automatically.
+# e.g. for a category with 40 labels, baseline is 0.025, so threshold = 3.0 * 0.025 = 0.075
+CONFIDENCE_MULTIPLIER = 2.0
 
 
 def _load_clip_model():
@@ -93,10 +96,10 @@ def _load_clip_model():
         logger.info("CLIP model loaded successfully")
         return True
 
-    except ImportError:
-        logger.warning(
-            "open-clip-torch or torch not installed. "
-            "Install with: pip install 'recasa[ml]'"
+    except ImportError as e:
+        logger.error(
+            "open-clip-torch or torch not installed -- CLIP tagging will be DISABLED. "
+            "Install with: pip install 'recasa[ml]'. Error: %s", e
         )
         return False
     except Exception:
@@ -104,13 +107,13 @@ def _load_clip_model():
         return False
 
 
-def _compute_tags(filepath: Path) -> list[tuple[str, str, float]]:
+def _compute_tags(filepath: Path) -> list[tuple[str, str, float]] | None:
     """Compute tags for an image using CLIP zero-shot classification.
 
-    Returns list of (tag_name, category, confidence) tuples.
+    Returns list of (tag_name, category, confidence) tuples, or None if model unavailable.
     """
     if not _load_clip_model():
-        return []
+        return None
 
     try:
         import torch
@@ -136,13 +139,23 @@ def _compute_tags(filepath: Path) -> list[tuple[str, str, float]]:
                 similarity = (image_features @ text_features.T).squeeze(0)
                 probs = similarity.softmax(dim=-1).cpu().numpy()
 
+            # Adaptive threshold: multiplier over uniform probability for this category
+            category_threshold = CONFIDENCE_MULTIPLIER / len(labels)
             for i, (label, prob) in enumerate(zip(labels, probs)):
-                if prob >= CONFIDENCE_THRESHOLD:
+                if prob >= category_threshold:
                     all_results.append((label, category, float(prob)))
 
         # Sort by confidence and take top N
         all_results.sort(key=lambda x: x[2], reverse=True)
-        return all_results[:MAX_TAGS_PER_PHOTO]
+        selected = all_results[:MAX_TAGS_PER_PHOTO]
+
+        if selected:
+            tag_names = ", ".join(f"{t[0]}({t[2]:.2f})" for t in selected)
+            logger.debug("CLIP tags for %s: %s", filepath.name, tag_names)
+        else:
+            logger.debug("CLIP: no tags above threshold for %s", filepath.name)
+
+        return selected
 
     except Exception:
         logger.exception("Error computing CLIP tags for %s", filepath)
@@ -180,6 +193,11 @@ async def tag_photo(file_hash: str) -> bool:
 
         tags = await asyncio.to_thread(_compute_tags, filepath)
 
+        # None means model unavailable -- don't mark as tagged so it can be retried
+        if tags is None:
+            logger.warning("CLIP model unavailable, skipping %s (will retry)", file_hash)
+            return False
+
         if tags:
             for tag_name, category, confidence in tags:
                 tag_id = await _ensure_tag(session, tag_name, category)
@@ -201,7 +219,8 @@ async def tag_photo(file_hash: str) -> bool:
         photo.clip_tagged = True
         await session.commit()
 
-        logger.debug("Tagged %s with %d tags", file_hash, len(tags))
+        tag_count = len(tags) if tags else 0
+        logger.info("Tagged %s with %d tags", file_hash[:12], tag_count)
         return True
 
 

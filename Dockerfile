@@ -8,32 +8,31 @@ RUN npm run build
 
 # ---
 
-FROM python:3.12-slim-bookworm
+FROM python:3.11-slim-bookworm
 
-# Install system dependencies including dlib build tools for face_recognition
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        -o Acquire::Retries=3 \
-        -o Acquire::http::Timeout=30 \
-        nginx \
-        libgl1 \
-        libglib2.0-0 \
-        libsm6 \
-        libxext6 \
-        libxrender1 \
-        libgomp1 \
-        cmake \
-        build-essential \
-        libopenblas-dev \
-        liblapack-dev \
+# Install system dependencies:
+#   - build-essential, cmake, g++: needed to compile insightface C++ extensions
+#   - libgl1, libglib2.0-0, etc.: OpenCV and image processing runtime deps
+#   - nginx: reverse proxy for serving frontend + API
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nginx \
+    build-essential \
+    cmake \
+    g++ \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install Python dependencies (core + ML)
+# Copy and install Python dependencies first (better caching)
+# ML deps (insightface, torch, etc.) are mandatory for face/tag detection
 COPY backend/pyproject.toml backend/
-RUN pip install --no-cache-dir -e "backend/[ml]" \
-    || pip install --no-cache-dir -e backend/
+RUN pip install --no-cache-dir -e "backend/[ml]"
 
 # Copy backend code
 COPY backend/ backend/
@@ -44,6 +43,10 @@ COPY --from=frontend-builder /build/frontend/dist /app/frontend/dist
 # Copy nginx config
 COPY nginx/nginx.conf /etc/nginx/sites-enabled/default
 RUN rm -f /etc/nginx/sites-enabled/default.bak
+
+# Remove build tools to reduce image size (runtime deps stay)
+RUN apt-get purge -y --auto-remove build-essential cmake g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create data directories
 RUN mkdir -p /data/db /data/thumbs /data/models /data/faces /data/motion_videos

@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState } from "react";
+import { useEffect, useCallback, useState, useRef } from "react";
 import {
   X,
   Star,
@@ -27,6 +27,9 @@ export function PhotoViewer() {
     setViewerPhoto,
     setViewerIndex,
   } = useStore();
+  
+  // Track if we pushed a history state for this viewer
+  const historyPushed = useRef(false);
   const [detail, setDetail] = useState<PhotoDetail | null>(null);
   const [showInfo, setShowInfo] = useState(false);
   const [isFavorite, setIsFavorite] = useState(false);
@@ -78,16 +81,38 @@ export function PhotoViewer() {
     [closeViewer, canGoPrev, canGoNext, viewerIndex, navigateTo, detail]
   );
 
+  // Handle browser back button to close viewer
   useEffect(() => {
     if (viewerOpen) {
+      // Push a history state when opening viewer
+      if (!historyPushed.current) {
+        window.history.pushState({ viewerOpen: true }, "");
+        historyPushed.current = true;
+      }
+      
       document.addEventListener("keydown", handleKeyDown);
       document.body.style.overflow = "hidden";
+      
+      // Handle back button
+      const handlePopState = () => {
+        if (historyPushed.current) {
+          closeViewer();
+          historyPushed.current = false;
+        }
+      };
+      
+      window.addEventListener("popstate", handlePopState);
+      
+      return () => {
+        document.removeEventListener("keydown", handleKeyDown);
+        document.body.style.overflow = "";
+        window.removeEventListener("popstate", handlePopState);
+      };
+    } else {
+      // Reset history flag when viewer closes
+      historyPushed.current = false;
     }
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-      document.body.style.overflow = "";
-    };
-  }, [viewerOpen, handleKeyDown]);
+  }, [viewerOpen, handleKeyDown, closeViewer]);
 
   const handleFavorite = useCallback(async () => {
     if (!detail) return;
