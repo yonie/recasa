@@ -30,8 +30,12 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3-vl:30b-a3b-instruct"
 
     # Processing
-    workers: int = 1
     batch_size: int = 50
+    
+    # Note: workers is hardcoded to 1 - higher values cause OOM crashes
+    @property
+    def workers(self) -> int:
+        return 1
 
     # Supported file extensions
     photo_extensions: set[str] = {

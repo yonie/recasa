@@ -15,11 +15,11 @@ Runs as a single Docker container. Your photos are mounted read-only. All proces
 - **Reverse geocoding** -- GPS coordinates converted to city/country names (offline)
 - **Locations** -- browse by country and city, drill down to photos
 - **Map view** -- all geotagged photos plotted on OpenStreetMap via Leaflet
-- **CLIP tagging** -- zero-shot scene/object/activity classification (70+ tags across 6 categories)
-- **Face detection** -- dlib-based detection + 128-dim encoding + DBSCAN clustering into persons
+- **AI tagging** -- scene/object/activity classification using Ollama vision models
+- **Face detection** -- insightface-based detection (ONNX Runtime) + 512-dim encoding + DBSCAN clustering into persons
 - **People browser** -- face thumbnails, rename people, merge duplicates
 - **AI captions** -- natural language photo descriptions via Ollama (LLaVA or any vision model)
-- **Full-text search** -- searches file names, locations, tags, captions, and person names
+- **Full-text search** -- searches file paths, file names, locations, tags, captions, and person names
 - **Event detection** -- auto-clusters photos by time proximity and location into named events
 - **Duplicate finder** -- perceptual hashing (pHash/aHash/dHash) with union-find grouping
 - **Large file finder** -- filter by size threshold (1MB to 50MB+)
@@ -27,6 +27,10 @@ Runs as a single Docker container. Your photos are mounted read-only. All proces
 - **Live Photos** -- Apple Live Photos (HEIC+MOV) and Google Motion Photos (embedded MP4) with hover-to-play
 - **File watching** -- detects new photos added to the directory in real-time
 - **Real-time scan progress** -- WebSocket-based progress reporting during indexing
+- **Deep linking** -- URL-based routing for photos, events, people, and locations (bookmarkable & shareable)
+- **Scroll restoration** -- remembers your position when navigating back
+- **Scan cancellation** -- stop a running scan at any time
+- **Tools submenu** -- organized navigation for utilities (duplicates, large files)
 
 ## Quick Start
 
@@ -58,7 +62,6 @@ All configuration is via environment variables (set in `.env`):
 | `OLLAMA_URL` | `http://ollama:11434` | Ollama API URL for AI captioning |
 | `WATCH_INTERVAL` | `30` | Filesystem watch debounce interval (seconds) |
 | `LOG_LEVEL` | `info` | Logging level (`debug`, `info`, `warning`, `error`) |
-| `WORKERS` | `2` | Number of uvicorn workers |
 
 ## Architecture
 
@@ -82,13 +85,11 @@ Browser <---> nginx (:8080)
 Single Docker container running:
 - **nginx** -- serves the React frontend build and proxies `/api` to the backend
 - **FastAPI + uvicorn** -- async Python backend with SQLAlchemy + aiosqlite
-- **Background pipeline** -- processes photos through 9 stages on startup and for new files
+- **Background pipeline** -- processes photos through 10 stages on startup and for new files
 
 ### Processing Pipeline
 
 Each photo goes through these stages (ML stages gracefully skip if dependencies are unavailable):
-
-![Pipeline Status](screenshot2.png)
 
 ![Pipeline Status](screenshot-2.png)
 
@@ -98,9 +99,10 @@ Each photo goes through these stages (ML stages gracefully skip if dependencies 
 4. **Thumbnails** -- multi-resolution WebP thumbnails (200/600/1200px)
 5. **Motion photos** -- extract embedded MP4 from Google Motion Photo JPEGs
 6. **Perceptual hashing** -- pHash/aHash/dHash for duplicate detection
-7. **CLIP tagging** -- zero-shot classification with OpenCLIP ViT-B-32
-8. **Face detection** -- dlib HOG detector + 128-dim encodings + DBSCAN clustering
+7. **AI tagging** -- scene/object classification using Ollama vision models
+8. **Face detection** -- insightface detector (ONNX Runtime) + 512-dim encodings + DBSCAN clustering
 9. **Ollama captioning** -- vision model generates natural language descriptions
+10. **Event detection** -- auto-clusters photos by time and location
 
 ## Supported Formats
 
@@ -118,7 +120,7 @@ For AI-generated captions, run Ollama alongside Recasa:
 # docker-compose.yml already supports this via the OLLAMA_URL env var
 # Just run Ollama separately:
 docker run -d --name ollama -p 11434:11434 ollama/ollama
-docker exec ollama ollama pull llava
+docker exec ollama ollama pull qwen3-vl:30b-a3b-instruct
 ```
 
 Then set `OLLAMA_URL=http://host.docker.internal:11434` in your `.env`.
@@ -127,11 +129,11 @@ Captioning is optional -- if Ollama is unreachable, the pipeline skips it and ev
 
 ## ML Features
 
-The Docker image attempts to install ML dependencies (PyTorch, OpenCLIP, face_recognition, scikit-learn). If the install fails (e.g., on resource-constrained systems), the core app still works -- ML features are skipped gracefully.
+The Docker image attempts to install ML dependencies (insightface, onnxruntime, opencv-python-headless, scikit-learn). If the install fails (e.g., on resource-constrained systems), the core app still works -- ML features are skipped gracefully.
 
 ML features that require these dependencies:
-- CLIP tagging (requires `open-clip-torch`, `torch`)
-- Face detection and clustering (requires `face_recognition`, `scikit-learn`)
+- AI tagging (requires Ollama vision model)
+- Face detection and clustering (requires `insightface`, `onnxruntime`, `scikit-learn`)
 
 Features that work without ML dependencies:
 - Photo browsing, timeline, folders, years
@@ -144,11 +146,11 @@ Features that work without ML dependencies:
 
 ## Tech Stack
 
-**Backend:** Python 3.12, FastAPI, SQLAlchemy 2 (async), aiosqlite, Pillow, pillow-heif, imagehash, watchdog, reverse-geocoder, httpx
+**Backend:** Python 3.11, FastAPI, SQLAlchemy 2 (async), aiosqlite, Pillow, pillow-heif, imagehash, watchdog, reverse-geocoder, httpx
 
 **Frontend:** React 18, TypeScript, Vite 6, TailwindCSS, Zustand, React Router, Leaflet, Lucide icons
 
-**ML (optional):** OpenCLIP, PyTorch, face_recognition (dlib), scikit-learn
+**ML (optional):** insightface, onnxruntime, opencv-python-headless, scikit-learn
 
 **Infrastructure:** Docker, nginx, Ollama (optional sidecar)
 
