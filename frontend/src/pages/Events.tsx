@@ -1,23 +1,31 @@
 import { useEffect, useState, useCallback } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import { api, type EventSummary, type PhotoSummary, thumbnailUrl } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
+import { useScrollRestore } from "../hooks/useScrollRestore";
 import { Loader2, CalendarDays, ArrowLeft, MapPin } from "lucide-react";
 
-export function Events() {
-  const [events, setEvents] = useState<EventSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedEvent, setSelectedEvent] = useState<EventSummary | null>(null);
+// Event detail view (route: /events/:eventId)
+export function EventDetail() {
+  const { eventId } = useParams<{ eventId: string }>();
+  const navigate = useNavigate();
+  const [event, setEvent] = useState<EventSummary | null>(null);
   const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [photosLoading, setPhotosLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const openViewer = useStore((s) => s.openViewer);
 
   useEffect(() => {
     async function load() {
+      if (!eventId) return;
       try {
         setLoading(true);
-        const data = await api.getEvents({ page_size: 100 });
-        setEvents(data);
+        const [eventData, photosData] = await Promise.all([
+          api.getEvent(Number(eventId)),
+          api.getEventPhotos(Number(eventId), { page_size: 200 }),
+        ]);
+        setEvent(eventData);
+        setPhotos(photosData.items);
       } catch {
         // ignore
       } finally {
@@ -25,36 +33,18 @@ export function Events() {
       }
     }
     load();
-  }, []);
-
-  const handleSelectEvent = useCallback(async (event: EventSummary) => {
-    setSelectedEvent(event);
-    setPhotosLoading(true);
-    try {
-      const data = await api.getEventPhotos(event.event_id, { page_size: 200 });
-      setPhotos(data.items);
-    } catch {
-      // ignore
-    } finally {
-      setPhotosLoading(false);
-    }
-  }, []);
-
-  const handleBack = useCallback(() => {
-    setSelectedEvent(null);
-    setPhotos([]);
-  }, []);
+  }, [eventId]);
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary) => {
+    async (photo: PhotoSummary, index: number) => {
       try {
         const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail);
+        openViewer(detail, photos, index);
       } catch {
         // ignore
       }
     },
-    [openViewer]
+    [openViewer, photos]
   );
 
   if (loading) {
@@ -65,45 +55,81 @@ export function Events() {
     );
   }
 
-  // Event photos view
-  if (selectedEvent) {
+  if (!event) {
     return (
-      <div className="overflow-y-auto h-full">
-        <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-          <button
-            onClick={handleBack}
-            className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <div>
-            <h1 className="text-lg font-semibold">{selectedEvent.name}</h1>
-            <div className="flex items-center gap-3 text-xs text-gray-400">
-              {selectedEvent.location && (
-                <span className="flex items-center gap-1">
-                  <MapPin className="w-3 h-3" />
-                  {selectedEvent.location}
-                </span>
-              )}
-              <span>
-                {selectedEvent.photo_count} photo{selectedEvent.photo_count !== 1 ? "s" : ""}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {photosLoading ? (
-          <div className="flex items-center justify-center h-64">
-            <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-          </div>
-        ) : (
-          <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
-        )}
+      <div className="flex items-center justify-center h-64 text-gray-400">
+        <p>Event not found</p>
       </div>
     );
   }
 
-  // Events list
+  return (
+    <div className="overflow-y-auto h-full">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
+        <button
+          onClick={() => navigate("/events")}
+          className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <div>
+          <h1 className="text-lg font-semibold">{event.name}</h1>
+          <div className="flex items-center gap-3 text-xs text-gray-400">
+            {event.location && (
+              <span className="flex items-center gap-1">
+                <MapPin className="w-3 h-3" />
+                {event.location}
+              </span>
+            )}
+            <span>
+              {event.photo_count} photo{event.photo_count !== 1 ? "s" : ""}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
+    </div>
+  );
+}
+
+// Events list view (route: /events)
+export function Events() {
+  const [events, setEvents] = useState<EventSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+  const { scrollRef, restoreScroll } = useScrollRestore("events");
+
+  useEffect(() => {
+    async function load() {
+      try {
+        setLoading(true);
+        const data = await api.getEvents({ page_size: 1000 });
+        setEvents(data);
+      } catch {
+        // ignore
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, []);
+
+  // Restore scroll position after events load
+  useEffect(() => {
+    if (!loading && events.length > 0) {
+      restoreScroll();
+    }
+  }, [loading, events.length, restoreScroll]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
+      </div>
+    );
+  }
+
   if (events.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-2">
@@ -115,7 +141,7 @@ export function Events() {
   }
 
   return (
-    <div className="overflow-y-auto h-full">
+    <div ref={scrollRef} className="overflow-y-auto h-full">
       <div className="px-4 py-3 border-b border-gray-100">
         <h1 className="text-lg font-semibold">
           Events
@@ -129,14 +155,14 @@ export function Events() {
         {events.map((event) => (
           <button
             key={event.event_id}
-            onClick={() => handleSelectEvent(event)}
+            onClick={() => navigate(`/events/${event.event_id}`)}
             className="bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow border border-gray-100 text-left group"
           >
             {/* Cover photo */}
             <div className="aspect-video bg-gray-100 relative overflow-hidden">
               {event.cover_photo ? (
                 <img
-                  src={thumbnailUrl(event.cover_photo.file_hash, 600)}
+                  src={thumbnailUrl(event.cover_photo.file_hash, 1200)}
                   alt=""
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                 />

@@ -50,7 +50,9 @@ class Worker:
         """Process EXIF extraction stage."""
         filepath = await self._get_file_path(file_hash)
         if not filepath:
+            logger.warning("EXIF: no file path for %s, skipping but continuing pipeline", file_hash)
             await self.queue.mark_failed(file_hash)
+            await self.pipeline.route_to_next(file_hash, QueueType.EXIF)
             return False
 
         await self.queue.mark_processing(file_hash, str(filepath))
@@ -68,7 +70,10 @@ class Worker:
             await self.pipeline.route_to_next(file_hash, QueueType.EXIF)
             return True
         else:
+            # EXIF failure is not critical -- still proceed through pipeline
+            logger.warning("EXIF extraction failed for %s, continuing pipeline", file_hash)
             await self.queue.mark_failed(file_hash)
+            await self.pipeline.route_to_next(file_hash, QueueType.EXIF)
             return False
 
     async def _process_geocoding(self, file_hash: str) -> bool:
@@ -97,7 +102,9 @@ class Worker:
         """Process thumbnail generation stage."""
         filepath = await self._get_file_path(file_hash)
         if not filepath:
+            logger.warning("Thumbnails: no file path for %s, skipping but continuing pipeline", file_hash)
             await self.queue.mark_failed(file_hash)
+            await self.pipeline.route_to_next(file_hash, QueueType.THUMBNAILS)
             return False
 
         await self.queue.mark_processing(file_hash, str(filepath))
@@ -115,14 +122,19 @@ class Worker:
             await self.pipeline.route_to_next(file_hash, QueueType.THUMBNAILS)
             return True
         else:
+            # Thumbnail failure is not critical -- still proceed through pipeline
+            logger.warning("Thumbnail generation failed for %s, continuing pipeline", file_hash)
             await self.queue.mark_failed(file_hash)
+            await self.pipeline.route_to_next(file_hash, QueueType.THUMBNAILS)
             return False
 
     async def _process_motion_photos(self, file_hash: str) -> bool:
         """Process motion photo extraction stage."""
         filepath = await self._get_file_path(file_hash)
         if not filepath:
+            logger.warning("Motion photos: no file path for %s, skipping but continuing pipeline", file_hash)
             await self.queue.mark_failed(file_hash)
+            await self.pipeline.route_to_next(file_hash, QueueType.MOTION_PHOTOS)
             return False
 
         await self.queue.mark_processing(file_hash, str(filepath))
@@ -153,7 +165,10 @@ class Worker:
             await self.pipeline.route_to_next(file_hash, QueueType.HASHING)
             return True
         else:
+            # Hashing failure is not critical -- still proceed through pipeline
+            logger.warning("Perceptual hashing failed for %s, continuing pipeline", file_hash)
             await self.queue.mark_failed(file_hash)
+            await self.pipeline.route_to_next(file_hash, QueueType.HASHING)
             return False
 
     async def _process_faces(self, file_hash: str) -> bool:
@@ -375,7 +390,7 @@ class EventDetectionWorker:
             self._task.cancel()
 
 
-async def start_pipeline_workers(pipeline: Pipeline, workers_per_queue: int = 2) -> list[Worker]:
+async def start_pipeline_workers(pipeline: Pipeline, workers_per_queue: int = 1) -> list[Worker]:
     """Start workers for all queues."""
     workers = []
 

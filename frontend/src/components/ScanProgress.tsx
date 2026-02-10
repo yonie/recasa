@@ -1,10 +1,16 @@
+import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { useStore } from "../store/useStore";
 
 export function ScanProgress() {
   const scanStatus = useStore((s) => s.scanStatus);
+  const [cancelling, setCancelling] = useState(false);
 
-  if (!scanStatus?.is_scanning) return null;
+  if (!scanStatus?.is_scanning) {
+    // Reset cancelling state when scan is no longer running
+    if (cancelling) setCancelling(false);
+    return null;
+  }
 
   const overallProgress =
     scanStatus.total_files > 0
@@ -41,6 +47,15 @@ export function ScanProgress() {
     }
   };
 
+  const handleCancel = async () => {
+    setCancelling(true);
+    try {
+      await fetch("/api/scan/cancel", { method: "POST" });
+    } catch {
+      // ignore
+    }
+  };
+
   const info = getPhaseInfo();
 
   return (
@@ -67,8 +82,15 @@ export function ScanProgress() {
           <span className="text-xs tabular-nums">{phaseProgress}%</span>
         </div>
       )}
+      <button
+        onClick={handleCancel}
+        disabled={cancelling}
+        className="ml-2 px-2.5 py-1 rounded-md text-xs font-medium border border-gray-300 hover:bg-red-50 hover:border-red-300 hover:text-red-600 text-gray-500 transition-colors disabled:opacity-50 shrink-0"
+      >
+        {cancelling ? "Stopping..." : "Stop"}
+      </button>
       {scanStatus.current_file && (
-        <span className="text-xs text-gray-400 max-w-48 truncate ml-2 hidden sm:inline">
+        <span className="text-xs text-gray-400 max-w-48 truncate hidden sm:inline">
           {scanStatus.current_file.split(/[\\/]/).pop()}
         </span>
       )}

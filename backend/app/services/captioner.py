@@ -173,20 +173,65 @@ async def _generate_tags(image_base64: str) -> list[str] | None:
     return None
 
 
-async def _ensure_tag(session, name: str) -> int:
-    """Get or create a tag, returning its tag_id."""
-    from backend.app.models import Tag
-    result = await session.execute(
-        select(Tag).where(Tag.name == name)
-    )
-    tag = result.scalar_one_or_none()
-    if tag:
-        return tag.tag_id
+async def _ensure_tag_ids(tag_names: list[str]) -> dict[str, int]:
+    """Get or create tags in a dedicated session, returning a name->tag_id mapping.
 
-    tag = Tag(name=name)
-    session.add(tag)
-    await session.flush()
-    return tag.tag_id
+    Uses a separate session to isolate tag creation from the caller's transaction,
+    so that IntegrityError retries don't roll back unrelated pending changes.
+    """
+    from sqlalchemy.exc import IntegrityError, OperationalError
+    from backend.app.models import Tag
+
+    result_map: dict[str, int] = {}
+
+    async with async_session() as tag_session:
+        for name in tag_names:
+            # Lookup first (read-only, no lock)
+            result = await tag_session.execute(
+                select(Tag).where(Tag.name == name)
+            )
+            tag = result.scalar_one_or_none()
+            if tag:
+                result_map[name] = tag.tag_id
+                continue
+
+            # Create with retry for concurrent inserts
+            for attempt in range(3):
+                try:
+                    tag = Tag(name=name)
+                    tag_session.add(tag)
+                    await tag_session.flush()
+                    result_map[name] = tag.tag_id
+                    break
+                except IntegrityError:
+                    await tag_session.rollback()
+                    result = await tag_session.execute(
+                        select(Tag).where(Tag.name == name)
+                    )
+                    tag = result.scalar_one_or_none()
+                    if tag:
+                        result_map[name] = tag.tag_id
+                        break
+                except OperationalError:
+                    await tag_session.rollback()
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    result = await tag_session.execute(
+                        select(Tag).where(Tag.name == name)
+                    )
+                    tag = result.scalar_one_or_none()
+                    if tag:
+                        result_map[name] = tag.tag_id
+                        break
+
+        # Commit any newly created tags
+        try:
+            await tag_session.commit()
+        except OperationalError:
+            logger.warning("Failed to commit new tags, retrying...")
+            await asyncio.sleep(1)
+            await tag_session.commit()
+
+    return result_map
 
 
 async def caption_photo(file_hash: str) -> bool:
@@ -231,9 +276,15 @@ async def caption_photo(file_hash: str) -> bool:
         # Generate and store tags
         tag_list = await _generate_tags(image_base64)
         if tag_list:
+            # Resolve tag names -> IDs in a separate session to avoid
+            # rollback contamination if concurrent tag creation races.
+            tag_id_map = await _ensure_tag_ids(tag_list)
+
             from backend.app.models import PhotoTag
             for tag_name in tag_list:
-                tag_id = await _ensure_tag(session, tag_name)
+                tag_id = tag_id_map.get(tag_name)
+                if tag_id is None:
+                    continue
                 # Check if association exists
                 existing = await session.execute(
                     select(PhotoTag).where(

@@ -95,6 +95,7 @@ async def list_photos(
         query = query.where(
             or_(
                 Photo.file_name.ilike(search_term),
+                Photo.file_path.ilike(search_term),
                 Photo.location_city.ilike(search_term),
                 Photo.location_country.ilike(search_term),
                 Photo.location_address.ilike(search_term),

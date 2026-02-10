@@ -30,6 +30,16 @@ async def trigger_scan():
     return {"status": "scan_started"}
 
 
+@router.post("/cancel")
+async def cancel_scan():
+    """Cancel the currently running scan."""
+    if not scan_state.is_scanning:
+        return {"status": "not_scanning"}
+
+    scan_state.cancel_requested = True
+    return {"status": "cancel_requested"}
+
+
 @router.post("/clear-index")
 async def clear_index():
     """Clear all indexed data and reset the pipeline. Use with caution!"""

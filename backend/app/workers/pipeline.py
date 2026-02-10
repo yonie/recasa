@@ -7,7 +7,11 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifiedEvent
 
+from sqlalchemy import select, or_
+
 from backend.app.config import settings
+from backend.app.database import async_session
+from backend.app.models import Photo
 from backend.app.services.scanner import scan_directory, index_single_file, is_supported_photo
 from backend.app.workers.queues import pipeline, QueueType, QueueStats
 
@@ -19,6 +23,7 @@ class ScanState:
 
     def __init__(self):
         self.is_scanning: bool = False
+        self.cancel_requested: bool = False
         self.total_files: int = 0
         self.processed_files: int = 0
         self.current_file: str | None = None
@@ -67,6 +72,51 @@ class ScanState:
 # Global scan state
 scan_state = ScanState()
 
+# Batch size for resuming incomplete files (keep small to limit memory)
+_RESUME_BATCH_SIZE = 50
+
+
+async def _resume_incomplete_files() -> int:
+    """Find photos that are indexed but not fully processed and feed them to the pipeline.
+
+    Queries the DB for photos missing at least one processing flag, then feeds
+    them to the pipeline in small batches so memory usage stays bounded.
+    Returns the number of files resumed.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(Photo.file_hash, Photo.file_path).where(
+                or_(
+                    Photo.exif_extracted == False,  # noqa: E712
+                    Photo.thumbnail_generated == False,  # noqa: E712
+                    Photo.perceptual_hashed == False,  # noqa: E712
+                    Photo.faces_detected == False,  # noqa: E712
+                    Photo.ollama_captioned == False,  # noqa: E712
+                )
+            )
+        )
+        incomplete = result.all()
+
+    if not incomplete:
+        return 0
+
+    resumed = 0
+    for i in range(0, len(incomplete), _RESUME_BATCH_SIZE):
+        batch = incomplete[i : i + _RESUME_BATCH_SIZE]
+        for file_hash, file_path in batch:
+            # Skip files already known to the pipeline in this session
+            if pipeline.queues[QueueType.DISCOVERY].is_queued(file_hash):
+                continue
+            full_path = settings.photos_dir / file_path
+            if full_path.exists():
+                await pipeline.add_file(file_hash, str(full_path))
+                resumed += 1
+        # Yield to the event loop between batches so workers can make progress
+        # and free memory before we enqueue more
+        await asyncio.sleep(0.5)
+
+    return resumed
+
 
 async def run_initial_scan() -> dict:
     """Run the initial directory scan and feed discovered files to the pipeline.
@@ -77,11 +127,15 @@ async def run_initial_scan() -> dict:
     global scan_state
 
     scan_state.is_scanning = True
+    scan_state.cancel_requested = False
     scan_state.phase = "discovery"
     scan_state.phase_progress = 0
     scan_state.phase_total = 0
 
-    # Reset pipeline counters for a fresh scan
+    # Reset pipeline counters and tracking sets for a fresh scan.
+    # Each worker stage checks DB flags before doing actual work, so
+    # clearing _processed is safe — it just means a file might enter
+    # the queue again, but the worker will skip it after the DB check.
     pipeline._total_discovered = 0
     pipeline._completed_time = None
     for qtype in QueueType:
@@ -101,13 +155,25 @@ async def run_initial_scan() -> dict:
         await scan_state.notify()
 
     try:
-        stats = await scan_directory(progress_callback=progress_callback)
-
-        # Add only NEW files to the pipeline
-        discovered = stats.get("discovered_files", {})
-        logger.info("Feeding %d discovered files to pipeline", len(discovered))
-        for file_hash, file_path in discovered.items():
+        async def on_file_discovered(file_hash: str, file_path: str):
+            """Feed files to the pipeline as soon as they are indexed."""
             await pipeline.add_file(file_hash, file_path)
+
+        stats = await scan_directory(
+            progress_callback=progress_callback,
+            cancel_check=lambda: scan_state.cancel_requested,
+            on_file_discovered=on_file_discovered,
+        )
+
+        discovered = stats.get("discovered_files", {})
+        logger.info("Scan complete: %d new/updated files fed to pipeline", len(discovered))
+
+        # Resume partially-processed files that weren't picked up by the scan
+        # (e.g. files indexed in a prior run but not fully processed).
+        # Feed them in small batches to avoid overwhelming memory.
+        resumed = await _resume_incomplete_files()
+        if resumed:
+            logger.info("Resumed %d partially-processed files", resumed)
 
         return stats
 

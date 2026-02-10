@@ -75,7 +75,21 @@ def detect_google_motion_photo(filepath: Path) -> bool:
         return False
 
 
-async def scan_directory(progress_callback=None) -> dict:
+def _needs_pipeline_processing(photo: Photo) -> bool:
+    """Check if a photo still needs any pipeline processing.
+
+    Returns True if any processing stage has not been completed yet.
+    """
+    return not all([
+        photo.exif_extracted,
+        photo.thumbnail_generated,
+        photo.perceptual_hashed,
+        photo.faces_detected,
+        photo.ollama_captioned,
+    ])
+
+
+async def scan_directory(progress_callback=None, cancel_check=None, on_file_discovered=None) -> dict:
     """Scan the photos directory and index all photos.
 
     Returns:
@@ -104,14 +118,26 @@ async def scan_directory(progress_callback=None) -> dict:
 
     # Process in batches
     batch_size = settings.batch_size
+    cancelled = False
     for i in range(0, len(photo_files), batch_size):
+        if cancel_check and cancel_check():
+            logger.info("Scan cancelled by user")
+            cancelled = True
+            break
         batch = photo_files[i : i + batch_size]
         async with async_session() as session:
+            # Track which files need pipeline processing (determined after commit)
+            pipeline_candidates: list[tuple[str, str]] = []
+
             for filepath in batch:
                 try:
                     file_hash = await _index_photo(session, filepath, stats)
                     if file_hash:
                         discovered[file_hash] = str(filepath)
+                        if on_file_discovered:
+                            photo = await session.get(Photo, file_hash)
+                            if photo and _needs_pipeline_processing(photo):
+                                pipeline_candidates.append((file_hash, str(filepath)))
                 except Exception:
                     logger.exception("Error indexing %s", filepath)
                     stats["errors"] += 1
@@ -125,10 +151,17 @@ async def scan_directory(progress_callback=None) -> dict:
 
             await session.commit()
 
+        # Feed files to the pipeline AFTER the batch has been committed to the DB,
+        # so that pipeline workers can find the Photo rows in their own sessions.
+        if on_file_discovered:
+            for file_hash, file_path in pipeline_candidates:
+                await on_file_discovered(file_hash, file_path)
+
     stats["discovered_files"] = discovered
 
-    # Clean up photos whose files no longer exist
-    await _cleanup_removed_files()
+    # Clean up photos whose files no longer exist (skip if cancelled)
+    if not cancelled:
+        await _cleanup_removed_files()
 
     logger.info(
         "Scan complete: %d total, %d new, %d updated, %d skipped, %d errors",
@@ -160,9 +193,9 @@ async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> st
         # Path exists - check if photo was modified
         existing_photo = await session.get(Photo, existing_path.file_hash)
         if existing_photo and existing_photo.file_size == file_size:
-            # Check mtime if available
-            if existing_photo.file_modified and existing_photo.file_modified.timestamp() == file_mtime:
-                # Photo unchanged - just mark as skipped
+            # Check mtime if available (use 1-second tolerance for filesystem precision)
+            if existing_photo.file_modified and abs(existing_photo.file_modified.timestamp() - file_mtime) < 1.0:
+                # Photo unchanged - skip entirely
                 stats["skipped"] += 1
                 return None
             # Size matches but mtime different - will update file_modified below

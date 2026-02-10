@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import L from "leaflet";
 import { api, type CountryCount, type CityCount, type PhotoSummary, type MapPoint, thumbnailUrl } from "../api/client";
@@ -38,21 +39,161 @@ function createClusterIcon(count: number): L.DivIcon {
   });
 }
 
-type ViewMode = "countries" | "cities" | "photos" | "map";
-
-export function Locations() {
-  const [countries, setCountries] = useState<CountryCount[]>([]);
-  const [cities, setCities] = useState<CityCount[]>([]);
+// Location city photos view (route: /locations/:country/:city)
+export function LocationCityPhotos() {
+  const { country, city } = useParams<{ country: string; city: string }>();
+  const navigate = useNavigate();
   const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [photosTotal, setPhotosTotal] = useState(0);
-  const [mapPoints, setMapPoints] = useState<MapPoint[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [viewMode, setViewMode] = useState<ViewMode>("map");
-  const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
-  const [selectedCity, setSelectedCity] = useState<string | null>(null);
   const openViewer = useStore((s) => s.openViewer);
 
-  // Load countries and map points
+  useEffect(() => {
+    async function load() {
+      if (!country || !city) return;
+      try {
+        setLoading(true);
+        const params: Record<string, string | number> = { page_size: 200 };
+        params.country = decodeURIComponent(country);
+        params.city = decodeURIComponent(city);
+        const data = await api.getLocationPhotos(params);
+        setPhotos(data.items);
+        setTotal(data.total);
+      } catch {
+        // ignore
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [country, city]);
+
+  const handlePhotoClick = useCallback(
+    async (photo: PhotoSummary, index: number) => {
+      try {
+        const detail = await api.getPhoto(photo.file_hash);
+        openViewer(detail, photos, index);
+      } catch {
+        // ignore
+      }
+    },
+    [openViewer, photos]
+  );
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
+      </div>
+    );
+  }
+
+  const decodedCountry = country ? decodeURIComponent(country) : "";
+  const decodedCity = city ? decodeURIComponent(city) : "";
+
+  return (
+    <div className="overflow-y-auto h-full">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
+        <button
+          onClick={() => navigate(-1)}
+          className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <MapPin className="w-5 h-5 text-gray-400" />
+        <h1 className="text-lg font-semibold">
+          {decodedCity}{decodedCountry ? `, ${decodedCountry}` : ""}
+          <span className="ml-2 text-gray-400 font-normal text-sm">
+            {total} photo{total !== 1 ? "s" : ""}
+          </span>
+        </h1>
+      </div>
+      <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
+    </div>
+  );
+}
+
+// Location country cities view (route: /locations/:country)
+export function LocationCountryCities() {
+  const { country } = useParams<{ country: string }>();
+  const navigate = useNavigate();
+  const [cities, setCities] = useState<CityCount[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      if (!country) return;
+      try {
+        setLoading(true);
+        const data = await api.getCities(decodeURIComponent(country));
+        setCities(data);
+      } catch {
+        // ignore
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [country]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
+      </div>
+    );
+  }
+
+  const decodedCountry = country ? decodeURIComponent(country) : "";
+
+  return (
+    <div className="overflow-y-auto h-full">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
+        <button
+          onClick={() => navigate(-1)}
+          className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <Globe className="w-5 h-5 text-gray-400" />
+        <h1 className="text-lg font-semibold">
+          {decodedCountry}
+          <span className="ml-2 text-gray-400 font-normal text-sm">
+            {cities.length} cit{cities.length !== 1 ? "ies" : "y"}
+          </span>
+        </h1>
+      </div>
+
+      <div className="divide-y divide-gray-50">
+        {cities.map((city) => (
+          <button
+            key={`${city.city}-${city.country}`}
+            onClick={() => navigate(`/locations/${encodeURIComponent(decodedCountry)}/${encodeURIComponent(city.city)}`)}
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <MapPin className="w-4 h-4 text-gray-400" />
+              <span className="text-sm font-medium">{city.city}</span>
+            </div>
+            <span className="text-sm text-gray-400">
+              {city.count} photo{city.count !== 1 ? "s" : ""}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Locations main view with map/countries toggle (route: /locations)
+export function Locations() {
+  const [countries, setCountries] = useState<CountryCount[]>([]);
+  const [mapPoints, setMapPoints] = useState<MapPoint[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const viewMode = (searchParams.get("view") as "map" | "countries") || "map";
+  const navigate = useNavigate();
+
   useEffect(() => {
     async function load() {
       try {
@@ -72,146 +213,25 @@ export function Locations() {
     load();
   }, []);
 
-  const handleSelectCountry = useCallback(async (country: string) => {
-    setSelectedCountry(country);
-    setViewMode("cities");
-    setLoading(true);
-    try {
-      const data = await api.getCities(country);
-      setCities(data);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const handleSelectCity = useCallback(
-    async (city: string) => {
-      setSelectedCity(city);
-      setViewMode("photos");
-      setLoading(true);
-      try {
-        const params: Record<string, string | number> = { page_size: 200 };
-        if (selectedCountry) params.country = selectedCountry;
-        if (city) params.city = city;
-        const data = await api.getLocationPhotos(params);
-        setPhotos(data.items);
-        setPhotosTotal(data.total);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    },
-    [selectedCountry]
-  );
-
-  const handleBack = useCallback(() => {
-    if (viewMode === "photos") {
-      setViewMode("cities");
-      setSelectedCity(null);
-      setPhotos([]);
-    } else if (viewMode === "cities") {
-      setViewMode("countries");
-      setSelectedCountry(null);
-      setCities([]);
-    } else if (viewMode === "map") {
-      setViewMode("countries");
-    }
-  }, [viewMode]);
-
-  const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer]
-  );
+  const setViewMode = (mode: "map" | "countries") => {
+    setSearchParams({ view: mode });
+  };
 
   const handleMarkerClick = useCallback(
     (city: string | null, country: string | null) => {
-      if (city) {
-        setSelectedCountry(country);
-        handleSelectCity(city);
+      if (city && country) {
+        navigate(`/locations/${encodeURIComponent(country)}/${encodeURIComponent(city)}`);
+      } else if (country) {
+        navigate(`/locations/${encodeURIComponent(country)}`);
       }
     },
-    [handleSelectCity]
+    [navigate]
   );
 
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-      </div>
-    );
-  }
-
-  // Photos for a city
-  if (viewMode === "photos" && selectedCity) {
-    return (
-      <div className="overflow-y-auto h-full">
-        <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-          <button
-            onClick={handleBack}
-            className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <MapPin className="w-5 h-5 text-gray-400" />
-          <h1 className="text-lg font-semibold">
-            {selectedCity}{selectedCountry ? `, ${selectedCountry}` : ""}
-            <span className="ml-2 text-gray-400 font-normal text-sm">
-              {photosTotal} photo{photosTotal !== 1 ? "s" : ""}
-            </span>
-          </h1>
-        </div>
-        <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
-      </div>
-    );
-  }
-
-  // Cities for a country
-  if (viewMode === "cities" && selectedCountry) {
-    return (
-      <div className="overflow-y-auto h-full">
-        <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-          <button
-            onClick={handleBack}
-            className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <Globe className="w-5 h-5 text-gray-400" />
-          <h1 className="text-lg font-semibold">
-            {selectedCountry}
-            <span className="ml-2 text-gray-400 font-normal text-sm">
-              {cities.length} cit{cities.length !== 1 ? "ies" : "y"}
-            </span>
-          </h1>
-        </div>
-
-        <div className="divide-y divide-gray-50">
-          {cities.map((city) => (
-            <button
-              key={`${city.city}-${city.country}`}
-              onClick={() => handleSelectCity(city.city)}
-              className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
-            >
-              <div className="flex items-center gap-3">
-                <MapPin className="w-4 h-4 text-gray-400" />
-                <span className="text-sm font-medium">{city.city}</span>
-              </div>
-              <span className="text-sm text-gray-400">
-                {city.count} photo{city.count !== 1 ? "s" : ""}
-              </span>
-            </button>
-          ))}
-        </div>
       </div>
     );
   }
@@ -223,12 +243,6 @@ export function Locations() {
         <div className="h-full flex flex-col">
           <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <button
-                onClick={handleBack}
-                className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-              >
-                <ArrowLeft className="w-5 h-5" />
-              </button>
               <Map className="w-5 h-5 text-gray-400" />
               <h1 className="text-lg font-semibold">Map</h1>
             </div>
@@ -264,12 +278,6 @@ export function Locations() {
       <div className="h-full flex flex-col">
         <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <button
-              onClick={handleBack}
-              className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
             <Map className="w-5 h-5 text-gray-400" />
             <h1 className="text-lg font-semibold">Map</h1>
           </div>
@@ -326,7 +334,7 @@ export function Locations() {
                       onClick={() => handleMarkerClick(point.city, point.country)}
                       className="text-xs text-blue-500 hover:text-blue-700 mt-1"
                     >
-                      View all photos →
+                      View all photos
                     </button>
                   </div>
                 </Popup>
@@ -387,7 +395,7 @@ export function Locations() {
         {countries.map((country) => (
           <button
             key={country.country}
-            onClick={() => handleSelectCountry(country.country)}
+            onClick={() => navigate(`/locations/${encodeURIComponent(country.country)}`)}
             className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
           >
             <div className="flex items-center gap-3">

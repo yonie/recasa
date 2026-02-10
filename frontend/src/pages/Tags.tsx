@@ -1,16 +1,91 @@
 import { useEffect, useState, useCallback } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import { api, type TagCount, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
+import { useScrollRestore } from "../hooks/useScrollRestore";
 import { Loader2, Tag, ArrowLeft } from "lucide-react";
 
+// Tag detail view (route: /tags/:tagId)
+export function TagDetail() {
+  const { tagId } = useParams<{ tagId: string }>();
+  const navigate = useNavigate();
+  const [tag, setTag] = useState<TagCount | null>(null);
+  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const openViewer = useStore((s) => s.openViewer);
+
+  useEffect(() => {
+    async function load() {
+      if (!tagId) return;
+      try {
+        setLoading(true);
+        // Load tag info from the tags list and photos for this tag
+        const [tagsData, photosData] = await Promise.all([
+          api.getTags(),
+          api.getTagPhotos(Number(tagId), { page_size: 200 }),
+        ]);
+        const found = tagsData.find((t) => t.tag_id === Number(tagId));
+        if (found) setTag(found);
+        setPhotos(photosData.items);
+      } catch {
+        // ignore
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [tagId]);
+
+  const handlePhotoClick = useCallback(
+    async (photo: PhotoSummary, index: number) => {
+      try {
+        const detail = await api.getPhoto(photo.file_hash);
+        openViewer(detail, photos, index);
+      } catch {
+        // ignore
+      }
+    },
+    [openViewer, photos]
+  );
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-y-auto h-full">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
+        <button
+          onClick={() => navigate("/tags")}
+          className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <Tag className="w-5 h-5 text-gray-400" />
+        <h1 className="text-lg font-semibold">
+          {tag?.name || "Tag"}
+          <span className="ml-2 text-gray-400 font-normal text-sm">
+            {tag ? `${tag.count} photo${tag.count !== 1 ? "s" : ""}` : ""}
+          </span>
+        </h1>
+      </div>
+
+      <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
+    </div>
+  );
+}
+
+// Tags list view (route: /tags)
 export function Tags() {
   const [tags, setTags] = useState<TagCount[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedTag, setSelectedTag] = useState<TagCount | null>(null);
-  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [photosLoading, setPhotosLoading] = useState(false);
-  const openViewer = useStore((s) => s.openViewer);
+  const navigate = useNavigate();
+  const { scrollRef, restoreScroll } = useScrollRestore("tags");
 
   useEffect(() => {
     async function load() {
@@ -27,35 +102,11 @@ export function Tags() {
     load();
   }, []);
 
-  const handleSelectTag = useCallback(async (tag: TagCount) => {
-    setSelectedTag(tag);
-    setPhotosLoading(true);
-    try {
-      const data = await api.getTagPhotos(tag.tag_id, { page_size: 200 });
-      setPhotos(data.items);
-    } catch {
-      // ignore
-    } finally {
-      setPhotosLoading(false);
+  useEffect(() => {
+    if (!loading && tags.length > 0) {
+      restoreScroll();
     }
-  }, []);
-
-  const handleBack = useCallback(() => {
-    setSelectedTag(null);
-    setPhotos([]);
-  }, []);
-
-  const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer]
-  );
+  }, [loading, tags.length, restoreScroll]);
 
   if (loading) {
     return (
@@ -65,38 +116,6 @@ export function Tags() {
     );
   }
 
-  // Tag photo view
-  if (selectedTag) {
-    return (
-      <div className="overflow-y-auto h-full">
-        <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-          <button
-            onClick={handleBack}
-            className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <Tag className="w-5 h-5 text-gray-400" />
-          <h1 className="text-lg font-semibold">
-            {selectedTag.name}
-            <span className="ml-2 text-gray-400 font-normal text-sm">
-              {selectedTag.count} photo{selectedTag.count !== 1 ? "s" : ""}
-            </span>
-          </h1>
-        </div>
-
-        {photosLoading ? (
-          <div className="flex items-center justify-center h-64">
-            <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-          </div>
-        ) : (
-          <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
-        )}
-      </div>
-    );
-  }
-
-  // Tag list
   if (tags.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-2">
@@ -108,7 +127,7 @@ export function Tags() {
   }
 
   return (
-    <div className="overflow-y-auto h-full">
+    <div ref={scrollRef} className="overflow-y-auto h-full">
       <div className="px-4 py-3 border-b border-gray-100">
         <h1 className="text-lg font-semibold">
           Tags
@@ -119,17 +138,47 @@ export function Tags() {
       </div>
 
       <div className="flex flex-wrap gap-2 p-4">
-        {tags.map((tag) => (
-          <button
-            key={tag.tag_id}
-            onClick={() => handleSelectTag(tag)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors text-sm"
-          >
-            <span className="font-medium text-gray-700">{tag.name}</span>
-            <span className="text-xs text-gray-400">{tag.count}</span>
-          </button>
-        ))}
+        {tags.map((tag) => {
+          const color = getTagColor(tag.name);
+          return (
+            <button
+              key={tag.tag_id}
+              onClick={() => navigate(`/tags/${tag.tag_id}`)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors text-sm"
+              style={{
+                backgroundColor: color.bg,
+                color: color.text,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = color.bgHover;
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = color.bg;
+              }}
+            >
+              <span className="font-medium">{tag.name}</span>
+              <span className="text-xs" style={{ opacity: 0.6 }}>{tag.count}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
+}
+
+/**
+ * Deterministic string-to-color: hashes the tag name to pick a unique
+ * hue, then returns a light background / dark text pair suitable for pills.
+ */
+function getTagColor(name: string): { bg: string; bgHover: string; text: string } {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
+  }
+  const hue = ((hash % 360) + 360) % 360;
+  return {
+    bg: `hsl(${hue}, 55%, 93%)`,
+    bgHover: `hsl(${hue}, 55%, 87%)`,
+    text: `hsl(${hue}, 60%, 32%)`,
+  };
 }

@@ -30,7 +30,7 @@ def _photo_to_summary(photo: Photo) -> PhotoSummary:
 @router.get("", response_model=list[EventSummary])
 async def list_events(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(50, ge=1, le=1000),
     session: AsyncSession = Depends(get_session),
 ):
     """List all events, sorted by start date descending."""

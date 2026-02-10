@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3-vl:30b-a3b-instruct"
 
     # Processing
-    workers: int = 2
+    workers: int = 1
     batch_size: int = 50
 
     # Supported file extensions

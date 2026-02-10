@@ -1,4 +1,5 @@
-import { NavLink } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { NavLink, useLocation } from "react-router-dom";
 import {
   ImageIcon,
   FolderTree,
@@ -12,6 +13,9 @@ import {
   Map,
   Tag,
   Activity,
+  Wrench,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { clsx } from "clsx";
 import { useStore } from "../store/useStore";
@@ -25,13 +29,23 @@ const navItems = [
   { to: "/events", icon: CalendarDays, label: "Events" },
   { to: "/locations", icon: Map, label: "Locations" },
   { to: "/tags", icon: Tag, label: "Tags" },
+];
+
+const toolItems = [
   { to: "/duplicates", icon: Copy, label: "Duplicates" },
   { to: "/large-files", icon: HardDrive, label: "Large Files" },
-  { to: "/pipeline", icon: Activity, label: "Pipeline" },
 ];
 
 export function Sidebar() {
   const stats = useStore((s) => s.stats);
+  const location = useLocation();
+  const isToolRoute = toolItems.some((item) => location.pathname.startsWith(item.to));
+  const [toolsOpen, setToolsOpen] = useState(isToolRoute);
+
+  // Auto-open Tools when navigating to a tool route
+  useEffect(() => {
+    if (isToolRoute && !toolsOpen) setToolsOpen(true);
+  }, [isToolRoute]);
 
   return (
     <aside className="w-64 border-r border-gray-200 bg-gray-50 flex flex-col h-full">
@@ -57,6 +71,46 @@ export function Sidebar() {
               <span>{item.label}</span>
             </NavLink>
           ))}
+
+          {/* Tools submenu */}
+          <button
+            onClick={() => setToolsOpen(!toolsOpen)}
+            className="sidebar-link w-full"
+          >
+            <Wrench className="w-5 h-5 flex-shrink-0" />
+            <span className="flex-1 text-left">Tools</span>
+            {toolsOpen ? (
+              <ChevronDown className="w-4 h-4 text-gray-400" />
+            ) : (
+              <ChevronRight className="w-4 h-4 text-gray-400" />
+            )}
+          </button>
+          {toolsOpen && (
+            <div className="ml-3 space-y-0.5">
+              {toolItems.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={({ isActive }) =>
+                    clsx("sidebar-link", isActive && "active")
+                  }
+                >
+                  <item.icon className="w-5 h-5 flex-shrink-0" />
+                  <span>{item.label}</span>
+                </NavLink>
+              ))}
+            </div>
+          )}
+
+          <NavLink
+            to="/pipeline"
+            className={({ isActive }) =>
+              clsx("sidebar-link", isActive && "active")
+            }
+          >
+            <Activity className="w-5 h-5 flex-shrink-0" />
+            <span>Pipeline</span>
+          </NavLink>
         </div>
       </nav>
 

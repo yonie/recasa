@@ -1,6 +1,5 @@
 """Recasa - Intelligent Local Photo Explorer."""
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -12,7 +11,7 @@ from backend.app.database import init_db
 from backend.app.api import photos, directories, timeline, scan, duplicates, persons, events, locations, pipeline, tags
 from backend.app.workers.queues import pipeline as pipeline_instance
 from backend.app.workers.worker import start_pipeline_workers
-from backend.app.workers.pipeline import run_initial_scan, start_file_watcher
+from backend.app.workers.pipeline import start_file_watcher
 
 logger = logging.getLogger("recasa")
 
@@ -42,29 +41,16 @@ async def lifespan(app: FastAPI):
     # Start the pipeline workers (face detection, event detection, etc.)
     workers = await start_pipeline_workers(pipeline_instance)
 
-    # Start initial scan in background -- feeds discovered files to pipeline
-    async def _initial_scan():
-        try:
-            stats = await run_initial_scan()
-            logger.info(
-                "Initial scan complete: %d total, %d new, %d updated",
-                stats.get("total", 0),
-                stats.get("new", 0),
-                stats.get("updated", 0),
-            )
-        except Exception:
-            logger.exception("Initial scan failed")
-
-    scan_task = asyncio.create_task(_initial_scan())
-
     # Start file watcher for live-detecting new photos
+    # No automatic full rescan -- the app relies on the existing index and
+    # the file watcher for incremental updates.  Users can trigger a full
+    # rescan manually from the Pipeline page.
     observer = await start_file_watcher()
 
     yield
 
     # Shutdown
     logger.info("Shutting down Recasa")
-    scan_task.cancel()
     for worker in workers:
         worker.stop()
     if observer:

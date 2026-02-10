@@ -58,6 +58,8 @@ export function PhotoViewer() {
         const fullDetail = await api.getPhoto(photo.file_hash);
         setViewerPhoto(fullDetail);
         setViewerIndex(newIndex);
+        // Update URL to reflect current photo
+        window.history.replaceState({ viewerOpen: true }, "", `/photos/${photo.file_hash}`);
       } catch {
         // ignore
       } finally {
@@ -81,12 +83,17 @@ export function PhotoViewer() {
     [closeViewer, canGoPrev, canGoNext, viewerIndex, navigateTo, detail]
   );
 
+  // Track the URL we had before opening the viewer
+  const previousUrl = useRef<string | null>(null);
+
   // Handle browser back button to close viewer
   useEffect(() => {
     if (viewerOpen) {
       // Push a history state when opening viewer
       if (!historyPushed.current) {
-        window.history.pushState({ viewerOpen: true }, "");
+        // Save the current URL before changing it
+        previousUrl.current = window.location.pathname + window.location.search;
+        window.history.pushState({ viewerOpen: true }, "", `/photos/${detail?.file_hash || ""}`);
         historyPushed.current = true;
       }
       
@@ -109,7 +116,11 @@ export function PhotoViewer() {
         window.removeEventListener("popstate", handlePopState);
       };
     } else {
-      // Reset history flag when viewer closes
+      // When viewer closes, restore the previous URL
+      if (historyPushed.current && previousUrl.current) {
+        window.history.replaceState(null, "", previousUrl.current);
+        previousUrl.current = null;
+      }
       historyPushed.current = false;
     }
   }, [viewerOpen, handleKeyDown, closeViewer]);
@@ -323,14 +334,21 @@ export function PhotoViewer() {
                   Tags
                 </h3>
                 <div className="flex flex-wrap gap-1.5">
-                  {detail.tags.map((t) => (
-                    <span
-                      key={t.tag_id}
-                      className="px-2 py-0.5 bg-gray-700 rounded-full text-xs text-gray-200"
-                    >
-                      {t.name}
-                    </span>
-                  ))}
+                  {detail.tags.map((t) => {
+                    const color = getTagColor(t.name);
+                    return (
+                      <span
+                        key={t.tag_id}
+                        className="px-2 py-0.5 rounded-full text-xs"
+                        style={{
+                          backgroundColor: color.bg,
+                          color: color.text,
+                        }}
+                      >
+                        {t.name}
+                      </span>
+                    );
+                  })}
                 </div>
               </section>
             )}
@@ -373,6 +391,19 @@ export function PhotoViewer() {
       )}
     </div>
   );
+}
+
+function getTagColor(name: string): { bg: string; bgHover: string; text: string } {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
+  }
+  const hue = ((hash % 360) + 360) % 360;
+  return {
+    bg: `hsl(${hue}, 55%, 93%)`,
+    bgHover: `hsl(${hue}, 55%, 87%)`,
+    text: `hsl(${hue}, 60%, 32%)`,
+  };
 }
 
 function formatBytes(bytes: number): string {

@@ -12,11 +12,12 @@ import { Favorites } from "./pages/Favorites";
 import { Duplicates } from "./pages/Duplicates";
 import { LargeFiles } from "./pages/LargeFiles";
 import { SearchResults } from "./pages/SearchResults";
-import { People } from "./pages/People";
-import { Events } from "./pages/Events";
-import { Locations } from "./pages/Locations";
+import { People, PersonDetail } from "./pages/People";
+import { Events, EventDetail } from "./pages/Events";
+import { Locations, LocationCountryCities, LocationCityPhotos } from "./pages/Locations";
 import { Pipeline } from "./pages/Pipeline";
-import { Tags } from "./pages/Tags";
+import { Tags, TagDetail } from "./pages/Tags";
+import { PhotoPage } from "./pages/PhotoPage";
 
 import { useScanStatus } from "./hooks/useScanStatus";
 import { useStore } from "./store/useStore";
@@ -57,13 +58,19 @@ function AppContent() {
             <Route path="/years" element={<Years />} />
             <Route path="/favorites" element={<Favorites />} />
             <Route path="/people" element={<People />} />
+            <Route path="/people/:personId" element={<PersonDetail />} />
             <Route path="/events" element={<Events />} />
+            <Route path="/events/:eventId" element={<EventDetail />} />
             <Route path="/locations" element={<Locations />} />
+            <Route path="/locations/:country" element={<LocationCountryCities />} />
+            <Route path="/locations/:country/:city" element={<LocationCityPhotos />} />
             <Route path="/tags" element={<Tags />} />
+            <Route path="/tags/:tagId" element={<TagDetail />} />
             <Route path="/duplicates" element={<Duplicates />} />
             <Route path="/large-files" element={<LargeFiles />} />
             <Route path="/search" element={<SearchResults />} />
             <Route path="/pipeline" element={<Pipeline />} />
+            <Route path="/photos/:hash" element={<PhotoPage />} />
           </Routes>
         </main>
       </div>
