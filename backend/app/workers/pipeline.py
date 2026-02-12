@@ -90,6 +90,9 @@ async def run_initial_scan() -> dict:
     scan_state.is_scanning = True
     scan_state.cancel_requested = False
     scan_state.phase = "discovery"
+    scan_state.processed_files = 0
+    scan_state.total_files = 0
+    scan_state.current_file = None
     scan_state.phase_progress = 0
     scan_state.phase_total = 0
 
@@ -98,6 +101,7 @@ async def run_initial_scan() -> dict:
     # for processing state. Workers check DB flags before doing any work.
     pipeline._total_discovered = 0
     pipeline._completed_time = None
+    pipeline._start_time = None  # Reset start time on new scan
     for qtype in QueueType:
         q = pipeline.queues[qtype]
         q._processed.clear()
@@ -114,6 +118,7 @@ async def run_initial_scan() -> dict:
         scan_state.phase_total = max(total, 1)
         await scan_state.notify()
 
+    stats = {}
     try:
         async def on_file_discovered(file_hash: str, file_path: str, entry_queue: str):
             """Feed files to the pipeline at the appropriate entry point."""
@@ -136,15 +141,18 @@ async def run_initial_scan() -> dict:
             stats.get("errors", 0),
         )
 
-        return stats
-
     finally:
+        # Immediately hide the scan progress UI
         scan_state.is_scanning = False
         scan_state.phase = None
         scan_state.current_file = None
+        scan_state.processed_files = 0
+        scan_state.total_files = 0
         scan_state.phase_progress = 0
         scan_state.phase_total = 0
         await scan_state.notify()
+
+    return stats
 
 
 class PhotoFileHandler(FileSystemEventHandler):

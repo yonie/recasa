@@ -177,9 +177,15 @@ class Worker:
             await self.pipeline.route_to_next(file_hash, QueueType.HASHING)
             return True
         else:
-            # Hashing failure is not critical -- still proceed through pipeline
-            logger.warning("Perceptual hashing failed for %s, continuing pipeline", file_hash)
-            await self.queue.mark_failed(file_hash)
+            # Hashing failed (e.g., corrupted image). Mark as complete anyway
+            # so we don't retry forever on broken files. Missing hash is acceptable.
+            logger.warning("Perceptual hashing failed for %s (corrupted file?), marking as done", file_hash)
+            async with async_session() as session:
+                photo = await session.get(Photo, file_hash)
+                if photo:
+                    photo.perceptual_hashed = True
+                    await session.commit()
+            await self.queue.mark_completed(file_hash)
             await self.pipeline.route_to_next(file_hash, QueueType.HASHING)
             return False
 
