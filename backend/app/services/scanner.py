@@ -323,10 +323,10 @@ async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> tu
         if existing_photo and existing_photo.file_size == file_size:
             # Check mtime if available (use 1-second tolerance for filesystem precision)
             if existing_photo.file_modified and abs(existing_photo.file_modified.timestamp() - file_mtime) < 1.0:
-                # Photo unchanged - skip entirely
+                # Photo unchanged on disk, but may still need pipeline processing
+                # Return it so we can check if it needs more work
                 stats["skipped"] += 1
-                return None
-            # Size matches but mtime different - will update file_modified below
+                return (existing_path.file_hash, False)  # Existing photo, unchanged on disk
 
     # Compute file hash (slow - only when needed)
     file_hash = await asyncio.to_thread(compute_file_hash, filepath)
