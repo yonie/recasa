@@ -7,6 +7,12 @@ Smart rescan behavior:
 - Removed files: deleted from DB during cleanup pass
 
 The database is the source of truth for processing state, not in-memory tracking.
+
+Directory fingerprinting for fast rescans:
+- On first scan, compute a fingerprint (file_count, total_size, max_mtime) for each directory
+- Store fingerprints in memory (lost on app restart)
+- On subsequent scans, skip directories with unchanged fingerprints
+- This dramatically reduces filesystem I/O for repeated rescans
 """
 
 import asyncio
@@ -28,6 +34,50 @@ logger = logging.getLogger(__name__)
 
 # Buffer size for SHA-256 hashing (64KB)
 HASH_BUFFER_SIZE = 65536
+
+# In-memory cache of directory fingerprints for fast rescans.
+# Persists only within app session - lost on restart.
+# Format: {directory_path: (file_count, total_size, max_mtime)}
+_directory_cache: dict[str, tuple[int, int, float]] = {}
+
+
+def clear_directory_cache():
+    """Clear the directory fingerprint cache. Use before a full rescan."""
+    global _directory_cache
+    _directory_cache = {}
+    logger.info("Directory fingerprint cache cleared")
+
+
+def _get_directory_fingerprint(dir_path: Path) -> tuple[int, int, float]:
+    """Compute a lightweight fingerprint for a directory.
+
+    Returns (file_count, total_size, max_mtime) for supported photo files.
+    This is fast - just iterdir() + stat() on each file in the directory.
+
+    The fingerprint detects:
+    - New files (count increases)
+    - Deleted files (count decreases)
+    - Modified files (size or mtime changes)
+
+    It does NOT detect:
+    - Renamed files within same directory (count/size/mtime unchanged)
+    """
+    count = 0
+    total_size = 0
+    max_mtime = 0.0
+    try:
+        for entry in dir_path.iterdir():
+            if entry.is_file() and is_supported_photo(entry):
+                try:
+                    stat = entry.stat()
+                    count += 1
+                    total_size += stat.st_size
+                    max_mtime = max(max_mtime, stat.st_mtime)
+                except OSError:
+                    pass
+    except PermissionError:
+        pass
+    return (count, total_size, max_mtime)
 
 
 def compute_file_hash(filepath: Path) -> str:
@@ -120,6 +170,11 @@ def _get_pipeline_entry_point(photo: Photo) -> str | None:
 async def scan_directory(progress_callback=None, cancel_check=None, on_file_discovered=None) -> dict:
     """Scan the photos directory and index all photos.
 
+    Uses directory fingerprinting to skip unchanged directories on repeated scans:
+    - First scan: walks all directories and caches fingerprints
+    - Subsequent scans: only processes directories with changed fingerprints
+    - Cache is cleared on app restart (in-memory only)
+
     Returns:
         dict with scan statistics and discovered files.
     """
@@ -128,23 +183,56 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
         logger.error("Photos directory does not exist: %s", photos_dir)
         return {"error": "Photos directory not found", "total": 0, "new": 0, "updated": 0, "discovered_files": {}}
 
-    stats = {"total": 0, "new": 0, "updated": 0, "skipped": 0, "fully_processed": 0, "errors": 0, "discovered_files": {}}
+    stats = {
+        "total": 0,
+        "new": 0,
+        "updated": 0,
+        "skipped": 0,
+        "fully_processed": 0,
+        "skipped_directories": 0,
+        "errors": 0,
+        "discovered_files": {},
+    }
 
-    # Collect all photo files
-    photo_files: list[Path] = []
+    # Phase 1: Collect all directories containing photos
+    directories_with_photos: list[Path] = []
     for root, _dirs, files in os.walk(photos_dir):
-        for filename in files:
-            filepath = Path(root) / filename
-            if is_supported_photo(filepath):
-                photo_files.append(filepath)
+        # Only include directories that have photo files
+        if any(is_supported_photo(Path(root) / f) for f in files):
+            directories_with_photos.append(Path(root))
+
+    # Phase 2: Filter directories using fingerprint cache
+    # This skips entire directories that haven't changed since the last scan.
+    directories_to_process: list[Path] = []
+    for dir_path in directories_with_photos:
+        fingerprint = await asyncio.to_thread(_get_directory_fingerprint, dir_path)
+        dir_key = str(dir_path)
+        cached = _directory_cache.get(dir_key)
+        if cached == fingerprint:
+            stats["skipped_directories"] += 1
+            continue  # Directory unchanged - skip entirely
+        _directory_cache[dir_key] = fingerprint
+        directories_to_process.append(dir_path)
+
+    if stats["skipped_directories"] > 0:
+        logger.info(
+            "Directory fingerprinting: %d of %d directories unchanged (skipped)",
+            stats["skipped_directories"],
+            len(directories_with_photos),
+        )
+
+    # Phase 3: Collect photo files from changed directories only
+    photo_files: list[Path] = []
+    for dir_path in directories_to_process:
+        for entry in dir_path.iterdir():
+            if entry.is_file() and is_supported_photo(entry):
+                photo_files.append(entry)
 
     stats["total"] = len(photo_files)
-    logger.info("Found %d photo files in %s", stats["total"], photos_dir)
+    logger.info("Found %d photo files in %d changed directories", stats["total"], len(directories_to_process))
 
-    # Collect discovered files for pipeline
+    # Phase 4: Process files in batches
     discovered: dict[str, str] = {}
-
-    # Process in batches
     batch_size = settings.batch_size
     cancelled = False
     for i in range(0, len(photo_files), batch_size):
@@ -202,12 +290,13 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
         await _cleanup_removed_files()
 
     logger.info(
-        "Scan complete: %d total, %d new, %d updated, %d skipped, %d fully_processed, %d errors",
+        "Scan complete: %d total, %d new, %d updated, %d skipped, %d fully_processed, %d skipped_dirs, %d errors",
         stats["total"],
         stats["new"],
         stats["updated"],
         stats["skipped"],
         stats["fully_processed"],
+        stats["skipped_directories"],
         stats["errors"],
     )
     return stats
