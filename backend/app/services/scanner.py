@@ -1,4 +1,13 @@
-"""File scanner service - discovers and indexes photos from the watch directory."""
+"""File scanner service - discovers and indexes photos from the watch directory.
+
+Smart rescan behavior:
+- New files: enter pipeline at DISCOVERY (full processing)
+- Existing fully-processed files: skipped entirely
+- Existing partially-processed files: enter at first incomplete stage
+- Removed files: deleted from DB during cleanup pass
+
+The database is the source of truth for processing state, not in-memory tracking.
+"""
 
 import asyncio
 import hashlib
@@ -89,6 +98,25 @@ def _needs_pipeline_processing(photo: Photo) -> bool:
     ])
 
 
+def _get_pipeline_entry_point(photo: Photo) -> str | None:
+    """Determine which pipeline stage a photo should enter.
+
+    Returns the queue name for the first incomplete stage, or None if fully processed.
+    Pipeline order: DISCOVERY → EXIF → GEOCODING → THUMBNAILS → MOTION_PHOTOS → HASHING → FACES → CAPTIONING → EVENTS
+    """
+    if not photo.exif_extracted:
+        return "exif"
+    if not photo.thumbnail_generated:
+        return "thumbnails"
+    if not photo.perceptual_hashed:
+        return "hashing"
+    if not photo.faces_detected:
+        return "faces"
+    if not photo.ollama_captioned:
+        return "captioning"
+    return None  # Fully processed
+
+
 async def scan_directory(progress_callback=None, cancel_check=None, on_file_discovered=None) -> dict:
     """Scan the photos directory and index all photos.
 
@@ -100,7 +128,7 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
         logger.error("Photos directory does not exist: %s", photos_dir)
         return {"error": "Photos directory not found", "total": 0, "new": 0, "updated": 0, "discovered_files": {}}
 
-    stats = {"total": 0, "new": 0, "updated": 0, "skipped": 0, "errors": 0, "discovered_files": {}}
+    stats = {"total": 0, "new": 0, "updated": 0, "skipped": 0, "fully_processed": 0, "errors": 0, "discovered_files": {}}
 
     # Collect all photo files
     photo_files: list[Path] = []
@@ -126,18 +154,26 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
             break
         batch = photo_files[i : i + batch_size]
         async with async_session() as session:
-            # Track which files need pipeline processing (determined after commit)
-            pipeline_candidates: list[tuple[str, str]] = []
+            # Track which files need pipeline processing and their entry points
+            # (file_hash, file_path, entry_queue or None if skipped)
+            pipeline_candidates: list[tuple[str, str, str | None]] = []
 
             for filepath in batch:
                 try:
-                    file_hash = await _index_photo(session, filepath, stats)
-                    if file_hash:
+                    index_result = await _index_photo(session, filepath, stats)
+                    if index_result:
+                        file_hash, is_new = index_result
                         discovered[file_hash] = str(filepath)
                         if on_file_discovered:
                             photo = await session.get(Photo, file_hash)
-                            if photo and _needs_pipeline_processing(photo):
-                                pipeline_candidates.append((file_hash, str(filepath)))
+                            if photo:
+                                entry_point = _get_pipeline_entry_point(photo)
+                                if entry_point:
+                                    pipeline_candidates.append((file_hash, str(filepath), entry_point))
+                                elif not is_new:
+                                    stats["fully_processed"] += 1
+                                elif is_new:
+                                    pipeline_candidates.append((file_hash, str(filepath), "discovery"))
                 except Exception:
                     logger.exception("Error indexing %s", filepath)
                     stats["errors"] += 1
@@ -153,9 +189,11 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
 
         # Feed files to the pipeline AFTER the batch has been committed to the DB,
         # so that pipeline workers can find the Photo rows in their own sessions.
+        # Callback receives (file_hash, file_path, entry_queue).
         if on_file_discovered:
-            for file_hash, file_path in pipeline_candidates:
-                await on_file_discovered(file_hash, file_path)
+            for file_hash, file_path, entry_queue in pipeline_candidates:
+                if entry_queue:
+                    await on_file_discovered(file_hash, file_path, entry_queue)
 
     stats["discovered_files"] = discovered
 
@@ -164,18 +202,19 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
         await _cleanup_removed_files()
 
     logger.info(
-        "Scan complete: %d total, %d new, %d updated, %d skipped, %d errors",
+        "Scan complete: %d total, %d new, %d updated, %d skipped, %d fully_processed, %d errors",
         stats["total"],
         stats["new"],
         stats["updated"],
         stats["skipped"],
+        stats["fully_processed"],
         stats["errors"],
     )
     return stats
 
 
-async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> str | None:
-    """Index a single photo file. Returns file_hash or None if skipped."""
+async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> tuple[str, bool] | None:
+    """Index a single photo file. Returns (file_hash, is_new) or None if skipped."""
     relative_path = str(filepath.relative_to(settings.photos_dir))
 
     # Get file metadata first (fast)
@@ -223,7 +262,7 @@ async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> st
             stats["updated"] += 1
         else:
             stats["skipped"] += 1
-        return file_hash
+        return (file_hash, False)  # Existing photo
 
     # New photo
     mime_type, _ = mimetypes.guess_type(str(filepath))
@@ -255,7 +294,7 @@ async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> st
     session.add(PhotoPath(file_hash=file_hash, file_path=relative_path))
 
     stats["new"] += 1
-    return file_hash
+    return (file_hash, True)  # New photo
 
 
 async def _cleanup_removed_files() -> None:
@@ -288,21 +327,37 @@ async def _cleanup_removed_files() -> None:
             logger.info("Cleaned up %d removed file paths", len(removed_paths))
 
 
-async def index_single_file(filepath: Path) -> str | None:
-    """Index a single newly discovered file. Returns file_hash or None on error."""
+async def index_single_file(filepath: Path) -> tuple[str, str] | None:
+    """Index a single newly discovered file (from file watcher).
+
+    Returns (file_hash, entry_queue) or None on error.
+    New files always start at 'discovery'. Existing files start at their first incomplete stage.
+    """
     if not is_supported_photo(filepath):
         return None
 
     try:
         stats = {"new": 0, "updated": 0, "skipped": 0, "errors": 0}
         async with async_session() as session:
-            await _index_photo(session, filepath, stats)
+            result = await _index_photo(session, filepath, stats)
             await session.commit()
 
-        if stats["new"]:
-            file_hash = await asyncio.to_thread(compute_file_hash, filepath)
-            logger.info("Indexed new file: %s (%s)", filepath, file_hash)
-            return file_hash
+        if result:
+            file_hash, is_new = result
+            if is_new:
+                logger.info("Indexed new file: %s (%s)", filepath, file_hash)
+                return (file_hash, "discovery")
+            else:
+                async with async_session() as session:
+                    photo = await session.get(Photo, file_hash)
+                    if photo:
+                        entry_point = _get_pipeline_entry_point(photo)
+                        if entry_point:
+                            logger.info("Re-indexed existing file: %s (%s), entry: %s", filepath, file_hash, entry_point)
+                            return (file_hash, entry_point)
+                        else:
+                            logger.debug("File already fully processed: %s", filepath)
+                            return None
     except Exception:
         logger.exception("Error indexing file: %s", filepath)
 

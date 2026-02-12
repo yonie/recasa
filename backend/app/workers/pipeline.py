@@ -1,4 +1,11 @@
-"""Background processing pipeline - orchestrates photo indexing and analysis."""
+"""Background processing pipeline - orchestrates photo indexing and analysis.
+
+Smart rescan behavior:
+- Scanner determines entry point based on DB processing flags
+- Fully processed files are skipped entirely
+- Partially processed files enter at the first incomplete stage
+- The DB is the source of truth for processing state
+"""
 
 import asyncio
 import logging
@@ -7,11 +14,7 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifiedEvent
 
-from sqlalchemy import select, or_
-
 from backend.app.config import settings
-from backend.app.database import async_session
-from backend.app.models import Photo
 from backend.app.services.scanner import scan_directory, index_single_file, is_supported_photo
 from backend.app.workers.queues import pipeline, QueueType, QueueStats
 
@@ -72,57 +75,15 @@ class ScanState:
 # Global scan state
 scan_state = ScanState()
 
-# Batch size for resuming incomplete files (keep small to limit memory)
-_RESUME_BATCH_SIZE = 50
-
-
-async def _resume_incomplete_files() -> int:
-    """Find photos that are indexed but not fully processed and feed them to the pipeline.
-
-    Queries the DB for photos missing at least one processing flag, then feeds
-    them to the pipeline in small batches so memory usage stays bounded.
-    Returns the number of files resumed.
-    """
-    async with async_session() as session:
-        result = await session.execute(
-            select(Photo.file_hash, Photo.file_path).where(
-                or_(
-                    Photo.exif_extracted == False,  # noqa: E712
-                    Photo.thumbnail_generated == False,  # noqa: E712
-                    Photo.perceptual_hashed == False,  # noqa: E712
-                    Photo.faces_detected == False,  # noqa: E712
-                    Photo.ollama_captioned == False,  # noqa: E712
-                )
-            )
-        )
-        incomplete = result.all()
-
-    if not incomplete:
-        return 0
-
-    resumed = 0
-    for i in range(0, len(incomplete), _RESUME_BATCH_SIZE):
-        batch = incomplete[i : i + _RESUME_BATCH_SIZE]
-        for file_hash, file_path in batch:
-            # Skip files already known to the pipeline in this session
-            if pipeline.queues[QueueType.DISCOVERY].is_queued(file_hash):
-                continue
-            full_path = settings.photos_dir / file_path
-            if full_path.exists():
-                await pipeline.add_file(file_hash, str(full_path))
-                resumed += 1
-        # Yield to the event loop between batches so workers can make progress
-        # and free memory before we enqueue more
-        await asyncio.sleep(0.5)
-
-    return resumed
-
 
 async def run_initial_scan() -> dict:
     """Run the initial directory scan and feed discovered files to the pipeline.
 
     This function ONLY handles scanning/discovery. The actual processing is done
     by the pipeline workers started separately via start_pipeline_workers().
+
+    Smart rescan: files are only queued for processing stages that haven't completed.
+    Fully processed files are skipped entirely.
     """
     global scan_state
 
@@ -132,10 +93,9 @@ async def run_initial_scan() -> dict:
     scan_state.phase_progress = 0
     scan_state.phase_total = 0
 
-    # Reset pipeline counters and tracking sets for a fresh scan.
-    # Each worker stage checks DB flags before doing actual work, so
-    # clearing _processed is safe — it just means a file might enter
-    # the queue again, but the worker will skip it after the DB check.
+    # Reset pipeline counters for a fresh scan.
+    # We do NOT reset _processed/_processing sets because the DB is the source of truth
+    # for processing state. Workers check DB flags before doing any work.
     pipeline._total_discovered = 0
     pipeline._completed_time = None
     for qtype in QueueType:
@@ -155,9 +115,10 @@ async def run_initial_scan() -> dict:
         await scan_state.notify()
 
     try:
-        async def on_file_discovered(file_hash: str, file_path: str):
-            """Feed files to the pipeline as soon as they are indexed."""
-            await pipeline.add_file(file_hash, file_path)
+        async def on_file_discovered(file_hash: str, file_path: str, entry_queue: str):
+            """Feed files to the pipeline at the appropriate entry point."""
+            queue_type = QueueType(entry_queue)
+            await pipeline.add_file_at(file_hash, queue_type)
 
         stats = await scan_directory(
             progress_callback=progress_callback,
@@ -165,15 +126,15 @@ async def run_initial_scan() -> dict:
             on_file_discovered=on_file_discovered,
         )
 
-        discovered = stats.get("discovered_files", {})
-        logger.info("Scan complete: %d new/updated files fed to pipeline", len(discovered))
-
-        # Resume partially-processed files that weren't picked up by the scan
-        # (e.g. files indexed in a prior run but not fully processed).
-        # Feed them in small batches to avoid overwhelming memory.
-        resumed = await _resume_incomplete_files()
-        if resumed:
-            logger.info("Resumed %d partially-processed files", resumed)
+        logger.info(
+            "Scan complete: %d total, %d new, %d updated, %d skipped, %d fully_processed, %d errors",
+            stats.get("total", 0),
+            stats.get("new", 0),
+            stats.get("updated", 0),
+            stats.get("skipped", 0),
+            stats.get("fully_processed", 0),
+            stats.get("errors", 0),
+        )
 
         return stats
 
@@ -242,10 +203,11 @@ async def _process_file_events(queue: asyncio.Queue) -> None:
             await asyncio.sleep(1.0)
 
             logger.info("Detected file change: %s", filepath)
-            file_hash = await index_single_file(filepath)
-            if file_hash:
-                # Feed into the pipeline -- workers handle the rest
-                await pipeline.add_file(file_hash, str(filepath))
+            result = await index_single_file(filepath)
+            if result:
+                file_hash, entry_queue = result
+                queue_type = QueueType(entry_queue)
+                await pipeline.add_file_at(file_hash, queue_type)
 
         except asyncio.TimeoutError:
             continue

@@ -177,9 +177,18 @@ class Pipeline:
         return self._flow.get(queue_type, [])
 
     async def add_file(self, file_hash: str, file_path: str) -> bool:
-        """Add a newly discovered file to the pipeline."""
+        """Add a newly discovered file to the pipeline (starts at DISCOVERY)."""
         self._total_discovered += 1
         return await self.queues[QueueType.DISCOVERY].put(file_hash)
+
+    async def add_file_at(self, file_hash: str, entry_queue: QueueType) -> bool:
+        """Add a file to the pipeline at a specific queue (for partial processing)."""
+        self._total_discovered += 1
+        return await self.queues[entry_queue].put(file_hash)
+
+    def is_queued(self, queue_type: QueueType, file_hash: str) -> bool:
+        """Check if a file is already queued or processed in a specific queue."""
+        return self.queues[queue_type].is_queued(file_hash)
 
     async def route_to_next(self, file_hash: str, from_queue: QueueType):
         """Route a file to the next queue(s) in the pipeline."""
