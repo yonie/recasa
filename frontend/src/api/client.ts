@@ -144,7 +144,13 @@ export interface PipelineStats {
   total_files_completed: number;
   start_time: string | null;
   uptime_seconds: number;
-  bottleneck: { queue_type: string | null; ratio: number };
+  error_log: Array<{
+    timestamp: string;
+    queue: string;
+    file_hash: string;
+    file_path: string | null;
+    error: string;
+  }>;
   queues: Record<string, QueueStats>;
   flow: Record<string, string[]>;
 }

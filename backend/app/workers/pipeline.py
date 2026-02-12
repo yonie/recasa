@@ -9,6 +9,7 @@ Smart rescan behavior:
 
 import asyncio
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from watchdog.observers import Observer
@@ -101,7 +102,8 @@ async def run_initial_scan() -> dict:
     # for processing state. Workers check DB flags before doing any work.
     pipeline._total_discovered = 0
     pipeline._completed_time = None
-    pipeline._start_time = None  # Reset start time on new scan
+    pipeline._start_time = datetime.utcnow()  # Start timing from scan begin
+    pipeline.error_log = []  # Clear error log on new scan
     for qtype in QueueType:
         q = pipeline.queues[qtype]
         q._processed.clear()

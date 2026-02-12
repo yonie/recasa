@@ -43,6 +43,15 @@ class Worker:
         self.queue = pipeline.queues[queue_type]
         self._running = False
 
+    def _log_error(self, file_hash: str, file_path: str | None, error: str):
+        """Log an error to the pipeline error log."""
+        self.pipeline.add_error(
+            queue=self.queue_type.value,
+            file_hash=file_hash,
+            file_path=file_path,
+            error=error,
+        )
+
     async def _get_file_path(self, file_hash: str) -> Path | None:
         """Get the file path for a file hash."""
         async with async_session() as session:
@@ -63,6 +72,7 @@ class Worker:
         filepath = await self._get_file_path(file_hash)
         if not filepath:
             logger.warning("EXIF: no file path for %s, skipping but continuing pipeline", file_hash)
+            self._log_error(file_hash, None, "EXIF: file not found in database")
             await self.queue.mark_failed(file_hash)
             await self.pipeline.route_to_next(file_hash, QueueType.EXIF)
             return False
@@ -82,8 +92,8 @@ class Worker:
             await self.pipeline.route_to_next(file_hash, QueueType.EXIF)
             return True
         else:
-            # EXIF failure is not critical -- still proceed through pipeline
             logger.warning("EXIF extraction failed for %s, continuing pipeline", file_hash)
+            self._log_error(file_hash, str(filepath), "EXIF extraction failed")
             await self.queue.mark_failed(file_hash)
             await self.pipeline.route_to_next(file_hash, QueueType.EXIF)
             return False
@@ -115,6 +125,7 @@ class Worker:
         filepath = await self._get_file_path(file_hash)
         if not filepath:
             logger.warning("Thumbnails: no file path for %s, skipping but continuing pipeline", file_hash)
+            self._log_error(file_hash, None, "Thumbnails: file not found in database")
             await self.queue.mark_failed(file_hash)
             await self.pipeline.route_to_next(file_hash, QueueType.THUMBNAILS)
             return False
@@ -134,8 +145,8 @@ class Worker:
             await self.pipeline.route_to_next(file_hash, QueueType.THUMBNAILS)
             return True
         else:
-            # Thumbnail failure is not critical -- still proceed through pipeline
             logger.warning("Thumbnail generation failed for %s, continuing pipeline", file_hash)
+            self._log_error(file_hash, str(filepath), "Thumbnail generation failed")
             await self.queue.mark_failed(file_hash)
             await self.pipeline.route_to_next(file_hash, QueueType.THUMBNAILS)
             return False
@@ -162,7 +173,8 @@ class Worker:
 
     async def _process_hashing(self, file_hash: str) -> bool:
         """Process perceptual hashing stage."""
-        await self.queue.mark_processing(file_hash, None)
+        filepath = await self._get_file_path(file_hash)
+        await self.queue.mark_processing(file_hash, str(filepath) if filepath else None)
 
         # Check if already hashed
         async with async_session() as session:
@@ -180,6 +192,7 @@ class Worker:
             # Hashing failed (e.g., corrupted image). Mark as complete anyway
             # so we don't retry forever on broken files. Missing hash is acceptable.
             logger.warning("Perceptual hashing failed for %s (corrupted file?), marking as done", file_hash)
+            self._log_error(file_hash, str(filepath) if filepath else None, "Hashing failed (corrupted file)")
             async with async_session() as session:
                 photo = await session.get(Photo, file_hash)
                 if photo:
@@ -191,7 +204,8 @@ class Worker:
 
     async def _process_faces(self, file_hash: str) -> bool:
         """Process face detection stage."""
-        await self.queue.mark_processing(file_hash, None)
+        filepath = await self._get_file_path(file_hash)
+        await self.queue.mark_processing(file_hash, str(filepath) if filepath else None)
 
         # Check if already processed
         async with async_session() as session:
@@ -208,16 +222,23 @@ class Worker:
             await self.queue.mark_completed(file_hash)
             await self.pipeline.route_to_next(file_hash, QueueType.FACES)
             return True
-        except Exception:
+        except Exception as e:
             logger.exception("Face detection failed for %s", file_hash)
+            self._log_error(file_hash, str(filepath) if filepath else None, f"Face detection failed: {str(e)[:100]}")
             # Face detection is optional -- don't block the pipeline
+            async with async_session() as session:
+                photo = await session.get(Photo, file_hash)
+                if photo:
+                    photo.faces_detected = True
+                    await session.commit()
             await self.queue.mark_completed(file_hash)
             await self.pipeline.route_to_next(file_hash, QueueType.FACES)
             return True
 
     async def _process_captioning(self, file_hash: str) -> bool:
         """Process Ollama captioning stage."""
-        await self.queue.mark_processing(file_hash, None)
+        filepath = await self._get_file_path(file_hash)
+        await self.queue.mark_processing(file_hash, str(filepath) if filepath else None)
 
         # Check if already captioned
         async with async_session() as session:
@@ -234,9 +255,15 @@ class Worker:
             await self.queue.mark_completed(file_hash)
             await self.pipeline.route_to_next(file_hash, QueueType.CAPTIONING)
             return True
-        except Exception:
+        except Exception as e:
             logger.exception("Captioning failed for %s", file_hash)
+            self._log_error(file_hash, str(filepath) if filepath else None, f"Captioning failed: {str(e)[:100]}")
             # Captioning is optional -- don't block the pipeline
+            async with async_session() as session:
+                photo = await session.get(Photo, file_hash)
+                if photo:
+                    photo.ollama_captioned = True
+                    await session.commit()
             await self.queue.mark_completed(file_hash)
             await self.pipeline.route_to_next(file_hash, QueueType.CAPTIONING)
             return True

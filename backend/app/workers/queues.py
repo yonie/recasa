@@ -153,6 +153,7 @@ class Pipeline:
         self._start_time: datetime | None = None
         self._completed_time: datetime | None = None
         self._total_discovered = 0
+        self.error_log: list[dict] = []  # List of {timestamp, queue, file_hash, file_path, error}
 
         # Create queues
         for qtype in QueueType:
@@ -237,6 +238,7 @@ class Pipeline:
             "start_time": self._start_time.isoformat() if self._start_time else None,
             "completed_at": self._completed_time.isoformat() if self._completed_time else None,
             "uptime_seconds": uptime_seconds,
+            "error_log": self.error_log[-50:],  # Last 50 errors
             "queues": {
                 qtype.value: queue.get_stats()
                 for qtype, queue in self.queues.items()
@@ -246,6 +248,19 @@ class Pipeline:
                 for from_q, to_queues in self._flow.items()
             },
         }
+
+    def add_error(self, queue: str, file_hash: str, file_path: str | None, error: str):
+        """Add an error to the error log."""
+        self.error_log.append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "queue": queue,
+            "file_hash": file_hash,
+            "file_path": file_path,
+            "error": error[:200],  # Truncate long errors
+        })
+        # Keep only last 100 errors
+        if len(self.error_log) > 100:
+            self.error_log = self.error_log[-100:]
 
 
 # Global pipeline instance

@@ -27,6 +27,13 @@ interface PipelineStats {
   total_files_completed: number;
   start_time: string | null;
   uptime_seconds: number;
+  error_log: Array<{
+    timestamp: string;
+    queue: string;
+    file_hash: string;
+    file_path: string | null;
+    error: string;
+  }>;
   queues: Record<string, QueueStats>;
   flow: Record<string, string[]>;
 }
@@ -386,6 +393,49 @@ export function Pipeline() {
           </tbody>
         </table>
       </div>
+
+      {/* Error Log */}
+      {stats.error_log && stats.error_log.length > 0 && (
+        <div className="mt-4 bg-white border border-red-200 rounded-xl overflow-hidden">
+          <div className="px-3 py-2 bg-red-50 border-b border-red-100 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-red-500" />
+            <span className="text-sm font-medium text-red-700">Recent Errors</span>
+            <span className="text-xs text-red-500 ml-auto">{stats.error_log.length} error{stats.error_log.length !== 1 ? "s" : ""}</span>
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-gray-100 bg-gray-50/50 sticky top-0">
+                  <th className="text-left font-medium text-gray-500 px-3 py-1.5">Time</th>
+                  <th className="text-left font-medium text-gray-500 px-3 py-1.5">Stage</th>
+                  <th className="text-left font-medium text-gray-500 px-3 py-1.5">File</th>
+                  <th className="text-left font-medium text-gray-500 px-3 py-1.5">Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.error_log.map((err, i) => (
+                  <tr key={i} className="border-b border-gray-50 last:border-0 hover:bg-red-50/30">
+                    <td className="px-3 py-1.5 text-gray-500 tabular-nums whitespace-nowrap">
+                      {new Date(err.timestamp).toLocaleTimeString()}
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-700">
+                        {err.queue}
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5 text-gray-600 max-w-48 truncate" title={err.file_path || err.file_hash}>
+                      {err.file_path ? err.file_path.split(/[\\/]/).pop() : err.file_hash.slice(0, 12)}
+                    </td>
+                    <td className="px-3 py-1.5 text-red-600 max-w-64 truncate" title={err.error}>
+                      {err.error}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Footer info */}
       {totalFailed > 0 && (
