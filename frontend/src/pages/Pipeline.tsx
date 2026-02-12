@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type QueueStats } from "../api/client";
+import { useStore } from "../store/useStore";
 import {
   Activity,
   RotateCcw,
@@ -173,6 +174,15 @@ export function Pipeline() {
   const handleRescan = async () => {
     if (isTriggering) return;
     setIsTriggering(true);
+    useStore.getState().setScanStatus({
+      is_scanning: true,
+      phase: "discovery",
+      phase_progress: 0,
+      phase_total: 0,
+      total_files: 0,
+      processed_files: 0,
+      current_file: null,
+    });
     try {
       await api.triggerScan();
     } catch {

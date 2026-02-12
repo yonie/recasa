@@ -12,7 +12,7 @@ services:
       - OLLAMA_URL=${OLLAMA_URL}
       - WATCH_INTERVAL=${WATCH_INTERVAL}
       - LOG_LEVEL=${LOG_LEVEL}
-      - WORKERS=${WORKERS}
+      - MAX_CONCURRENT=${MAX_CONCURRENT}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

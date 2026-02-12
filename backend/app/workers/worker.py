@@ -20,6 +20,18 @@ from backend.app.workers.queues import Pipeline, QueueType
 
 logger = logging.getLogger(__name__)
 
+# Global semaphore to limit concurrent photo processing (prevents OOM)
+processing_semaphore: asyncio.Semaphore | None = None
+
+
+def get_processing_semaphore() -> asyncio.Semaphore:
+    """Get or create the global processing semaphore."""
+    global processing_semaphore
+    if processing_semaphore is None:
+        processing_semaphore = asyncio.Semaphore(settings.max_concurrent)
+        logger.info(f"Created processing semaphore with limit: {settings.max_concurrent}")
+    return processing_semaphore
+
 
 class Worker:
     """Worker that processes files from a specific queue."""
@@ -253,12 +265,14 @@ class Worker:
     async def run(self):
         """Run the worker loop."""
         self._running = True
+        semaphore = get_processing_semaphore()
         logger.info(f"Worker {self.worker_id} started for queue {self.queue_type.value}")
 
         while self._running:
             try:
                 file_hash = await asyncio.wait_for(self.queue.get(), timeout=1.0)
-                await self.process_item(file_hash)
+                async with semaphore:
+                    await self.process_item(file_hash)
             except asyncio.TimeoutError:
                 continue
             except Exception:
@@ -390,19 +404,24 @@ class EventDetectionWorker:
             self._task.cancel()
 
 
-async def start_pipeline_workers(pipeline: Pipeline, workers_per_queue: int = 1) -> list[Worker]:
-    """Start workers for all queues."""
+
+async def start_pipeline_workers(pipeline: Pipeline) -> list[Worker]:
+    """Start workers for all queues.
+    
+    Uses 1 worker per queue to prevent queue starvation.
+    Concurrent processing is limited by a global semaphore (max_concurrent setting)
+    to prevent OOM errors.
+    """
     workers = []
 
-    # Start workers for each queue type (except EVENTS - handled by EventDetectionWorker)
+    # Start 1 worker for each queue type (except EVENTS - handled by EventDetectionWorker)
     for queue_type in QueueType:
         if queue_type == QueueType.EVENTS:
             continue
 
-        for i in range(workers_per_queue):
-            worker = Worker(pipeline, queue_type, worker_id=len(workers))
-            task = asyncio.create_task(worker.run())
-            workers.append(worker)
+        worker = Worker(pipeline, queue_type, worker_id=len(workers))
+        task = asyncio.create_task(worker.run())
+        workers.append(worker)
 
     # Start event detection worker
     event_worker = EventDetectionWorker(pipeline)

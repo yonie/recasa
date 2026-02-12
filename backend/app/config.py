@@ -31,11 +31,11 @@ class Settings(BaseSettings):
 
     # Processing
     batch_size: int = 50
-    
-    # Note: workers is hardcoded to 1 - higher values cause OOM crashes
-    @property
-    def workers(self) -> int:
-        return 1
+
+    # Maximum number of photos to process concurrently (limits memory usage)
+    # Each concurrent photo uses memory for image loading, thumbnails, face detection, etc.
+    # Recommended: 2-3 for systems with limited RAM, higher for systems with more RAM
+    max_concurrent: int = 2
 
     # Supported file extensions
     photo_extensions: set[str] = {
