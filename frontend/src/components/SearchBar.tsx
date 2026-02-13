@@ -2,7 +2,6 @@ import { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { Search, X } from "lucide-react";
 import { useStore } from "../store/useStore";
-import { ScanProgress } from "./ScanProgress";
 
 export function SearchBar() {
   const navigate = useNavigate();
@@ -50,8 +49,6 @@ export function SearchBar() {
           </button>
         )}
       </form>
-
-      <ScanProgress />
     </header>
   );
 }

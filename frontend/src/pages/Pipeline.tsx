@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { api, type QueueStats } from "../api/client";
-import { useStore } from "../store/useStore";
 import {
   Activity,
   RotateCcw,
@@ -18,6 +17,8 @@ import {
   AlertCircle,
   Clock,
   Check,
+  Loader2,
+  Square,
 } from "lucide-react";
 
 interface PipelineStats {
@@ -143,6 +144,7 @@ export function Pipeline() {
   const [stats, setStats] = useState<PipelineStats | null>(null);
   const [connected, setConnected] = useState(false);
   const [isTriggering, setIsTriggering] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   // Load initial stats
   useEffect(() => {
@@ -181,21 +183,21 @@ export function Pipeline() {
   const handleRescan = async () => {
     if (isTriggering) return;
     setIsTriggering(true);
-    useStore.getState().setScanStatus({
-      is_scanning: true,
-      phase: "discovery",
-      phase_progress: 0,
-      phase_total: 0,
-      total_files: 0,
-      processed_files: 0,
-      current_file: null,
-    });
     try {
       await api.triggerScan();
     } catch {
       // ignore
     } finally {
       setIsTriggering(false);
+    }
+  };
+
+  const handleCancelScan = async () => {
+    setCancelling(true);
+    try {
+      await fetch("/api/scan/cancel", { method: "POST" });
+    } catch {
+      // ignore
     }
   };
 
@@ -267,17 +269,40 @@ export function Pipeline() {
           </p>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <button
-            onClick={handleRescan}
-            disabled={isTriggering}
-            className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 rounded-lg transition-colors text-gray-700"
-          >
-            <RotateCcw className={`w-4 h-4 ${isTriggering ? "animate-spin" : ""}`} />
-            Rescan
-          </button>
+          {stats.status === "processing" ? (
+            <button
+              onClick={handleCancelScan}
+              disabled={cancelling}
+              className="group flex items-center gap-2 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg transition-colors"
+            >
+              {cancelling ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <>
+                  <Square className="w-4 h-4 group-hover:hidden" />
+                  <Loader2 className="w-4 h-4 animate-spin hidden group-hover:inline" />
+                </>
+              )}
+              <span className="group-hover:hidden">Scanning...</span>
+              <span className="hidden group-hover:inline">Stop</span>
+            </button>
+          ) : (
+            <button
+              onClick={handleRescan}
+              disabled={isTriggering}
+              className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 rounded-lg transition-colors text-gray-700"
+            >
+              {isTriggering ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <RotateCcw className="w-4 h-4" />
+              )}
+              Rescan
+            </button>
+          )}
           <button
             onClick={handleRebuildIndex}
-            disabled={isTriggering}
+            disabled={isTriggering || stats.status === "processing"}
             className="flex items-center gap-2 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 disabled:opacity-50 rounded-lg transition-colors"
           >
             <Trash2 className="w-4 h-4" />
