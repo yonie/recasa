@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { clsx } from "clsx";
 import { useStore } from "../store/useStore";
-import { api, type PipelineStats } from "../api/client";
+import { type PipelineStats } from "../api/client";
 
 const navItems = [
   { to: "/", icon: ImageIcon, label: "Photos" },
