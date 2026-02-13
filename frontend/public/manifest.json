@@ -1,0 +1,16 @@
+{
+  "name": "Recasa - Intelligent Local Photo Explorer",
+  "short_name": "Recasa",
+  "description": "Browse and organize your local photo library with AI-powered features",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/recasa.svg",
+      "type": "image/svg+xml",
+      "sizes": "any"
+    }
+  ]
+}

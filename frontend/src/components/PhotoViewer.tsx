@@ -28,12 +28,14 @@ export function PhotoViewer() {
     setViewerIndex,
   } = useStore();
   
-  // Track if we pushed a history state for this viewer
   const historyPushed = useRef(false);
   const [detail, setDetail] = useState<PhotoDetail | null>(null);
   const [showInfo, setShowInfo] = useState(false);
   const [isFavorite, setIsFavorite] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  const touchStartX = useRef(0);
+  const touchEndX = useRef(0);
 
   useEffect(() => {
     if (viewerPhoto) {
@@ -135,14 +137,39 @@ export function PhotoViewer() {
     }
   }, [detail]);
 
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0]?.clientX ?? 0;
+  }, []);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    touchEndX.current = e.touches[0]?.clientX ?? 0;
+  }, []);
+
+  const handleTouchEnd = useCallback(() => {
+    const diff = touchStartX.current - touchEndX.current;
+    const threshold = 50;
+    if (Math.abs(diff) > threshold) {
+      if (diff > 0 && canGoNext) {
+        navigateTo(viewerIndex + 1);
+      } else if (diff < 0 && canGoPrev) {
+        navigateTo(viewerIndex - 1);
+      }
+    }
+    touchStartX.current = 0;
+    touchEndX.current = 0;
+  }, [canGoNext, canGoPrev, viewerIndex, navigateTo]);
+
   if (!viewerOpen || !detail) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/95 flex">
+    <div className="fixed inset-0 z-50 bg-black/95 flex flex-col sm:flex-row pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       {/* Main image */}
       <div
         className="flex-1 flex items-center justify-center relative"
         onClick={closeViewer}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
       >
         <img
           src={originalUrl(detail.file_hash)}
@@ -155,10 +182,10 @@ export function PhotoViewer() {
         />
 
         {/* Top toolbar */}
-        <div className="absolute top-0 left-0 right-0 flex items-center justify-between p-4">
+        <div className="absolute top-0 left-0 right-0 flex items-center justify-between p-4 pt-[calc(1rem+env(safe-area-inset-top))]">
           <button
             onClick={closeViewer}
-            className="p-2 rounded-full bg-black/40 hover:bg-black/60 text-white transition-colors"
+            className="p-2 rounded-full bg-black/40 active:bg-black/60 text-white transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -174,7 +201,7 @@ export function PhotoViewer() {
                 e.stopPropagation();
                 handleFavorite();
               }}
-              className="p-2 rounded-full bg-black/40 hover:bg-black/60 text-white transition-colors"
+              className="p-2 rounded-full bg-black/40 active:bg-black/60 text-white transition-colors"
               title="Favorite (F)"
             >
               <Star
@@ -193,7 +220,7 @@ export function PhotoViewer() {
                 "p-2 rounded-full transition-colors",
                 showInfo
                   ? "bg-white/20 text-white"
-                  : "bg-black/40 hover:bg-black/60 text-white"
+                  : "bg-black/40 active:bg-black/60 text-white"
               )}
               title="Info (I)"
             >
@@ -209,7 +236,7 @@ export function PhotoViewer() {
               e.stopPropagation();
               navigateTo(viewerIndex - 1);
             }}
-            className="absolute left-4 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/40 hover:bg-black/60 text-white transition-colors"
+            className="absolute left-2 sm:left-4 top-1/2 -translate-y-1/2 p-3 sm:p-2 rounded-full bg-black/40 active:bg-black/60 text-white transition-colors"
           >
             <ChevronLeft className="w-6 h-6" />
           </button>
@@ -220,7 +247,7 @@ export function PhotoViewer() {
               e.stopPropagation();
               navigateTo(viewerIndex + 1);
             }}
-            className="absolute right-4 top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/40 hover:bg-black/60 text-white transition-colors"
+            className="absolute right-2 sm:right-4 top-1/2 -translate-y-1/2 p-3 sm:p-2 rounded-full bg-black/40 active:bg-black/60 text-white transition-colors"
           >
             <ChevronRight className="w-6 h-6" />
           </button>
@@ -236,7 +263,7 @@ export function PhotoViewer() {
 
       {/* Info panel */}
       {showInfo && (
-        <div className="w-80 bg-gray-900 text-white overflow-y-auto border-l border-gray-700">
+        <div className="w-full sm:w-80 bg-gray-900 text-white overflow-y-auto border-t sm:border-t-0 sm:border-l border-gray-700 fixed sm:relative bottom-0 left-0 right-0 max-h-[50vh] sm:max-h-full">
           <div className="p-4 space-y-6">
             {/* File info */}
             <section>

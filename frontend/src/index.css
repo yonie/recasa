@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/* iOS safe area support */
+:root {
+  --sat: env(safe-area-inset-top);
+  --sar: env(safe-area-inset-right);
+  --sab: env(safe-area-inset-bottom);
+  --sal: env(safe-area-inset-left);
+}
+
 /* Leaflet map overrides */
 .custom-cluster-icon {
   background: transparent !important;
@@ -19,31 +27,74 @@
 @layer base {
   body {
     @apply min-h-screen;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
 
-  /* Custom scrollbar */
-  ::-webkit-scrollbar {
-    @apply w-2;
-  }
-  ::-webkit-scrollbar-track {
-    @apply bg-gray-100;
-  }
-  ::-webkit-scrollbar-thumb {
-    @apply bg-gray-300 rounded-full hover:bg-gray-400;
+  /* Custom scrollbar - desktop only */
+  @media (pointer: fine) {
+    ::-webkit-scrollbar {
+      @apply w-2;
+    }
+    ::-webkit-scrollbar-track {
+      @apply bg-gray-100;
+    }
+    ::-webkit-scrollbar-thumb {
+      @apply bg-gray-300 rounded-full hover:bg-gray-400;
+    }
   }
 }
 
 @layer components {
   .photo-grid-item {
     @apply relative overflow-hidden rounded-lg cursor-pointer
-           transition-transform duration-200 hover:scale-[1.02]
-           hover:shadow-lg;
+           transition-transform duration-200;
+  }
+
+  /* Desktop: scale on hover */
+  @media (pointer: fine) {
+    .photo-grid-item:hover {
+      @apply scale-[1.02] shadow-lg;
+    }
+  }
+
+  .photo-grid-item .hover-overlay {
+    @apply opacity-0 transition-opacity duration-200;
+  }
+
+  /* Desktop: show overlay on hover */
+  @media (pointer: fine) {
+    .photo-grid-item:hover .hover-overlay {
+      @apply opacity-100;
+    }
+  }
+
+  /* Mobile: always show overlay */
+  @media (pointer: coarse) {
+    .photo-grid-item .hover-overlay {
+      @apply opacity-100 bg-gradient-to-t from-black/30 to-transparent;
+    }
   }
 
   .sidebar-link {
     @apply flex items-center gap-3 px-4 py-2.5 rounded-lg
-           text-gray-600 hover:bg-gray-100 hover:text-gray-900
-           transition-colors duration-150;
+           text-gray-600 transition-colors duration-150;
+  }
+
+  /* Desktop: hover state */
+  @media (pointer: fine) {
+    .sidebar-link:hover {
+      @apply bg-gray-100 text-gray-900;
+    }
+  }
+
+  /* Mobile: active state */
+  @media (pointer: coarse) {
+    .sidebar-link:active {
+      @apply bg-gray-100 text-gray-900;
+    }
   }
 
   .sidebar-link.active {

@@ -83,7 +83,8 @@ export function Sidebar() {
           "fixed lg:relative inset-y-0 left-0 z-50 lg:z-auto",
           "w-64 border-r border-gray-200 bg-gray-50 flex flex-col h-full",
           "transform transition-transform duration-300 lg:transform-none",
-          sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+          sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
+          "pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]"
         )}
       >
         {/* Logo */}

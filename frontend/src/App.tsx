@@ -47,7 +47,7 @@ function AppContent() {
   }, [setStats]);
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen h-[100dvh]">
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden">
         <SearchBar />
