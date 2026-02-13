@@ -208,9 +208,12 @@ class Pipeline:
         """
         now = datetime.utcnow()
 
-        # Check if scanning (discovery phase)
-        from backend.app.workers.pipeline import scan_state
-        is_scanning = scan_state.is_scanning
+        # Check if scanning (discovery phase) - avoid circular import
+        # by checking the pipeline's internal state
+        is_scanning = getattr(self, '_is_scanning', False)
+        scan_total = getattr(self, '_scan_total', 0)
+        scan_scanned = getattr(self, '_scan_scanned', 0)
+        scan_current = getattr(self, '_scan_current', None)
 
         # Check if processing (workers active)
         total_pending = sum(max(q.stats.pending, 0) for q in self.queues.values())
@@ -256,9 +259,9 @@ class Pipeline:
             # Scan progress (only relevant during 'scanning')
             "scan_progress": {
                 "is_scanning": is_scanning,
-                "total_files": scan_state.total_files,
-                "scanned_files": scan_state.processed_files,
-                "current_directory": scan_state.current_file,
+                "total_files": scan_total,
+                "scanned_files": scan_scanned,
+                "current_directory": scan_current,
             } if is_scanning else None,
 
             # Processing progress (only relevant during 'processing')

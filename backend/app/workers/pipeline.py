@@ -97,6 +97,12 @@ async def run_initial_scan() -> dict:
     scan_state.phase_progress = 0
     scan_state.phase_total = 0
 
+    # Set scanning state on pipeline (for status API without circular import)
+    pipeline._is_scanning = True
+    pipeline._scan_total = 0
+    pipeline._scan_scanned = 0
+    pipeline._scan_current = None
+
     # Reset pipeline counters for a fresh scan.
     # We do NOT reset _processed/_processing sets because the DB is the source of truth
     # for processing state. Workers check DB flags before doing any work.
@@ -118,6 +124,10 @@ async def run_initial_scan() -> dict:
         scan_state.current_file = current_file
         scan_state.phase_progress = processed
         scan_state.phase_total = max(total, 1)
+        # Update pipeline scan state (for status API without circular import)
+        pipeline._scan_total = total
+        pipeline._scan_scanned = processed
+        pipeline._scan_current = current_file
         await scan_state.notify()
 
     stats = {}
@@ -152,6 +162,11 @@ async def run_initial_scan() -> dict:
         scan_state.total_files = 0
         scan_state.phase_progress = 0
         scan_state.phase_total = 0
+        # Clear pipeline scan state (for status API without circular import)
+        pipeline._is_scanning = False
+        pipeline._scan_total = 0
+        pipeline._scan_scanned = 0
+        pipeline._scan_current = None
         await scan_state.notify()
 
     return stats
