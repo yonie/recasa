@@ -41,6 +41,31 @@ async def cancel_scan():
     return {"status": "cancel_requested"}
 
 
+@router.post("/stop")
+async def stop_pipeline():
+    """Stop all pipeline activity - scanning and processing."""
+    # Cancel scan if running
+    if scan_state.is_scanning:
+        scan_state.cancel_requested = True
+
+    # Signal workers to stop and clear queues
+    pipeline._stop_requested = True
+
+    # Clear all pending items from queues
+    for qtype in QueueType:
+        queue = pipeline.queues[qtype]
+        # Drain the queue
+        while True:
+            try:
+                queue.queue.get_nowait()
+                queue.stats.pending = max(0, queue.stats.pending - 1)
+            except:
+                break
+        queue.stats.pending = 0
+
+    return {"status": "stopped"}
+
+
 @router.post("/clear-index")
 async def clear_index():
     """Clear all indexed data and reset the pipeline. Use with caution!"""

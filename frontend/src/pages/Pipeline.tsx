@@ -116,7 +116,7 @@ export function Pipeline() {
   const [stats, setStats] = useState<PipelineStats | null>(null);
   const [connected, setConnected] = useState(false);
   const [isTriggering, setIsTriggering] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
 
   useEffect(() => {
     async function loadStats() {
@@ -139,7 +139,12 @@ export function Pipeline() {
     ws.onclose = () => setConnected(false);
     ws.onmessage = (event) => {
       try {
-        setStats(JSON.parse(event.data));
+        const data = JSON.parse(event.data);
+        setStats(data);
+        // Reset stopping state when pipeline becomes idle
+        if (data.state === "idle") {
+          setIsStopping(false);
+        }
       } catch {
         // ignore
       }
@@ -159,10 +164,10 @@ export function Pipeline() {
     }
   };
 
-  const handleCancel = async () => {
-    setCancelling(true);
+  const handleStop = async () => {
+    setIsStopping(true);
     try {
-      await fetch("/api/scan/cancel", { method: "POST" });
+      await api.stopPipeline();
     } catch {
       // ignore
     }
@@ -261,22 +266,21 @@ export function Pipeline() {
         <div className="flex items-center gap-3 text-sm">
           {isActive ? (
             <button
-              onClick={handleCancel}
-              disabled={cancelling}
-              className="group flex items-center gap-2 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg transition-colors"
+              onClick={handleStop}
+              disabled={isStopping}
+              className="flex items-center gap-2 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 disabled:opacity-50 rounded-lg transition-colors min-w-[100px] justify-center"
             >
-              {cancelling ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+              {isStopping ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Stopping...
+                </>
               ) : (
                 <>
-                  <Square className="w-4 h-4 group-hover:hidden" />
-                  <Loader2 className="w-4 h-4 animate-spin hidden group-hover:inline" />
+                  <Square className="w-4 h-4" />
+                  Stop
                 </>
               )}
-              <span className="group-hover:hidden">
-                {stats.state === "scanning" ? "Scanning..." : "Processing..."}
-              </span>
-              <span className="hidden group-hover:inline">Stop</span>
             </button>
           ) : (
             <button

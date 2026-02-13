@@ -60,13 +60,6 @@ class Worker:
                 return settings.photos_dir / photo.file_path
         return None
 
-    async def _process_discovery(self, file_hash: str) -> bool:
-        """Process discovery stage - file already discovered, just route to next."""
-        await self.queue.mark_processing(file_hash, None)
-        await self.pipeline.route_to_next(file_hash, QueueType.DISCOVERY)
-        await self.queue.mark_completed(file_hash)
-        return True
-
     async def _process_exif(self, file_hash: str) -> bool:
         """Process EXIF extraction stage."""
         filepath = await self._get_file_path(file_hash)
@@ -279,7 +272,6 @@ class Worker:
     async def process_item(self, file_hash: str) -> bool:
         """Process a single item from the queue."""
         handlers = {
-            QueueType.DISCOVERY: self._process_discovery,
             QueueType.EXIF: self._process_exif,
             QueueType.GEOCODING: self._process_geocoding,
             QueueType.THUMBNAILS: self._process_thumbnails,
@@ -302,8 +294,16 @@ class Worker:
         logger.info(f"Worker {self.worker_id} started for queue {self.queue_type.value}")
 
         while self._running:
+            # Check for stop request
+            if self.pipeline._stop_requested:
+                logger.info(f"Worker {self.worker_id} stopping (stop requested)")
+                break
             try:
                 file_hash = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+                # Check again after getting an item
+                if self.pipeline._stop_requested:
+                    logger.info(f"Worker {self.worker_id} stopping (stop requested)")
+                    break
                 async with semaphore:
                     await self.process_item(file_hash)
             except asyncio.TimeoutError:
@@ -356,7 +356,7 @@ class EventDetectionWorker:
             self.pipeline.queues[qt].stats.pending > 0
             or self.pipeline.queues[qt].stats.processing > 0
             for qt in [
-                QueueType.DISCOVERY, QueueType.EXIF, QueueType.GEOCODING,
+                QueueType.EXIF, QueueType.GEOCODING,
                 QueueType.THUMBNAILS, QueueType.MOTION_PHOTOS,
                 QueueType.HASHING, QueueType.FACES,
                 QueueType.CAPTIONING,
@@ -382,13 +382,17 @@ class EventDetectionWorker:
         logger.info("Event detection worker started")
 
         while self._running:
+            # Check for stop request
+            if self.pipeline._stop_requested:
+                logger.info("Event detection worker stopping (stop requested)")
+                break
             try:
                 # Wait for the events queue to have items
                 events_queue = self.pipeline.queues[QueueType.EVENTS]
-                while events_queue.stats.pending == 0 and self._running:
+                while events_queue.stats.pending == 0 and self._running and not self.pipeline._stop_requested:
                     await asyncio.sleep(2)
 
-                if not self._running:
+                if not self._running or self.pipeline._stop_requested:
                     break
 
                 # Initial debounce -- let more items accumulate

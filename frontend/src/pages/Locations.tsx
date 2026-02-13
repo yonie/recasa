@@ -66,6 +66,8 @@ export function LocationCityPhotos() {
       }
     }
     load();
+    const interval = setInterval(load, 10000);
+    return () => clearInterval(interval);
   }, [country, city]);
 
   const handlePhotoClick = useCallback(
@@ -134,6 +136,8 @@ export function LocationCountryCities() {
       }
     }
     load();
+    const interval = setInterval(load, 10000);
+    return () => clearInterval(interval);
   }, [country]);
 
   if (loading) {
@@ -211,6 +215,8 @@ export function Locations() {
       }
     }
     load();
+    const interval = setInterval(load, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   const setViewMode = (mode: "map" | "countries") => {

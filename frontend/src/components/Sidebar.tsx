@@ -16,9 +16,12 @@ import {
   Wrench,
   ChevronDown,
   ChevronRight,
+  X,
+  Loader2,
 } from "lucide-react";
 import { clsx } from "clsx";
 import { useStore } from "../store/useStore";
+import { api, type PipelineStats } from "../api/client";
 
 const navItems = [
   { to: "/", icon: ImageIcon, label: "Photos" },
@@ -38,124 +41,174 @@ const toolItems = [
 
 export function Sidebar() {
   const stats = useStore((s) => s.stats);
+  const sidebarOpen = useStore((s) => s.sidebarOpen);
+  const closeSidebar = useStore((s) => s.closeSidebar);
   const location = useLocation();
   const isToolRoute = toolItems.some((item) => location.pathname.startsWith(item.to));
   const [toolsOpen, setToolsOpen] = useState(isToolRoute);
+  const [pipelineStats, setPipelineStats] = useState<PipelineStats | null>(null);
 
-  // Auto-open Tools when navigating to a tool route
   useEffect(() => {
     if (isToolRoute && !toolsOpen) setToolsOpen(true);
-  }, [isToolRoute]);
+  }, [isToolRoute, toolsOpen]);
+
+  useEffect(() => {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${protocol}//${window.location.host}/api/pipeline/ws`);
+    ws.onmessage = (event) => {
+      try {
+        setPipelineStats(JSON.parse(event.data));
+      } catch {
+        // ignore
+      }
+    };
+    return () => ws.close();
+  }, []);
+
+  const pipelineActive = pipelineStats?.state === "scanning" || pipelineStats?.state === "processing";
 
   return (
-    <aside className="w-64 border-r border-gray-200 bg-gray-50 flex flex-col h-full">
-      {/* Logo */}
-      <div className="flex items-center gap-2 px-5 py-4 border-b border-gray-200">
-        <Camera className="w-7 h-7 text-primary-600" />
-        <h1 className="text-xl font-bold text-gray-900">Recasa</h1>
-      </div>
+    <>
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
+          onClick={closeSidebar}
+        />
+      )}
 
-      {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto py-3 px-3">
-        <div className="space-y-0.5">
-          {navItems.map((item) => (
+      {/* Sidebar */}
+      <aside
+        className={clsx(
+          "fixed lg:relative inset-y-0 left-0 z-50 lg:z-auto",
+          "w-64 border-r border-gray-200 bg-gray-50 flex flex-col h-full",
+          "transform transition-transform duration-300 lg:transform-none",
+          sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+        )}
+      >
+        {/* Logo */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+          <div className="flex items-center gap-2">
+            <Camera className="w-7 h-7 text-primary-600" />
+            <h1 className="text-xl font-bold text-gray-900">Recasa</h1>
+          </div>
+          <button
+            onClick={closeSidebar}
+            className="lg:hidden p-1 hover:bg-gray-200 rounded"
+          >
+            <X className="w-5 h-5 text-gray-500" />
+          </button>
+        </div>
+
+        {/* Navigation */}
+        <nav className="flex-1 overflow-y-auto py-3 px-3">
+          <div className="space-y-0.5">
+            {navItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.to === "/"}
+                className={({ isActive }) =>
+                  clsx("sidebar-link", isActive && "active")
+                }
+              >
+                <item.icon className="w-5 h-5 flex-shrink-0" />
+                <span>{item.label}</span>
+              </NavLink>
+            ))}
+
+            {/* Tools submenu */}
+            <button
+              onClick={() => setToolsOpen(!toolsOpen)}
+              className="sidebar-link w-full"
+            >
+              <Wrench className="w-5 h-5 flex-shrink-0" />
+              <span className="flex-1 text-left">Tools</span>
+              {toolsOpen ? (
+                <ChevronDown className="w-4 h-4 text-gray-400" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-gray-400" />
+              )}
+            </button>
+            {toolsOpen && (
+              <div className="ml-3 space-y-0.5">
+                {toolItems.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    className={({ isActive }) =>
+                      clsx("sidebar-link", isActive && "active")
+                    }
+                  >
+                    <item.icon className="w-5 h-5 flex-shrink-0" />
+                    <span>{item.label}</span>
+                  </NavLink>
+                ))}
+              </div>
+            )}
+
             <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === "/"}
+              to="/pipeline"
               className={({ isActive }) =>
                 clsx("sidebar-link", isActive && "active")
               }
             >
-              <item.icon className="w-5 h-5 flex-shrink-0" />
-              <span>{item.label}</span>
+              {pipelineActive ? (
+                <Loader2 className="w-5 h-5 flex-shrink-0 animate-spin text-blue-500" />
+              ) : (
+                <Activity className="w-5 h-5 flex-shrink-0" />
+              )}
+              <span>Pipeline</span>
+              {pipelineActive && (
+                <span className="ml-auto text-[10px] text-blue-500 font-medium">running</span>
+              )}
             </NavLink>
-          ))}
+          </div>
+        </nav>
 
-          {/* Tools submenu */}
-          <button
-            onClick={() => setToolsOpen(!toolsOpen)}
-            className="sidebar-link w-full"
-          >
-            <Wrench className="w-5 h-5 flex-shrink-0" />
-            <span className="flex-1 text-left">Tools</span>
-            {toolsOpen ? (
-              <ChevronDown className="w-4 h-4 text-gray-400" />
-            ) : (
-              <ChevronRight className="w-4 h-4 text-gray-400" />
+        {/* Stats footer */}
+        {stats && (
+          <div className="px-5 py-3 border-t border-gray-200 text-xs text-gray-500 space-y-1">
+            <div className="flex justify-between">
+              <span>Photos</span>
+              <span className="font-medium text-gray-700">
+                {stats.total_photos.toLocaleString()}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span>Size</span>
+              <span className="font-medium text-gray-700">
+                {formatBytes(stats.total_size_bytes)}
+              </span>
+            </div>
+            {stats.total_persons > 0 && (
+              <div className="flex justify-between">
+                <span>People</span>
+                <span className="font-medium text-gray-700">
+                  {stats.total_persons.toLocaleString()}
+                </span>
+              </div>
             )}
-          </button>
-          {toolsOpen && (
-            <div className="ml-3 space-y-0.5">
-              {toolItems.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  className={({ isActive }) =>
-                    clsx("sidebar-link", isActive && "active")
-                  }
-                >
-                  <item.icon className="w-5 h-5 flex-shrink-0" />
-                  <span>{item.label}</span>
-                </NavLink>
-              ))}
-            </div>
-          )}
-
-          <NavLink
-            to="/pipeline"
-            className={({ isActive }) =>
-              clsx("sidebar-link", isActive && "active")
-            }
-          >
-            <Activity className="w-5 h-5 flex-shrink-0" />
-            <span>Pipeline</span>
-          </NavLink>
-        </div>
-      </nav>
-
-      {/* Stats footer */}
-      {stats && (
-        <div className="px-5 py-3 border-t border-gray-200 text-xs text-gray-500 space-y-1">
-          <div className="flex justify-between">
-            <span>Photos</span>
-            <span className="font-medium text-gray-700">
-              {stats.total_photos.toLocaleString()}
-            </span>
+            {stats.locations_count > 0 && (
+              <div className="flex justify-between">
+                <span>Locations</span>
+                <span className="font-medium text-gray-700">
+                  {stats.locations_count.toLocaleString()}
+                </span>
+              </div>
+            )}
+            {stats.favorites_count > 0 && (
+              <div className="flex justify-between">
+                <span>Favorites</span>
+                <span className="font-medium text-gray-700">
+                  {stats.favorites_count.toLocaleString()}
+                </span>
+              </div>
+            )}
           </div>
-          <div className="flex justify-between">
-            <span>Size</span>
-            <span className="font-medium text-gray-700">
-              {formatBytes(stats.total_size_bytes)}
-            </span>
-          </div>
-          {stats.total_persons > 0 && (
-            <div className="flex justify-between">
-              <span>People</span>
-              <span className="font-medium text-gray-700">
-                {stats.total_persons.toLocaleString()}
-              </span>
-            </div>
-          )}
-          {stats.locations_count > 0 && (
-            <div className="flex justify-between">
-              <span>Locations</span>
-              <span className="font-medium text-gray-700">
-                {stats.locations_count.toLocaleString()}
-              </span>
-            </div>
-          )}
-          {stats.favorites_count > 0 && (
-            <div className="flex justify-between">
-              <span>Favorites</span>
-              <span className="font-medium text-gray-700">
-                {stats.favorites_count.toLocaleString()}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-    </aside>
+        )}
+      </aside>
+    </>
   );
 }
 

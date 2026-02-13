@@ -113,6 +113,9 @@ async def run_initial_scan() -> dict:
     scan_state.discovery_dirs_checked = 0
     scan_state.discovery_files_collected = 0
 
+    # Reset stop flag
+    pipeline._stop_requested = False
+
     # Set scanning state on pipeline (for status API without circular import)
     pipeline._is_scanning = True
     pipeline._scan_total = 0

@@ -282,6 +282,7 @@ export const api = {
   // Scan
   getScanStatus: () => request<ScanStatus>("/scan/status"),
   triggerScan: () => request<{ status: string }>("/scan/trigger", { method: "POST" }),
+  stopPipeline: () => request<{ status: string }>("/scan/stop", { method: "POST" }),
   clearIndex: () => request<{ status: string }>("/scan/clear-index", { method: "POST" }),
 
   // Pipeline

@@ -155,6 +155,7 @@ class Pipeline:
         self.error_log: list[dict] = []  # List of {timestamp, queue, file_hash, file_path, error}
         self._last_scan_stats: dict | None = None  # Stats from the most recent scan
         self._scan_completed = False  # Whether a scan has completed (even with 0 files)
+        self._stop_requested = False  # Set to True to stop all processing
 
         # Discovery phase tracking (set by pipeline.py during scan)
         self._discovery_phase: str | None = None
@@ -231,7 +232,9 @@ class Pipeline:
         is_processing = total_pending > 0 or total_processing > 0
 
         # Determine unified state
-        if is_scanning:
+        if self._stop_requested:
+            state = "idle"
+        elif is_scanning:
             state = "scanning"
         elif is_processing:
             state = "processing"
