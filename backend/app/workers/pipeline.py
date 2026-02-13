@@ -34,6 +34,10 @@ class ScanState:
         self.phase: str | None = None
         self.phase_progress: int = 0
         self.phase_total: int = 0
+        self.discovery_phase: str | None = None
+        self.discovery_dirs_found: int = 0
+        self.discovery_dirs_checked: int = 0
+        self.discovery_files_collected: int = 0
         self._listeners: list[asyncio.Queue] = []
 
     def add_listener(self) -> asyncio.Queue:
@@ -54,6 +58,10 @@ class ScanState:
             "phase": self.phase,
             "phase_progress": self.phase_progress,
             "phase_total": self.phase_total,
+            "discovery_phase": self.discovery_phase,
+            "discovery_dirs_found": self.discovery_dirs_found,
+            "discovery_dirs_checked": self.discovery_dirs_checked,
+            "discovery_files_collected": self.discovery_files_collected,
         }
         for queue in self._listeners:
             try:
@@ -70,6 +78,10 @@ class ScanState:
             "phase": self.phase,
             "phase_progress": self.phase_progress,
             "phase_total": self.phase_total,
+            "discovery_phase": self.discovery_phase,
+            "discovery_dirs_found": self.discovery_dirs_found,
+            "discovery_dirs_checked": self.discovery_dirs_checked,
+            "discovery_files_collected": self.discovery_files_collected,
         }
 
 
@@ -96,6 +108,10 @@ async def run_initial_scan() -> dict:
     scan_state.current_file = None
     scan_state.phase_progress = 0
     scan_state.phase_total = 0
+    scan_state.discovery_phase = "walking_dirs"
+    scan_state.discovery_dirs_found = 0
+    scan_state.discovery_dirs_checked = 0
+    scan_state.discovery_files_collected = 0
 
     # Set scanning state on pipeline (for status API without circular import)
     pipeline._is_scanning = True
@@ -110,6 +126,8 @@ async def run_initial_scan() -> dict:
     pipeline._completed_time = None
     pipeline._start_time = datetime.utcnow()  # Start timing from scan begin
     pipeline.error_log = []  # Clear error log on new scan
+    pipeline._scan_completed = False  # Reset scan completion flag
+    pipeline._completed_time = None  # Reset completion time
     for qtype in QueueType:
         q = pipeline.queues[qtype]
         q._processed.clear()
@@ -124,10 +142,32 @@ async def run_initial_scan() -> dict:
         scan_state.current_file = current_file
         scan_state.phase_progress = processed
         scan_state.phase_total = max(total, 1)
+        scan_state.discovery_phase = "scanning"
         # Update pipeline scan state (for status API without circular import)
         pipeline._scan_total = total
         pipeline._scan_scanned = processed
         pipeline._scan_current = current_file
+        pipeline._discovery_phase = "scanning"
+        await scan_state.notify()
+
+    async def discovery_callback(phase: str, **kwargs):
+        scan_state.discovery_phase = phase
+        pipeline._discovery_phase = phase
+        if phase == "walking_dirs":
+            scan_state.discovery_dirs_found = kwargs.get("dirs_found", 0)
+            pipeline._discovery_dirs_found = kwargs.get("dirs_found", 0)
+        elif phase == "checking_dirs":
+            scan_state.discovery_dirs_found = kwargs.get("dirs_found", 0)
+            scan_state.discovery_dirs_checked = kwargs.get("dirs_checked", 0)
+            pipeline._discovery_dirs_found = kwargs.get("dirs_found", 0)
+            pipeline._discovery_dirs_checked = kwargs.get("dirs_checked", 0)
+        elif phase == "collecting_files":
+            scan_state.discovery_dirs_found = kwargs.get("dirs_found", 0)
+            scan_state.discovery_dirs_checked = kwargs.get("dirs_checked", 0)
+            scan_state.discovery_files_collected = kwargs.get("files_collected", 0)
+            pipeline._discovery_dirs_found = kwargs.get("dirs_found", 0)
+            pipeline._discovery_dirs_checked = kwargs.get("dirs_checked", 0)
+            pipeline._discovery_files_collected = kwargs.get("files_collected", 0)
         await scan_state.notify()
 
     stats = {}
@@ -141,6 +181,7 @@ async def run_initial_scan() -> dict:
             progress_callback=progress_callback,
             cancel_check=lambda: scan_state.cancel_requested,
             on_file_discovered=on_file_discovered,
+            discovery_callback=discovery_callback,
         )
 
         logger.info(
@@ -162,11 +203,22 @@ async def run_initial_scan() -> dict:
         scan_state.total_files = 0
         scan_state.phase_progress = 0
         scan_state.phase_total = 0
+        scan_state.discovery_phase = None
+        scan_state.discovery_dirs_found = 0
+        scan_state.discovery_dirs_checked = 0
+        scan_state.discovery_files_collected = 0
         # Clear pipeline scan state (for status API without circular import)
         pipeline._is_scanning = False
         pipeline._scan_total = 0
         pipeline._scan_scanned = 0
         pipeline._scan_current = None
+        pipeline._discovery_phase = None
+        pipeline._discovery_dirs_found = 0
+        pipeline._discovery_dirs_checked = 0
+        pipeline._discovery_files_collected = 0
+        # Save scan stats and mark as completed
+        pipeline._last_scan_stats = stats
+        pipeline._scan_completed = True
         await scan_state.notify()
 
     return stats

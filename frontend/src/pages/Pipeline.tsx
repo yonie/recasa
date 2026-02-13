@@ -12,7 +12,6 @@ import {
   Calendar,
   Play,
   Image,
-  Search,
   CheckCircle2,
   AlertCircle,
   Clock,
@@ -22,7 +21,6 @@ import {
 } from "lucide-react";
 
 const QUEUE_ORDER = [
-  "discovery",
   "exif",
   "geocoding",
   "thumbnails",
@@ -34,7 +32,6 @@ const QUEUE_ORDER = [
 ];
 
 const QUEUE_LABELS: Record<string, string> = {
-  discovery: "Discovery",
   exif: "EXIF Extraction",
   geocoding: "Geocoding",
   thumbnails: "Thumbnails",
@@ -46,7 +43,6 @@ const QUEUE_LABELS: Record<string, string> = {
 };
 
 const QUEUE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  discovery: Search,
   exif: FileImage,
   geocoding: MapPin,
   thumbnails: Image,
@@ -58,7 +54,6 @@ const QUEUE_ICONS: Record<string, React.ComponentType<{ className?: string }>> =
 };
 
 const STAGE_COLORS: Record<string, { bg: string; bar: string; text: string; light: string }> = {
-  discovery: { bg: "bg-violet-50", bar: "bg-violet-500", text: "text-violet-700", light: "bg-violet-100" },
   exif: { bg: "bg-blue-50", bar: "bg-blue-500", text: "text-blue-700", light: "bg-blue-100" },
   geocoding: { bg: "bg-cyan-50", bar: "bg-cyan-500", text: "text-cyan-700", light: "bg-cyan-100" },
   thumbnails: { bg: "bg-teal-50", bar: "bg-teal-500", text: "text-teal-700", light: "bg-teal-100" },
@@ -173,8 +168,8 @@ export function Pipeline() {
     }
   };
 
-  const handleRebuild = async () => {
-    if (!confirm("This will delete all indexed data and rebuild from scratch. Continue?")) return;
+  const handleClearIndex = async () => {
+    if (!confirm("This will delete all indexed data. Continue?")) return;
     if (isTriggering) return;
     setIsTriggering(true);
     try {
@@ -215,7 +210,21 @@ export function Pipeline() {
             {stats.state === "scanning" && stats.scan_progress && (
               <span className="flex items-center gap-2 text-blue-600">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                Scanning {formatNumber(stats.scan_progress.scanned_files)} / {formatNumber(stats.scan_progress.total_files)} files
+                {stats.scan_progress.discovery_phase === "walking_dirs" && (
+                  <>Discovering directories ({formatNumber(stats.scan_progress.discovery_dirs_found)} found)</>
+                )}
+                {stats.scan_progress.discovery_phase === "checking_dirs" && (
+                  <>Checking for changes ({formatNumber(stats.scan_progress.discovery_dirs_checked)} / {formatNumber(stats.scan_progress.discovery_dirs_found)} dirs)</>
+                )}
+                {stats.scan_progress.discovery_phase === "collecting_files" && (
+                  <>Collecting files ({formatNumber(stats.scan_progress.discovery_files_collected)} found)</>
+                )}
+                {stats.scan_progress.discovery_phase === "scanning" && (
+                  <>Scanning {formatNumber(stats.scan_progress.scanned_files)} / {formatNumber(stats.scan_progress.total_files)} files</>
+                )}
+                {!stats.scan_progress.discovery_phase && (
+                  <>Scanning {formatNumber(stats.scan_progress.scanned_files)} / {formatNumber(stats.scan_progress.total_files)} files</>
+                )}
               </span>
             )}
             {stats.state === "processing" && stats.processing_progress && (
@@ -227,7 +236,17 @@ export function Pipeline() {
             {stats.state === "done" && stats.completion_summary && (
               <span className="flex items-center gap-2 text-green-600">
                 <Check className="w-3.5 h-3.5" />
-                Completed in {formatDuration(stats.completion_summary.elapsed_seconds)}
+                {stats.completion_summary.scan_stats ? (
+                  <>
+                    Scanned {formatNumber(stats.completion_summary.scan_stats.total || 0)} files:
+                    {" "}{stats.completion_summary.scan_stats.new || 0} new,
+                    {" "}{stats.completion_summary.scan_stats.updated || 0} updated,
+                    {" "}{stats.completion_summary.scan_stats.skipped || 0} unchanged
+                    {" "} ({formatDuration(stats.completion_summary.elapsed_seconds)})
+                  </>
+                ) : (
+                  <>Completed in {formatDuration(stats.completion_summary.elapsed_seconds)}</>
+                )}
               </span>
             )}
             {stats.state === "idle" && (
@@ -274,12 +293,12 @@ export function Pipeline() {
             </button>
           )}
           <button
-            onClick={handleRebuild}
+            onClick={handleClearIndex}
             disabled={isTriggering || isActive}
             className="flex items-center gap-2 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 disabled:opacity-50 rounded-lg transition-colors"
           >
             <Trash2 className="w-4 h-4" />
-            Rebuild
+            Clear index
           </button>
           <div className="flex items-center gap-1.5">
             <span className={`w-2 h-2 rounded-full ${connected ? "bg-green-500" : "bg-red-400"}`} />

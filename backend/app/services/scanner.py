@@ -1,7 +1,7 @@
 """File scanner service - discovers and indexes photos from the watch directory.
 
 Smart rescan behavior:
-- New files: enter pipeline at DISCOVERY (full processing)
+- New files: enter pipeline at EXIF (full processing)
 - Existing fully-processed files: skipped entirely
 - Existing partially-processed files: enter at first incomplete stage
 - Removed files: deleted from DB during cleanup pass
@@ -152,7 +152,7 @@ def _get_pipeline_entry_point(photo: Photo) -> str | None:
     """Determine which pipeline stage a photo should enter.
 
     Returns the queue name for the first incomplete stage, or None if fully processed.
-    Pipeline order: DISCOVERY → EXIF → GEOCODING → THUMBNAILS → MOTION_PHOTOS → HASHING → FACES → CAPTIONING → EVENTS
+    Pipeline order: EXIF → GEOCODING → THUMBNAILS → MOTION_PHOTOS → HASHING → FACES → CAPTIONING → EVENTS
     """
     if not photo.exif_extracted:
         return "exif"
@@ -167,13 +167,21 @@ def _get_pipeline_entry_point(photo: Photo) -> str | None:
     return None  # Fully processed
 
 
-async def scan_directory(progress_callback=None, cancel_check=None, on_file_discovered=None) -> dict:
+async def scan_directory(progress_callback=None, cancel_check=None, on_file_discovered=None, discovery_callback=None) -> dict:
     """Scan the photos directory and index all photos.
 
     Uses directory fingerprinting to skip unchanged directories on repeated scans:
     - First scan: walks all directories and caches fingerprints
     - Subsequent scans: only processes directories with changed fingerprints
     - Cache is cleared on app restart (in-memory only)
+
+    Args:
+        progress_callback: async callback(processed, total, current_file) for scan progress
+        cancel_check: function returning True if scan should be cancelled
+        on_file_discovered: async callback(file_hash, file_path, entry_queue) when file needs processing
+        discovery_callback: async callback(phase, **kwargs) for discovery phase progress
+            phase can be: "walking_dirs", "checking_dirs", "collecting_files"
+            kwargs contain relevant counts for each phase
 
     Returns:
         dict with scan statistics and discovered files.
@@ -200,6 +208,11 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
         # Only include directories that have photo files
         if any(is_supported_photo(Path(root) / f) for f in files):
             directories_with_photos.append(Path(root))
+            if discovery_callback:
+                await discovery_callback("walking_dirs", dirs_found=len(directories_with_photos))
+        if cancel_check and cancel_check():
+            logger.info("Scan cancelled during directory walk")
+            return stats
 
     # Phase 2: Filter directories using fingerprint cache
     # This skips entire directories that haven't changed since the last scan.
@@ -210,9 +223,14 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
         cached = _directory_cache.get(dir_key)
         if cached == fingerprint:
             stats["skipped_directories"] += 1
-            continue  # Directory unchanged - skip entirely
-        _directory_cache[dir_key] = fingerprint
-        directories_to_process.append(dir_path)
+        else:
+            _directory_cache[dir_key] = fingerprint
+            directories_to_process.append(dir_path)
+        if discovery_callback:
+            await discovery_callback("checking_dirs", dirs_found=len(directories_with_photos), dirs_checked=len(directories_to_process) + stats["skipped_directories"])
+        if cancel_check and cancel_check():
+            logger.info("Scan cancelled during directory check")
+            return stats
 
     if stats["skipped_directories"] > 0:
         logger.info(
@@ -227,6 +245,11 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
         for entry in dir_path.iterdir():
             if entry.is_file() and is_supported_photo(entry):
                 photo_files.append(entry)
+        if discovery_callback:
+            await discovery_callback("collecting_files", dirs_found=len(directories_with_photos), dirs_checked=len(directories_with_photos), files_collected=len(photo_files))
+        if cancel_check and cancel_check():
+            logger.info("Scan cancelled during file collection")
+            return stats
 
     stats["total"] = len(photo_files)
     logger.info("Found %d photo files in %d changed directories", stats["total"], len(directories_to_process))
@@ -261,7 +284,7 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
                                 elif not is_new:
                                     stats["fully_processed"] += 1
                                 elif is_new:
-                                    pipeline_candidates.append((file_hash, str(filepath), "discovery"))
+                                    pipeline_candidates.append((file_hash, str(filepath), "exif"))
                 except Exception:
                     logger.exception("Error indexing %s", filepath)
                     stats["errors"] += 1
@@ -420,7 +443,7 @@ async def index_single_file(filepath: Path) -> tuple[str, str] | None:
     """Index a single newly discovered file (from file watcher).
 
     Returns (file_hash, entry_queue) or None on error.
-    New files always start at 'discovery'. Existing files start at their first incomplete stage.
+    New files always start at 'exif'. Existing files start at their first incomplete stage.
     """
     if not is_supported_photo(filepath):
         return None
@@ -435,7 +458,7 @@ async def index_single_file(filepath: Path) -> tuple[str, str] | None:
             file_hash, is_new = result
             if is_new:
                 logger.info("Indexed new file: %s (%s)", filepath, file_hash)
-                return (file_hash, "discovery")
+                return (file_hash, "exif")
             else:
                 async with async_session() as session:
                     photo = await session.get(Photo, file_hash)

@@ -121,6 +121,10 @@ export interface ScanStatus {
   phase: string | null;
   phase_progress: number;
   phase_total: number;
+  discovery_phase: string | null;
+  discovery_dirs_found: number;
+  discovery_dirs_checked: number;
+  discovery_files_collected: number;
 }
 
 export interface QueueStats {
@@ -144,6 +148,10 @@ export interface PipelineStats {
     total_files: number;
     scanned_files: number;
     current_directory: string | null;
+    discovery_phase: string | null;
+    discovery_dirs_found: number;
+    discovery_dirs_checked: number;
+    discovery_files_collected: number;
   } | null;
   processing_progress: {
     files_queued: number;
@@ -154,6 +162,14 @@ export interface PipelineStats {
     files_processed: number;
     elapsed_seconds: number;
     completed_at: string | null;
+    scan_stats: {
+      total: number;
+      new: number;
+      updated: number;
+      skipped: number;
+      fully_processed: number;
+      errors: number;
+    } | null;
   } | null;
   error_log: Array<{
     timestamp: string;

@@ -1,7 +1,7 @@
 """Pipeline queue system for parallel photo processing.
 
 Architecture:
-  Discovery → EXIF → Geocoding → Thumbnail → Hashing → Faces → Captioning → Events
+  EXIF → Geocoding → Thumbnail → Hashing → Faces → Captioning → Events
                         ↓
                     Motion Photos
 
@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 
 class QueueType(Enum):
-    DISCOVERY = "discovery"
     EXIF = "exif"
     GEOCODING = "geocoding"
     THUMBNAILS = "thumbnails"
@@ -154,6 +153,14 @@ class Pipeline:
         self._completed_time: datetime | None = None
         self._total_discovered = 0
         self.error_log: list[dict] = []  # List of {timestamp, queue, file_hash, file_path, error}
+        self._last_scan_stats: dict | None = None  # Stats from the most recent scan
+        self._scan_completed = False  # Whether a scan has completed (even with 0 files)
+
+        # Discovery phase tracking (set by pipeline.py during scan)
+        self._discovery_phase: str | None = None
+        self._discovery_dirs_found = 0
+        self._discovery_dirs_checked = 0
+        self._discovery_files_collected = 0
 
         # Create queues
         for qtype in QueueType:
@@ -162,7 +169,6 @@ class Pipeline:
         # Define pipeline flow - sequential per file
         # Each file goes through all steps in order
         self._flow: dict[QueueType, list[QueueType]] = {
-            QueueType.DISCOVERY: [QueueType.EXIF],
             QueueType.EXIF: [QueueType.GEOCODING],
             QueueType.GEOCODING: [QueueType.THUMBNAILS],
             QueueType.THUMBNAILS: [QueueType.MOTION_PHOTOS],
@@ -178,9 +184,9 @@ class Pipeline:
         return self._flow.get(queue_type, [])
 
     async def add_file(self, file_hash: str, file_path: str) -> bool:
-        """Add a newly discovered file to the pipeline (starts at DISCOVERY)."""
+        """Add a newly discovered file to the pipeline (starts at EXIF)."""
         self._total_discovered += 1
-        return await self.queues[QueueType.DISCOVERY].put(file_hash)
+        return await self.queues[QueueType.EXIF].put(file_hash)
 
     async def add_file_at(self, file_hash: str, entry_queue: QueueType) -> bool:
         """Add a file to the pipeline at a specific queue (for partial processing)."""
@@ -214,6 +220,10 @@ class Pipeline:
         scan_total = getattr(self, '_scan_total', 0)
         scan_scanned = getattr(self, '_scan_scanned', 0)
         scan_current = getattr(self, '_scan_current', None)
+        discovery_phase = getattr(self, '_discovery_phase', None)
+        discovery_dirs_found = getattr(self, '_discovery_dirs_found', 0)
+        discovery_dirs_checked = getattr(self, '_discovery_dirs_checked', 0)
+        discovery_files_collected = getattr(self, '_discovery_files_collected', 0)
 
         # Check if processing (workers active)
         total_pending = sum(max(q.stats.pending, 0) for q in self.queues.values())
@@ -225,16 +235,15 @@ class Pipeline:
             state = "scanning"
         elif is_processing:
             state = "processing"
-        elif self._total_discovered > 0 and total_pending == 0 and total_processing == 0:
+        elif self._scan_completed:
             state = "done"
         else:
             state = "idle"
 
         # Track completion time
-        if state in ("done", "idle") and self._total_discovered > 0:
-            if self._completed_time is None:
-                self._completed_time = now
-        else:
+        if state == "done" and self._completed_time is None:
+            self._completed_time = now
+        elif state not in ("done",):
             self._completed_time = None
 
         # Compute elapsed time
@@ -262,6 +271,10 @@ class Pipeline:
                 "total_files": scan_total,
                 "scanned_files": scan_scanned,
                 "current_directory": scan_current,
+                "discovery_phase": discovery_phase,
+                "discovery_dirs_found": discovery_dirs_found,
+                "discovery_dirs_checked": discovery_dirs_checked,
+                "discovery_files_collected": discovery_files_collected,
             } if is_scanning else None,
 
             # Processing progress (only relevant during 'processing')
@@ -276,6 +289,7 @@ class Pipeline:
                 "files_processed": self.queues[QueueType.EVENTS].stats.completed_total,
                 "elapsed_seconds": elapsed_seconds,
                 "completed_at": self._completed_time.isoformat() if self._completed_time else None,
+                "scan_stats": self._last_scan_stats,
             } if state == "done" else None,
 
             # Error tracking (always available)
