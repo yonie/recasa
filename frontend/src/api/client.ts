@@ -122,8 +122,6 @@ export interface ScanStatus {
   phase_progress: number;
   phase_total: number;
   discovery_phase: string | null;
-  discovery_dirs_found: number;
-  discovery_dirs_checked: number;
   discovery_files_collected: number;
 }
 
@@ -149,8 +147,6 @@ export interface PipelineStats {
     scanned_files: number;
     current_directory: string | null;
     discovery_phase: string | null;
-    discovery_dirs_found: number;
-    discovery_dirs_checked: number;
     discovery_files_collected: number;
   } | null;
   processing_progress: {

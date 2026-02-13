@@ -215,19 +215,9 @@ export function Pipeline() {
             {stats.state === "scanning" && stats.scan_progress && (
               <span className="flex items-center gap-2 text-blue-600">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                {stats.scan_progress.discovery_phase === "walking_dirs" && (
-                  <>Discovering directories ({formatNumber(stats.scan_progress.discovery_dirs_found)} found)</>
-                )}
-                {stats.scan_progress.discovery_phase === "checking_dirs" && (
-                  <>Checking for changes ({formatNumber(stats.scan_progress.discovery_dirs_checked)} / {formatNumber(stats.scan_progress.discovery_dirs_found)} dirs)</>
-                )}
-                {stats.scan_progress.discovery_phase === "collecting_files" && (
+                {stats.scan_progress.discovery_phase === "collecting_files" ? (
                   <>Collecting files ({formatNumber(stats.scan_progress.discovery_files_collected)} found)</>
-                )}
-                {stats.scan_progress.discovery_phase === "scanning" && (
-                  <>Scanning {formatNumber(stats.scan_progress.scanned_files)} / {formatNumber(stats.scan_progress.total_files)} files</>
-                )}
-                {!stats.scan_progress.discovery_phase && (
+                ) : (
                   <>Scanning {formatNumber(stats.scan_progress.scanned_files)} / {formatNumber(stats.scan_progress.total_files)} files</>
                 )}
               </span>

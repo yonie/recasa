@@ -152,15 +152,13 @@ class Pipeline:
         self._start_time: datetime | None = None
         self._completed_time: datetime | None = None
         self._total_discovered = 0
-        self.error_log: list[dict] = []  # List of {timestamp, queue, file_hash, file_path, error}
-        self._last_scan_stats: dict | None = None  # Stats from the most recent scan
-        self._scan_completed = False  # Whether a scan has completed (even with 0 files)
-        self._stop_requested = False  # Set to True to stop all processing
+        self.error_log: list[dict] = []
+        self._last_scan_stats: dict | None = None
+        self._scan_completed = False
+        self._stop_requested = False
 
         # Discovery phase tracking (set by pipeline.py during scan)
         self._discovery_phase: str | None = None
-        self._discovery_dirs_found = 0
-        self._discovery_dirs_checked = 0
         self._discovery_files_collected = 0
 
         # Create queues
@@ -222,8 +220,6 @@ class Pipeline:
         scan_scanned = getattr(self, '_scan_scanned', 0)
         scan_current = getattr(self, '_scan_current', None)
         discovery_phase = getattr(self, '_discovery_phase', None)
-        discovery_dirs_found = getattr(self, '_discovery_dirs_found', 0)
-        discovery_dirs_checked = getattr(self, '_discovery_dirs_checked', 0)
         discovery_files_collected = getattr(self, '_discovery_files_collected', 0)
 
         # Check if processing (workers active)
@@ -275,8 +271,6 @@ class Pipeline:
                 "scanned_files": scan_scanned,
                 "current_directory": scan_current,
                 "discovery_phase": discovery_phase,
-                "discovery_dirs_found": discovery_dirs_found,
-                "discovery_dirs_checked": discovery_dirs_checked,
                 "discovery_files_collected": discovery_files_collected,
             } if is_scanning else None,
 

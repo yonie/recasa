@@ -141,12 +141,10 @@ class ScanStatus(BaseModel):
     total_files: int = 0
     processed_files: int = 0
     current_file: str | None = None
-    phase: str | None = None  # "discovery", "exif", "geocoding", "thumbnails", "motion_photos", "hashing", "faces", "captioning", "events"
+    phase: str | None = None
     phase_progress: int = 0
     phase_total: int = 0
-    discovery_phase: str | None = None  # "walking_dirs", "checking_dirs", "collecting_files", "scanning"
-    discovery_dirs_found: int = 0
-    discovery_dirs_checked: int = 0
+    discovery_phase: str | None = None
     discovery_files_collected: int = 0
 
 

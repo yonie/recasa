@@ -6,7 +6,6 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from backend.app.schemas.photo import ScanStatus
-from backend.app.services.scanner import clear_directory_cache
 from backend.app.workers.pipeline import run_initial_scan, scan_state
 from backend.app.workers.queues import pipeline, QueueType
 from backend.app.database import async_session
@@ -87,9 +86,6 @@ async def clear_index():
         await session.execute(PhotoPath.__table__.delete())
         await session.execute(Photo.__table__.delete())
         await session.commit()
-
-    # Clear directory fingerprint cache so next scan processes everything
-    clear_directory_cache()
 
     # Reset pipeline queues
     for qtype in QueueType:
