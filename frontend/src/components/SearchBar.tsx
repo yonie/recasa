@@ -1,11 +1,11 @@
 import { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, X } from "lucide-react";
+import { Search, X, Menu } from "lucide-react";
 import { useStore } from "../store/useStore";
 
 export function SearchBar() {
   const navigate = useNavigate();
-  const { searchQuery, setSearchQuery } = useStore();
+  const { searchQuery, setSearchQuery, toggleSidebar } = useStore();
   const [inputValue, setInputValue] = useState(searchQuery);
 
   const handleSubmit = useCallback(
@@ -27,6 +27,12 @@ export function SearchBar() {
 
   return (
     <header className="h-14 border-b border-gray-200 bg-white flex items-center px-4 gap-4">
+      <button
+        onClick={toggleSidebar}
+        className="lg:hidden p-2 -ml-2 hover:bg-gray-100 rounded-lg"
+      >
+        <Menu className="w-5 h-5 text-gray-600" />
+      </button>
       <form onSubmit={handleSubmit} className="flex-1 max-w-2xl relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
         <input

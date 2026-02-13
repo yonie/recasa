@@ -138,12 +138,23 @@ export interface QueueStats {
 }
 
 export interface PipelineStats {
-  is_running: boolean;
-  status: "idle" | "processing" | "done";
-  total_files_discovered: number;
-  total_files_completed: number;
-  start_time: string | null;
-  uptime_seconds: number;
+  state: "idle" | "scanning" | "processing" | "done";
+  scan_progress: {
+    is_scanning: boolean;
+    total_files: number;
+    scanned_files: number;
+    current_directory: string | null;
+  } | null;
+  processing_progress: {
+    files_queued: number;
+    files_processing: number;
+    elapsed_seconds: number;
+  } | null;
+  completion_summary: {
+    files_processed: number;
+    elapsed_seconds: number;
+    completed_at: string | null;
+  } | null;
   error_log: Array<{
     timestamp: string;
     queue: string;
@@ -151,8 +162,8 @@ export interface PipelineStats {
     file_path: string | null;
     error: string;
   }>;
+  error_count: number;
   queues: Record<string, QueueStats>;
-  flow: Record<string, string[]>;
 }
 
 export interface LibraryStats {

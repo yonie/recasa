@@ -198,54 +198,91 @@ class Pipeline:
             await self.queues[next_queue_type].put(file_hash)
 
     def get_pipeline_stats(self) -> dict[str, Any]:
-        """Get full pipeline statistics."""
+        """Get full pipeline statistics with unified status.
+
+        Returns a single 'state' field that tells the full story:
+        - idle: nothing happening, waiting for user action
+        - scanning: discovering files on disk
+        - processing: pipeline workers are actively processing
+        - done: everything complete
+        """
         now = datetime.utcnow()
 
-        # Determine if the pipeline is idle (all queues drained, nothing in flight)
-        is_idle = all(
-            max(q.stats.pending, 0) == 0 and max(q.stats.processing, 0) == 0
-            for q in self.queues.values()
-        )
+        # Check if scanning (discovery phase)
+        from backend.app.workers.pipeline import scan_state
+        is_scanning = scan_state.is_scanning
+
+        # Check if processing (workers active)
+        total_pending = sum(max(q.stats.pending, 0) for q in self.queues.values())
+        total_processing = sum(max(q.stats.processing, 0) for q in self.queues.values())
+        is_processing = total_pending > 0 or total_processing > 0
+
+        # Determine unified state
+        if is_scanning:
+            state = "scanning"
+        elif is_processing:
+            state = "processing"
+        elif self._total_discovered > 0 and total_pending == 0 and total_processing == 0:
+            state = "done"
+        else:
+            state = "idle"
 
         # Track completion time
-        if is_idle and self._total_discovered > 0:
+        if state in ("done", "idle") and self._total_discovered > 0:
             if self._completed_time is None:
                 self._completed_time = now
         else:
             self._completed_time = None
 
-        # Compute status
-        if self._total_discovered == 0:
-            status = "idle"
-        elif is_idle:
-            status = "done"
-        else:
-            status = "processing"
-
-        # Compute uptime: if completed, freeze at completion duration
+        # Compute elapsed time
         if self._start_time is None:
-            uptime_seconds = 0.0
+            elapsed_seconds = 0.0
         elif self._completed_time is not None:
-            uptime_seconds = (self._completed_time - self._start_time).total_seconds()
+            elapsed_seconds = (self._completed_time - self._start_time).total_seconds()
         else:
-            uptime_seconds = (now - self._start_time).total_seconds()
+            elapsed_seconds = (now - self._start_time).total_seconds()
+
+        # Compute completion stats
+        total_files_needing_work = sum(
+            q.stats.completed_total + q.stats.pending + q.stats.processing + q.stats.failed_total
+            for q in self.queues.values()
+            if q.queue_type != QueueType.EVENTS
+        ) or 1
 
         return {
-            "is_running": self.is_running,
-            "status": status,
-            "total_files_discovered": self._total_discovered,
-            "total_files_completed": self.queues[QueueType.EVENTS].stats.completed_total,
-            "start_time": self._start_time.isoformat() if self._start_time else None,
-            "completed_at": self._completed_time.isoformat() if self._completed_time else None,
-            "uptime_seconds": uptime_seconds,
-            "error_log": self.error_log[-50:],  # Last 50 errors
+            # Unified status - single source of truth
+            "state": state,
+
+            # Scan progress (only relevant during 'scanning')
+            "scan_progress": {
+                "is_scanning": is_scanning,
+                "total_files": scan_state.total_files,
+                "scanned_files": scan_state.processed_files,
+                "current_directory": scan_state.current_file,
+            } if is_scanning else None,
+
+            # Processing progress (only relevant during 'processing')
+            "processing_progress": {
+                "files_queued": total_pending,
+                "files_processing": total_processing,
+                "elapsed_seconds": elapsed_seconds,
+            } if state == "processing" else None,
+
+            # Completion summary (only relevant during 'done')
+            "completion_summary": {
+                "files_processed": self.queues[QueueType.EVENTS].stats.completed_total,
+                "elapsed_seconds": elapsed_seconds,
+                "completed_at": self._completed_time.isoformat() if self._completed_time else None,
+            } if state == "done" else None,
+
+            # Error tracking (always available)
+            "error_log": self.error_log[-50:],
+            "error_count": len([e for e in self.error_log]),
+
+            # Detailed queue stats (for debugging/details view)
             "queues": {
                 qtype.value: queue.get_stats()
                 for qtype, queue in self.queues.items()
-            },
-            "flow": {
-                from_q.value: [to_q.value for to_q in to_queues]
-                for from_q, to_queues in self._flow.items()
             },
         }
 

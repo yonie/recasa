@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type QueueStats } from "../api/client";
+import { api, type QueueStats, type PipelineStats } from "../api/client";
 import {
   Activity,
   RotateCcw,
@@ -20,24 +20,6 @@ import {
   Loader2,
   Square,
 } from "lucide-react";
-
-interface PipelineStats {
-  is_running: boolean;
-  status: "idle" | "processing" | "done";
-  total_files_discovered: number;
-  total_files_completed: number;
-  start_time: string | null;
-  uptime_seconds: number;
-  error_log: Array<{
-    timestamp: string;
-    queue: string;
-    file_hash: string;
-    file_path: string | null;
-    error: string;
-  }>;
-  queues: Record<string, QueueStats>;
-  flow: Record<string, string[]>;
-}
 
 const QUEUE_ORDER = [
   "discovery",
@@ -87,21 +69,16 @@ const STAGE_COLORS: Record<string, { bg: string; bar: string; text: string; ligh
   events: { bg: "bg-indigo-50", bar: "bg-indigo-500", text: "text-indigo-700", light: "bg-indigo-100" },
 };
 
-function formatUptime(seconds: number): string {
+function formatDuration(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) {
     const m = Math.floor(seconds / 60);
     const s = Math.round(seconds % 60);
     return `${m}m ${s}s`;
   }
-  if (seconds < 86400) {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.round((seconds % 3600) / 60);
-    return `${h}h ${m}m`;
-  }
-  const d = Math.floor(seconds / 86400);
-  const h = Math.round((seconds % 86400) / 3600);
-  return `${d}d ${h}h`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
 }
 
 function formatNumber(n: number): string {
@@ -146,27 +123,23 @@ export function Pipeline() {
   const [isTriggering, setIsTriggering] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
-  // Load initial stats
   useEffect(() => {
     async function loadStats() {
       try {
         const data = await api.getPipelineStatus();
-        setStats(data as PipelineStats);
+        setStats(data);
       } catch {
         // ignore
       }
     }
-
     loadStats();
     const interval = setInterval(loadStats, 3000);
     return () => clearInterval(interval);
   }, []);
 
-  // WebSocket for real-time updates
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${protocol}//${window.location.host}/api/pipeline/ws`);
-
     ws.onopen = () => setConnected(true);
     ws.onclose = () => setConnected(false);
     ws.onmessage = (event) => {
@@ -176,7 +149,6 @@ export function Pipeline() {
         // ignore
       }
     };
-
     return () => ws.close();
   }, []);
 
@@ -192,7 +164,7 @@ export function Pipeline() {
     }
   };
 
-  const handleCancelScan = async () => {
+  const handleCancel = async () => {
     setCancelling(true);
     try {
       await fetch("/api/scan/cancel", { method: "POST" });
@@ -201,7 +173,7 @@ export function Pipeline() {
     }
   };
 
-  const handleRebuildIndex = async () => {
+  const handleRebuild = async () => {
     if (!confirm("This will delete all indexed data and rebuild from scratch. Continue?")) return;
     if (isTriggering) return;
     setIsTriggering(true);
@@ -222,14 +194,9 @@ export function Pipeline() {
     );
   }
 
-  const totalInProgress = Math.max(0, Object.values(stats.queues).reduce(
+  const isActive = stats.state === "scanning" || stats.state === "processing";
+  const totalInProgress = Object.values(stats.queues).reduce(
     (acc, q) => acc + q.pending + q.processing,
-    0
-  ));
-
-  const totalCompleted = stats.total_files_completed;
-  const totalFailed = Object.values(stats.queues).reduce(
-    (acc, q) => acc + q.failed_total,
     0
   );
 
@@ -238,40 +205,44 @@ export function Pipeline() {
     1
   );
 
-  // Overall progress
-  const overallProgress = stats.total_files_discovered > 0
-    ? Math.round((totalCompleted / stats.total_files_discovered) * 100)
-    : 0;
-
   return (
     <div className="p-6 max-w-[960px] mx-auto">
-      {/* Header */}
+      {/* Status Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Processing Pipeline</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
-            {stats.status === "processing" ? (
-              <span className="flex items-center gap-2">
-                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                Processing for {formatUptime(stats.uptime_seconds)}
-              </span>
-            ) : stats.status === "done" ? (
-              <span className="flex items-center gap-2 text-green-600">
-                <Check className="w-3.5 h-3.5" />
-                Completed in {formatUptime(stats.uptime_seconds)}
-              </span>
-            ) : (
-              <span className="flex items-center gap-2 text-gray-400">
-                <span className="w-2 h-2 bg-gray-300 rounded-full" />
-                Idle
+          <h1 className="text-2xl font-bold text-gray-900">Pipeline</h1>
+          <div className="text-sm text-gray-500 mt-0.5">
+            {stats.state === "scanning" && stats.scan_progress && (
+              <span className="flex items-center gap-2 text-blue-600">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Scanning {formatNumber(stats.scan_progress.scanned_files)} / {formatNumber(stats.scan_progress.total_files)} files
               </span>
             )}
-          </p>
+            {stats.state === "processing" && stats.processing_progress && (
+              <span className="flex items-center gap-2">
+                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                Processing {formatNumber(stats.processing_progress.files_processing)} photos ({formatDuration(stats.processing_progress.elapsed_seconds)})
+              </span>
+            )}
+            {stats.state === "done" && stats.completion_summary && (
+              <span className="flex items-center gap-2 text-green-600">
+                <Check className="w-3.5 h-3.5" />
+                Completed in {formatDuration(stats.completion_summary.elapsed_seconds)}
+              </span>
+            )}
+            {stats.state === "idle" && (
+              <span className="flex items-center gap-2 text-gray-400">
+                <span className="w-2 h-2 bg-gray-300 rounded-full" />
+                Ready
+              </span>
+            )}
+          </div>
         </div>
+
         <div className="flex items-center gap-3 text-sm">
-          {stats.status === "processing" ? (
+          {isActive ? (
             <button
-              onClick={handleCancelScan}
+              onClick={handleCancel}
               disabled={cancelling}
               className="group flex items-center gap-2 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg transition-colors"
             >
@@ -283,7 +254,9 @@ export function Pipeline() {
                   <Loader2 className="w-4 h-4 animate-spin hidden group-hover:inline" />
                 </>
               )}
-              <span className="group-hover:hidden">Scanning...</span>
+              <span className="group-hover:hidden">
+                {stats.state === "scanning" ? "Scanning..." : "Processing..."}
+              </span>
               <span className="hidden group-hover:inline">Stop</span>
             </button>
           ) : (
@@ -301,8 +274,8 @@ export function Pipeline() {
             </button>
           )}
           <button
-            onClick={handleRebuildIndex}
-            disabled={isTriggering || stats.status === "processing"}
+            onClick={handleRebuild}
+            disabled={isTriggering || isActive}
             className="flex items-center gap-2 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 disabled:opacity-50 rounded-lg transition-colors"
           >
             <Trash2 className="w-4 h-4" />
@@ -315,14 +288,8 @@ export function Pipeline() {
         </div>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-4 gap-3 mb-6">
-        <div className="bg-white border border-gray-200 rounded-xl p-3.5">
-          <div className="text-xs text-gray-500 mb-0.5">Discovered</div>
-          <div className="text-2xl font-bold text-gray-900 tabular-nums">
-            {formatNumber(stats.total_files_discovered)}
-          </div>
-        </div>
+      {/* Quick Stats */}
+      <div className="grid grid-cols-3 gap-3 mb-6">
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
           <div className="text-xs text-gray-500 mb-0.5">In Progress</div>
           <div className="text-2xl font-bold text-blue-600 tabular-nums">
@@ -332,27 +299,19 @@ export function Pipeline() {
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
           <div className="text-xs text-gray-500 mb-0.5">Completed</div>
           <div className="text-2xl font-bold text-green-600 tabular-nums">
-            {formatNumber(totalCompleted)}
+            {stats.completion_summary ? formatNumber(stats.completion_summary.files_processed) : "-"}
           </div>
         </div>
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
-          <div className="text-xs text-gray-500 mb-0.5">Overall</div>
-          <div className="text-2xl font-bold text-gray-900 tabular-nums">
-            {overallProgress}%
+          <div className="text-xs text-gray-500 mb-0.5">Errors</div>
+          <div className={`text-2xl font-bold tabular-nums ${stats.error_count > 0 ? "text-red-600" : "text-gray-400"}`}>
+            {stats.error_count}
           </div>
-          {stats.total_files_discovered > 0 && (
-            <div className="mt-1.5 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-green-500 rounded-full transition-all duration-700"
-                style={{ width: `${overallProgress}%` }}
-              />
-            </div>
-          )}
         </div>
       </div>
 
-      {/* Stage Details Table */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      {/* Queue Table */}
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-4">
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-gray-100 bg-gray-50/50">
@@ -371,8 +330,7 @@ export function Pipeline() {
               const Icon = QUEUE_ICONS[queueType] || Activity;
               const label = QUEUE_LABELS[queueType] || queueType;
               const colors = STAGE_COLORS[queueType] ?? STAGE_COLORS.discovery!;
-              const barRef = stats.total_files_discovered > 0 ? stats.total_files_discovered : maxCompleted;
-              const pct = barRef > 0 ? Math.min(100, Math.round((queue.completed_total / barRef) * 100)) : 0;
+              const pct = maxCompleted > 0 ? Math.min(100, Math.round((queue.completed_total / maxCompleted) * 100)) : 0;
               return (
                 <tr key={queueType} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/40">
                   <td className="px-3 py-1.5">
@@ -421,11 +379,11 @@ export function Pipeline() {
 
       {/* Error Log */}
       {stats.error_log && stats.error_log.length > 0 && (
-        <div className="mt-4 bg-white border border-red-200 rounded-xl overflow-hidden">
+        <div className="bg-white border border-red-200 rounded-xl overflow-hidden">
           <div className="px-3 py-2 bg-red-50 border-b border-red-100 flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-red-500" />
             <span className="text-sm font-medium text-red-700">Recent Errors</span>
-            <span className="text-xs text-red-500 ml-auto">{stats.error_log.length} error{stats.error_log.length !== 1 ? "s" : ""}</span>
+            <span className="text-xs text-red-500 ml-auto">{stats.error_log.length}</span>
           </div>
           <div className="max-h-48 overflow-y-auto">
             <table className="w-full text-xs">
@@ -459,16 +417,6 @@ export function Pipeline() {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
-
-      {/* Footer info */}
-      {totalFailed > 0 && (
-        <div className="mt-4 p-3 bg-red-50 border border-red-100 rounded-xl flex items-center gap-2 text-sm text-red-700">
-          <AlertCircle className="w-4 h-4 shrink-0" />
-          <span>
-            {totalFailed} file{totalFailed !== 1 ? "s" : ""} failed processing across all stages
-          </span>
         </div>
       )}
     </div>
