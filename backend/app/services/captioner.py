@@ -241,7 +241,9 @@ async def caption_photo(file_hash: str) -> bool:
         if not photo:
             return False
 
-        if photo.ollama_captioned:
+        # Check if caption already exists
+        existing_caption = await session.get(Caption, file_hash)
+        if existing_caption:
             return True
 
         filepath = settings.photos_dir / photo.file_path
@@ -256,22 +258,14 @@ async def caption_photo(file_hash: str) -> bool:
         # Generate caption
         caption_text = await _generate_caption(image_base64)
         if not caption_text:
-            # Mark as attempted but failed (don't retry endlessly)
-            photo.ollama_captioned = True
-            await session.commit()
             return True
 
         # Store caption
-        existing_caption = await session.get(Caption, file_hash)
-        if existing_caption:
-            existing_caption.caption = caption_text
-            existing_caption.model = settings.ollama_model
-        else:
-            session.add(Caption(
-                file_hash=file_hash,
-                caption=caption_text,
-                model=settings.ollama_model,
-            ))
+        session.add(Caption(
+            file_hash=file_hash,
+            caption=caption_text,
+            model=settings.ollama_model,
+        ))
 
         # Generate and store tags
         tag_list = await _generate_tags(image_base64)
@@ -299,7 +293,6 @@ async def caption_photo(file_hash: str) -> bool:
                     ))
             logger.debug("Tagged %s with %d tags: %s", file_hash, len(tag_list), ", ".join(tag_list[:5]))
 
-        photo.ollama_captioned = True
         await session.commit()
 
         logger.debug("Captioned %s: %s", file_hash, caption_text[:80])
@@ -317,10 +310,10 @@ async def process_pending_captions(batch_size: int | None = None) -> int:
         return 0
 
     async with async_session() as session:
+        # Find photos without Caption records
         result = await session.execute(
             select(Photo.file_hash)
-            .where(Photo.ollama_captioned == False)  # noqa: E712
-            .where(Photo.thumbnail_generated == True)  # noqa: E712
+            .where(~Photo.file_hash.in_(select(Caption.file_hash)))
             .limit(batch_size)
         )
         hashes = result.scalars().all()

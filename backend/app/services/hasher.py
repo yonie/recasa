@@ -44,7 +44,9 @@ async def compute_hashes(file_hash: str) -> bool:
         if not photo:
             return False
 
-        if photo.perceptual_hashed:
+        # Check if hash already exists
+        existing = await session.get(PhotoHash, file_hash)
+        if existing:
             return True
 
         filepath = settings.photos_dir / photo.file_path
@@ -55,16 +57,7 @@ async def compute_hashes(file_hash: str) -> bool:
         if not hashes:
             return False
 
-        # Upsert hash record
-        existing = await session.get(PhotoHash, file_hash)
-        if existing:
-            existing.phash = hashes.get("phash")
-            existing.ahash = hashes.get("ahash")
-            existing.dhash = hashes.get("dhash")
-        else:
-            session.add(PhotoHash(file_hash=file_hash, **hashes))
-
-        photo.perceptual_hashed = True
+        session.add(PhotoHash(file_hash=file_hash, **hashes))
         await session.commit()
 
         logger.debug("Computed perceptual hashes for %s", file_hash)
@@ -150,9 +143,10 @@ async def process_pending_hashes(batch_size: int | None = None) -> int:
         batch_size = settings.batch_size
 
     async with async_session() as session:
+        # Find photos without PhotoHash records
         result = await session.execute(
             select(Photo.file_hash)
-            .where(Photo.perceptual_hashed == False)  # noqa: E712
+            .where(~Photo.file_hash.in_(select(PhotoHash.file_hash)))
             .limit(batch_size)
         )
         hashes = result.scalars().all()

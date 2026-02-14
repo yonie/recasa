@@ -23,6 +23,12 @@ interface AppStore {
   // Search
   searchQuery: string;
   setSearchQuery: (query: string) => void;
+
+  // Mobile sidebar
+  sidebarOpen: boolean;
+  openSidebar: () => void;
+  closeSidebar: () => void;
+  toggleSidebar: () => void;
 }
 
 export const useStore = create<AppStore>((set) => ({
@@ -49,4 +55,10 @@ export const useStore = create<AppStore>((set) => ({
   // Search
   searchQuery: "",
   setSearchQuery: (query) => set({ searchQuery: query }),
+
+  // Mobile sidebar
+  sidebarOpen: false,
+  openSidebar: () => set({ sidebarOpen: true }),
+  closeSidebar: () => set({ sidebarOpen: false }),
+  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
 }));

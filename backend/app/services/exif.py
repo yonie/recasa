@@ -208,7 +208,8 @@ async def extract_exif(file_hash: str) -> bool:
             logger.warning("Photo not found: %s", file_hash)
             return False
 
-        if photo.exif_extracted:
+        # Check if EXIF already extracted (data exists)
+        if photo.camera_make is not None or photo.date_taken is not None:
             return True
 
         filepath = settings.photos_dir / photo.file_path
@@ -223,7 +224,6 @@ async def extract_exif(file_hash: str) -> bool:
             if value is not None:
                 setattr(photo, key, value)
 
-        photo.exif_extracted = True
         await session.commit()
 
         logger.debug("Extracted EXIF for %s", file_hash)
@@ -237,7 +237,10 @@ async def process_pending_exif(batch_size: int | None = None) -> int:
 
     async with async_session() as session:
         result = await session.execute(
-            select(Photo.file_hash).where(Photo.exif_extracted == False).limit(batch_size)  # noqa: E712
+            select(Photo.file_hash).where(
+                Photo.camera_make.is_(None),
+                Photo.date_taken.is_(None)
+            ).limit(batch_size)
         )
         hashes = result.scalars().all()
 

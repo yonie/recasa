@@ -44,13 +44,6 @@ class Photo(Base):
     live_photo_video: Mapped[str | None] = mapped_column(Text)
     motion_photo: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # Processing state
-    thumbnail_generated: Mapped[bool] = mapped_column(Boolean, default=False)
-    exif_extracted: Mapped[bool] = mapped_column(Boolean, default=False)
-    faces_detected: Mapped[bool] = mapped_column(Boolean, default=False)
-    ollama_captioned: Mapped[bool] = mapped_column(Boolean, default=False)
-    perceptual_hashed: Mapped[bool] = mapped_column(Boolean, default=False)
-
     # User data
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
 

@@ -29,7 +29,13 @@ class Settings(BaseSettings):
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3-vl:30b-a3b-instruct"
 
-    # Processing
+    # Processing stages (enable/disable per stage)
+    # EXIF, Thumbnails, and Hashing are always enabled (core functionality)
+    ENABLE_GEOCODING: bool = True
+    ENABLE_FACE_DETECTION: bool = False
+    ENABLE_CAPTIONING: bool = False
+
+    # Processing`
     batch_size: int = 50
 
     # Maximum number of photos to process concurrently (limits memory usage)

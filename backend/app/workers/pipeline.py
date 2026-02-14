@@ -1,15 +1,14 @@
 """Background processing pipeline - orchestrates photo indexing and analysis.
 
-Smart rescan behavior:
-- Scanner determines entry point based on DB processing flags
-- Fully processed files are skipped entirely
-- Partially processed files enter at the first incomplete stage
-- The DB is the source of truth for processing state
+Simplified architecture:
+- Scanner discovers photos and queues them based on missing data
+- Workers check if processing is needed before each stage (idempotent)
+- Database and filesystem are the source of truth
+- No in-memory state tracking
 """
 
 import asyncio
 import logging
-from datetime import datetime
 from pathlib import Path
 
 from watchdog.observers import Observer
@@ -17,343 +16,190 @@ from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifi
 
 from backend.app.config import settings
 from backend.app.services.scanner import scan_directory, index_single_file, is_supported_photo
-from backend.app.workers.queues import pipeline, QueueType, QueueStats
+from backend.app.workers.queues import pipeline, QueueType
+from backend.app.database import async_session
+from backend.app.models import Photo, PhotoHash, Face, Caption
+from sqlalchemy import select, func
 
 logger = logging.getLogger(__name__)
 
 
-class ScanState:
-    """Shared scan state for progress reporting."""
-
-    def __init__(self):
-        self.is_scanning: bool = False
-        self.cancel_requested: bool = False
-        self.total_files: int = 0
-        self.processed_files: int = 0
-        self.current_file: str | None = None
-        self.phase: str | None = None
-        self.phase_progress: int = 0
-        self.phase_total: int = 0
-        self.discovery_phase: str | None = None
-        self.discovery_files_collected: int = 0
-        self._listeners: list[asyncio.Queue] = []
-
-    def add_listener(self) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue()
-        self._listeners.append(queue)
-        return queue
-
-    def remove_listener(self, queue: asyncio.Queue) -> None:
-        if queue in self._listeners:
-            self._listeners.remove(queue)
-
-    async def notify(self) -> None:
-        msg = {
-            "is_scanning": self.is_scanning,
-            "total_files": self.total_files,
-            "processed_files": self.processed_files,
-            "current_file": self.current_file,
-            "phase": self.phase,
-            "phase_progress": self.phase_progress,
-            "phase_total": self.phase_total,
-            "discovery_phase": self.discovery_phase,
-            "discovery_files_collected": self.discovery_files_collected,
-        }
-        for queue in self._listeners:
-            try:
-                queue.put_nowait(msg)
-            except asyncio.QueueFull:
-                pass
-
-    def to_dict(self) -> dict:
-        return {
-            "is_scanning": self.is_scanning,
-            "total_files": self.total_files,
-            "processed_files": self.processed_files,
-            "current_file": self.current_file,
-            "phase": self.phase,
-            "phase_progress": self.phase_progress,
-            "phase_total": self.phase_total,
-            "discovery_phase": self.discovery_phase,
-            "discovery_files_collected": self.discovery_files_collected,
-        }
-
-
-# Global scan state
-scan_state = ScanState()
-
-
 async def run_initial_scan() -> dict:
-    """Run the initial directory scan and feed discovered files to the pipeline.
+    """Run the initial directory scan and queue photos for processing.
 
-    This function ONLY handles scanning/discovery. The actual processing is done
-    by the pipeline workers started separately via start_pipeline_workers().
-
-    Smart rescan: files are only queued for processing stages that haven't completed.
-    Fully processed files are skipped entirely.
+    Each photo is queued for the first stage that needs processing based on:
+    - Config flags (ENABLE_*)
+    - Actual data/file existence
     """
-    global scan_state
-
-    scan_state.is_scanning = True
-    scan_state.cancel_requested = False
-    scan_state.phase = "discovery"
-    scan_state.processed_files = 0
-    scan_state.total_files = 0
-    scan_state.current_file = None
-    scan_state.phase_progress = 0
-    scan_state.phase_total = 0
-    scan_state.discovery_phase = "collecting_files"
-    scan_state.discovery_files_collected = 0
-
-    # Reset stop flag
-    pipeline._stop_requested = False
-
-    # Set scanning state on pipeline (for status API without circular import)
-    pipeline._is_scanning = True
-    pipeline._scan_total = 0
-    pipeline._scan_scanned = 0
-    pipeline._scan_current = None
-
-    # Reset pipeline counters for a fresh scan.
-    # We do NOT reset _processed/_processing sets because the DB is the source of truth
-    # for processing state. Workers check DB flags before doing any work.
-    pipeline._total_discovered = 0
-    pipeline._completed_time = None
-    pipeline._start_time = datetime.utcnow()  # Start timing from scan begin
-    pipeline.error_log = []  # Clear error log on new scan
-    pipeline._scan_completed = False  # Reset scan completion flag
-    pipeline._completed_time = None  # Reset completion time
-    for qtype in QueueType:
-        q = pipeline.queues[qtype]
-        q._processed.clear()
-        q._processing.clear()
-        q.stats = QueueStats(queue_type=qtype)
-
-    await scan_state.notify()
+    from backend.app.services.scanner import thumb_exists
 
     async def progress_callback(processed: int, total: int, current_file: str):
-        scan_state.processed_files = processed
-        scan_state.total_files = total
-        scan_state.current_file = current_file
-        scan_state.phase_progress = processed
-        scan_state.phase_total = max(total, 1)
-        scan_state.discovery_phase = "scanning"
-        # Update pipeline scan state (for status API without circular import)
-        pipeline._scan_total = total
-        pipeline._scan_scanned = processed
-        pipeline._scan_current = current_file
-        pipeline._discovery_phase = "scanning"
-        await scan_state.notify()
+        logger.info(f"Scanning: {processed}/{total}")
 
-    async def discovery_callback(phase: str, **kwargs):
-        scan_state.discovery_phase = phase
-        pipeline._discovery_phase = phase
-        if phase == "collecting_files":
-            scan_state.discovery_files_collected = kwargs.get("files_collected", 0)
-            pipeline._discovery_files_collected = kwargs.get("files_collected", 0)
-        await scan_state.notify()
-
-    stats = {}
-    try:
-        async def on_file_discovered(file_hash: str, file_path: str, entry_queue: str):
-            """Feed files to the pipeline at the appropriate entry point."""
-            queue_type = QueueType(entry_queue)
+    async def on_file_discovered(file_hash: str, entry_stage: str):
+        """Queue a photo for processing at the appropriate stage."""
+        stage_to_queue = {
+            "exif": QueueType.EXIF,
+            "geocoding": QueueType.GEOCODING,
+            "thumbnails": QueueType.THUMBNAILS,
+            "hashing": QueueType.HASHING,
+            "faces": QueueType.FACES,
+            "captioning": QueueType.CAPTIONING,
+        }
+        queue_type = stage_to_queue.get(entry_stage)
+        if queue_type:
             await pipeline.add_file_at(file_hash, queue_type)
+            logger.debug(f"Queued {file_hash} for {entry_stage}")
 
-        stats = await scan_directory(
-            progress_callback=progress_callback,
-            cancel_check=lambda: scan_state.cancel_requested,
-            on_file_discovered=on_file_discovered,
-            discovery_callback=discovery_callback,
-        )
-
-        logger.info(
-            "Scan complete: %d total, %d new, %d updated, %d skipped, %d fully_processed, %d errors",
-            stats.get("total", 0),
-            stats.get("new", 0),
-            stats.get("updated", 0),
-            stats.get("skipped", 0),
-            stats.get("fully_processed", 0),
-            stats.get("errors", 0),
-        )
-
-    finally:
-        # Immediately hide the scan progress UI
-        scan_state.is_scanning = False
-        scan_state.phase = None
-        scan_state.current_file = None
-        scan_state.processed_files = 0
-        scan_state.total_files = 0
-        scan_state.phase_progress = 0
-        scan_state.phase_total = 0
-        scan_state.discovery_phase = None
-        scan_state.discovery_files_collected = 0
-        # Clear pipeline scan state (for status API without circular import)
-        pipeline._is_scanning = False
-        pipeline._scan_total = 0
-        pipeline._scan_scanned = 0
-        pipeline._scan_current = None
-        pipeline._discovery_phase = None
-        pipeline._discovery_files_collected = 0
-        # Save scan stats and mark as completed
-        pipeline._last_scan_stats = stats
-        pipeline._scan_completed = True
-        await scan_state.notify()
-
+    stats = await scan_directory(
+        progress_callback=progress_callback,
+        cancel_check=lambda: pipeline._stop_requested,
+        on_file_discovered=on_file_discovered,
+    )
     return stats
 
 
-class PhotoFileHandler(FileSystemEventHandler):
-    """Watchdog handler for file system events."""
-
-    def __init__(self, loop: asyncio.AbstractEventLoop):
-        self._loop = loop
-        self._pending: asyncio.Queue = asyncio.Queue()
-
-    def on_created(self, event):
-        if isinstance(event, FileCreatedEvent) and not event.is_directory:
-            filepath = Path(event.src_path)
-            if is_supported_photo(filepath):
-                asyncio.run_coroutine_threadsafe(
-                    self._pending.put(filepath), self._loop
-                )
-
-    def on_modified(self, event):
-        if isinstance(event, FileModifiedEvent) and not event.is_directory:
-            filepath = Path(event.src_path)
-            if is_supported_photo(filepath):
-                asyncio.run_coroutine_threadsafe(
-                    self._pending.put(filepath), self._loop
-                )
-
-
-async def start_file_watcher() -> Observer | None:
-    """Start the filesystem watcher for detecting new/changed photos."""
-    photos_dir = settings.photos_dir
-    if not photos_dir.exists():
-        logger.error("Photos directory does not exist: %s", photos_dir)
-        return None
-
-    loop = asyncio.get_event_loop()
-    handler = PhotoFileHandler(loop)
-
-    observer = Observer()
-    observer.schedule(handler, str(photos_dir), recursive=True)
-    observer.daemon = True
-    observer.start()
-
-    logger.info("File watcher started for %s", photos_dir)
-
-    # Start background task to process file events
-    asyncio.create_task(_process_file_events(handler._pending))
-
-    return observer
-
-
-async def _process_file_events(queue: asyncio.Queue) -> None:
-    """Process file events from the watcher by feeding them into the pipeline."""
-    while True:
-        try:
-            filepath = await asyncio.wait_for(queue.get(), timeout=5.0)
-            # Debounce: wait a moment for file to be fully written
-            await asyncio.sleep(1.0)
-
-            logger.info("Detected file change: %s", filepath)
-            result = await index_single_file(filepath)
-            if result:
-                file_hash, entry_queue = result
-                queue_type = QueueType(entry_queue)
-                await pipeline.add_file_at(file_hash, queue_type)
-
-        except asyncio.TimeoutError:
-            continue
-        except Exception:
-            logger.exception("Error processing file event")
-            await asyncio.sleep(1.0)
-
-
 async def resume_incomplete_processing() -> int:
-    """Queue photos that have incomplete processing.
-    
+    """Queue photos that have incomplete processing based on config and actual data.
+
     Called on startup to resume processing after a crash or restart.
     Returns the number of photos queued.
     """
-    from sqlalchemy import select
-    from backend.app.database import async_session
-    from backend.app.models import Photo
-    
-    logger.info("Checking for photos with incomplete processing...")
-    
     queued_count = 0
-    
+
+    # EXIF: photos missing camera_make AND date_taken (always enabled)
     async with async_session() as session:
-        # Find photos that need EXIF extraction
         result = await session.execute(
-            select(Photo.file_hash, Photo.file_path)
-            .where(Photo.exif_extracted == False)
+            select(Photo.file_hash).where(
+                Photo.camera_make.is_(None),
+                Photo.date_taken.is_(None)
+            )
         )
-        exif_photos = result.fetchall()
-        for file_hash, file_path in exif_photos:
+        photos = result.fetchall()
+        for (file_hash,) in photos:
             await pipeline.add_file_at(file_hash, QueueType.EXIF)
             queued_count += 1
-        if exif_photos:
-            logger.info(f"Queued {len(exif_photos)} photos for EXIF extraction")
-        
-        # Find photos that need thumbnails (EXIF done but no thumbnails)
+        logger.info(f"Queued {len(photos)} photos for EXIF extraction")
+
+    # Geocoding: photos with GPS but no city
+    if settings.ENABLE_GEOCODING:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Photo.file_hash).where(
+                    Photo.location_city.is_(None),
+                    Photo.gps_latitude.is_not(None)
+                )
+            )
+            photos = result.fetchall()
+            for (file_hash,) in photos:
+                await pipeline.add_file_at(file_hash, QueueType.GEOCODING)
+                queued_count += 1
+            logger.info(f"Queued {len(photos)} photos for geocoding")
+
+    # Thumbnails: photos missing thumb file (always enabled)
+    async with async_session() as session:
+        result = await session.execute(select(Photo.file_hash))
+        photos = result.fetchall()
+        missing_thumbs = 0
+        for (file_hash,) in photos:
+            if not (settings.thumbnails_dir / f"{file_hash}_200.jpg").exists():
+                await pipeline.add_file_at(file_hash, QueueType.THUMBNAILS)
+                missing_thumbs += 1
+                queued_count += 1
+        logger.info(f"Queued {missing_thumbs} photos for thumbnail generation")
+
+    # Hashing: photos missing perceptual hash (always enabled)
+    async with async_session() as session:
         result = await session.execute(
-            select(Photo.file_hash, Photo.file_path)
-            .where(Photo.exif_extracted == True)
-            .where(Photo.thumbnail_generated == False)
+            select(Photo.file_hash).where(
+                ~Photo.file_hash.in_(select(PhotoHash.file_hash))
+            )
         )
-        thumb_photos = result.fetchall()
-        for file_hash, file_path in thumb_photos:
-            await pipeline.add_file_at(file_hash, QueueType.THUMBNAILS)
-            queued_count += 1
-        if thumb_photos:
-            logger.info(f"Queued {len(thumb_photos)} photos for thumbnail generation")
-        
-        # Find photos that need hashing (thumbnails done but no hash)
-        result = await session.execute(
-            select(Photo.file_hash, Photo.file_path)
-            .where(Photo.thumbnail_generated == True)
-            .where(Photo.perceptual_hashed == False)
-        )
-        hash_photos = result.fetchall()
-        for file_hash, file_path in hash_photos:
+        photos = result.fetchall()
+        for (file_hash,) in photos:
             await pipeline.add_file_at(file_hash, QueueType.HASHING)
             queued_count += 1
-        if hash_photos:
-            logger.info(f"Queued {len(hash_photos)} photos for perceptual hashing")
-        
-        # Find photos that need face detection (hashing done but no faces)
-        result = await session.execute(
-            select(Photo.file_hash, Photo.file_path)
-            .where(Photo.perceptual_hashed == True)
-            .where(Photo.faces_detected == False)
-        )
-        face_photos = result.fetchall()
-        for file_hash, file_path in face_photos:
-            await pipeline.add_file_at(file_hash, QueueType.FACES)
-            queued_count += 1
-        if face_photos:
-            logger.info(f"Queued {len(face_photos)} photos for face detection")
-        
-        # Find photos that need captioning (faces done but no caption)
-        result = await session.execute(
-            select(Photo.file_hash, Photo.file_path)
-            .where(Photo.faces_detected == True)
-            .where(Photo.ollama_captioned == False)
-        )
-        caption_photos = result.fetchall()
-        for file_hash, file_path in caption_photos:
-            await pipeline.add_file_at(file_hash, QueueType.CAPTIONING)
-            queued_count += 1
-        if caption_photos:
-            logger.info(f"Queued {len(caption_photos)} photos for AI captioning")
-    
+        logger.info(f"Queued {len(photos)} photos for perceptual hashing")
+
+    # Faces: photos missing faces
+    if settings.ENABLE_FACE_DETECTION:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Photo.file_hash).where(
+                    ~Photo.file_hash.in_(select(Face.file_hash))
+                )
+            )
+            photos = result.fetchall()
+            for (file_hash,) in photos:
+                await pipeline.add_file_at(file_hash, QueueType.FACES)
+                queued_count += 1
+            logger.info(f"Queued {len(photos)} photos for face detection")
+
+    # Captioning: photos missing caption
+    if settings.ENABLE_CAPTIONING:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Photo.file_hash).where(
+                    ~Photo.file_hash.in_(select(Caption.file_hash))
+                )
+            )
+            photos = result.fetchall()
+            for (file_hash,) in photos:
+                await pipeline.add_file_at(file_hash, QueueType.CAPTIONING)
+                queued_count += 1
+            logger.info(f"Queued {len(photos)} photos for captioning")
+
     if queued_count > 0:
         logger.info(f"Total: {queued_count} photos queued for processing")
     else:
         logger.info("All photos are fully processed")
-    
+
     return queued_count
+
+
+class FileEventHandler(FileSystemEventHandler):
+    """Handle file system events for new/modified photos."""
+
+    def __init__(self, queue: asyncio.Queue):
+        self.queue = queue
+
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        filepath = Path(event.src_path)
+        if is_supported_photo(filepath):
+            asyncio.create_task(self._queue_file(filepath))
+
+    def on_modified(self, event):
+        if event.is_directory:
+            return
+        filepath = Path(event.src_path)
+        if is_supported_photo(filepath):
+            asyncio.create_task(self._queue_file(filepath))
+
+    async def _queue_file(self, filepath: Path):
+        result = await index_single_file(filepath)
+        if result:
+            file_hash, entry_queue = result
+            stage_to_queue = {
+                "exif": QueueType.EXIF,
+                "geocoding": QueueType.GEOCODING,
+                "thumbnails": QueueType.THUMBNAILS,
+                "hashing": QueueType.HASHING,
+                "faces": QueueType.FACES,
+                "captioning": QueueType.CAPTIONING,
+            }
+            queue_type = stage_to_queue.get(entry_queue)
+            if queue_type:
+                await pipeline.add_file_at(file_hash, queue_type)
+                logger.info(f"Indexed new file: {filepath} ({file_hash})")
+
+
+async def start_file_watcher():
+    """Start watching the photos directory for new files."""
+    handler = FileEventHandler(asyncio.Queue())
+    observer = Observer()
+    observer.schedule(handler, str(settings.photos_dir), recursive=True)
+    observer.start()
+    logger.info(f"File watcher started for {settings.photos_dir}")
+    return observer

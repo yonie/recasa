@@ -76,7 +76,9 @@ async def generate_thumbnails(file_hash: str) -> bool:
             logger.warning("Photo not found: %s", file_hash)
             return False
 
-        if photo.thumbnail_generated:
+        # Check if thumbnails already exist
+        thumb_path = _get_thumbnail_path(file_hash, 200)
+        if thumb_path.exists():
             return True
 
         filepath = settings.photos_dir / photo.file_path
@@ -89,7 +91,6 @@ async def generate_thumbnails(file_hash: str) -> bool:
         )
 
         if created:
-            photo.thumbnail_generated = True
             await session.commit()
             logger.debug("Generated %d thumbnails for %s", len(created), file_hash)
             return True
@@ -104,16 +105,16 @@ async def process_pending_thumbnails(batch_size: int | None = None) -> int:
 
     async with async_session() as session:
         result = await session.execute(
-            select(Photo.file_hash)
-            .where(Photo.thumbnail_generated == False)  # noqa: E712
-            .limit(batch_size)
+            select(Photo.file_hash).limit(batch_size)
         )
         hashes = result.scalars().all()
 
     processed = 0
     for file_hash in hashes:
-        if await generate_thumbnails(file_hash):
-            processed += 1
+        thumb_path = _get_thumbnail_path(file_hash, 200)
+        if not thumb_path.exists():
+            if await generate_thumbnails(file_hash):
+                processed += 1
 
     if processed:
         logger.info("Generated thumbnails for %d photos", processed)

@@ -5,7 +5,9 @@ import { useStore } from "../store/useStore";
 
 export function SearchBar() {
   const navigate = useNavigate();
-  const { searchQuery, setSearchQuery, toggleSidebar } = useStore();
+  const searchQuery = useStore((s) => s.searchQuery);
+  const setSearchQuery = useStore((s) => s.setSearchQuery);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
   const [inputValue, setInputValue] = useState(searchQuery);
 
   const handleSubmit = useCallback(

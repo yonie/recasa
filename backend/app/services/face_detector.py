@@ -165,7 +165,11 @@ async def detect_faces(file_hash: str) -> bool:
         if not photo:
             return False
 
-        if photo.faces_detected:
+        # Check if faces already exist
+        result = await session.execute(
+            select(Face).where(Face.file_hash == file_hash).limit(1)
+        )
+        if result.scalar_one_or_none():
             return True
 
         filepath = settings.photos_dir / photo.file_path
@@ -194,7 +198,6 @@ async def detect_faces(file_hash: str) -> bool:
             )
             session.add(face)
 
-        photo.faces_detected = True
         await session.commit()
 
         if faces:
@@ -326,10 +329,10 @@ async def process_pending_faces(batch_size: int | None = None) -> int:
         return 0
 
     async with async_session() as session:
+        # Find photos without Face records (that have thumbnails)
         result = await session.execute(
             select(Photo.file_hash)
-            .where(Photo.faces_detected == False)  # noqa: E712
-            .where(Photo.thumbnail_generated == True)  # noqa: E712
+            .where(~Photo.file_hash.in_(select(Face.file_hash)))
             .limit(batch_size)
         )
         hashes = result.scalars().all()

@@ -19,4 +19,12 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    sourcemap: true,
+    minify: false,
+    mode: "development",
+  },
+  define: {
+    "process.env.NODE_ENV": JSON.stringify("development"),
+  },
 });

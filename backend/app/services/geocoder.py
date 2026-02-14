@@ -73,8 +73,7 @@ async def process_pending_geocoding(batch_size: int | None = None) -> int:
             .where(
                 Photo.gps_latitude.is_not(None),
                 Photo.gps_longitude.is_not(None),
-                Photo.location_country.is_(None),
-                Photo.exif_extracted == True,  # noqa: E712
+                Photo.location_city.is_(None),
             )
             .limit(batch_size)
         )

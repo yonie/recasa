@@ -1,0 +1,7 @@
+i just released recasa v1.0.0 — a self-hosted photo explorer that gives you Google Photos features without the cloud, accounts, or uploads. your photos stay on your machine.
+
+timeline, folders, face detection, AI tagging, maps, search, live photos, and more. runs in one docker container.
+
+https://github.com/yonie/recasa/releases/tag/v1.0.0
+
+#selfhosted #opensource #photography #privacy

@@ -75,7 +75,7 @@ function PhotoGridItem({ photo, onClick, onFavoriteToggle }: PhotoGridItemProps)
 
   return (
     <div
-      className="photo-grid-item aspect-square bg-gray-100"
+      className="photo-grid-item aspect-square bg-gray-100 group"
       onClick={onClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -109,9 +109,8 @@ function PhotoGridItem({ photo, onClick, onFavoriteToggle }: PhotoGridItemProps)
       {/* Hover overlay */}
       <div
         className={clsx(
-          "absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent",
-          "transition-opacity duration-200",
-          isHovering ? "opacity-100" : "opacity-0"
+          "hover-overlay absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent",
+          "transition-opacity duration-200"
         )}
       >
         {/* Favorite button */}
