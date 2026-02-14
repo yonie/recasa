@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type QueueStats, type PipelineStats } from "../api/client";
+import { api, type QueueStats, type PipelineStats, type ProcessingStats } from "../api/client";
 import {
   Activity,
   RotateCcw,
@@ -114,6 +114,7 @@ function StageBadge({ queue }: { queue: QueueStats }) {
 
 export function Pipeline() {
   const [stats, setStats] = useState<PipelineStats | null>(null);
+  const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null);
   const [connected, setConnected] = useState(false);
   const [isTriggering, setIsTriggering] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -121,8 +122,12 @@ export function Pipeline() {
   useEffect(() => {
     async function loadStats() {
       try {
-        const data = await api.getPipelineStatus();
-        setStats(data);
+        const [pipelineData, processingData] = await Promise.all([
+          api.getPipelineStatus(),
+          api.getProcessingStats(),
+        ]);
+        setStats(pipelineData);
+        setProcessingStats(processingData);
       } catch {
         // ignore
       }
@@ -200,10 +205,14 @@ export function Pipeline() {
     0
   );
 
-  const maxCompleted = Math.max(
-    ...Object.values(stats.queues).map((q) => q.completed_total),
-    1
-  );
+  // Map queue types to processing stats keys
+  const getStageStats = (queueType: string): { completed: number; total: number } => {
+    if (!processingStats) return { completed: 0, total: 0 };
+    const key = queueType === "motion_photos" ? "exif" : queueType as keyof typeof processingStats.stages;
+    return processingStats.stages[key] || { completed: 0, total: processingStats.total_photos };
+  };
+
+  const totalPhotos = processingStats?.total_photos || 0;
 
   return (
     <div className="p-6 max-w-[960px] mx-auto">
@@ -302,7 +311,13 @@ export function Pipeline() {
       </div>
 
       {/* Quick Stats */}
-      <div className="grid grid-cols-3 gap-3 mb-6">
+      <div className="grid grid-cols-4 gap-3 mb-6">
+        <div className="bg-white border border-gray-200 rounded-xl p-3.5">
+          <div className="text-xs text-gray-500 mb-0.5">Total Photos</div>
+          <div className="text-2xl font-bold text-gray-900 tabular-nums">
+            {formatNumber(totalPhotos)}
+          </div>
+        </div>
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
           <div className="text-xs text-gray-500 mb-0.5">In Progress</div>
           <div className="text-2xl font-bold text-blue-600 tabular-nums">
@@ -343,7 +358,8 @@ export function Pipeline() {
               const Icon = QUEUE_ICONS[queueType] || Activity;
               const label = QUEUE_LABELS[queueType] || queueType;
               const colors = STAGE_COLORS[queueType] ?? STAGE_COLORS.discovery!;
-              const pct = maxCompleted > 0 ? Math.min(100, Math.round((queue.completed_total / maxCompleted) * 100)) : 0;
+              const stageStats = getStageStats(queueType);
+              const pct = stageStats.total > 0 ? Math.min(100, Math.round((stageStats.completed / stageStats.total) * 100)) : 0;
               return (
                 <tr key={queueType} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/40">
                   <td className="px-3 py-1.5">
@@ -356,7 +372,7 @@ export function Pipeline() {
                     <StageBadge queue={queue} />
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums font-medium text-gray-900">
-                    {formatNumber(queue.completed_total)}
+                    {formatNumber(stageStats.completed)}<span className="text-gray-400">/{formatNumber(stageStats.total)}</span>
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">
                     {queue.failed_total > 0 ? (

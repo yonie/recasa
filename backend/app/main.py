@@ -11,7 +11,7 @@ from backend.app.database import init_db
 from backend.app.api import photos, directories, timeline, scan, duplicates, persons, events, locations, pipeline, tags
 from backend.app.workers.queues import pipeline as pipeline_instance
 from backend.app.workers.worker import start_pipeline_workers
-from backend.app.workers.pipeline import start_file_watcher
+from backend.app.workers.pipeline import start_file_watcher, resume_incomplete_processing
 
 logger = logging.getLogger("recasa")
 
@@ -40,6 +40,9 @@ async def lifespan(app: FastAPI):
 
     # Start the pipeline workers (face detection, event detection, etc.)
     workers = await start_pipeline_workers(pipeline_instance)
+
+    # Resume processing for photos that were interrupted
+    await resume_incomplete_processing()
 
     # Start file watcher for live-detecting new photos
     # No automatic full rescan -- the app relies on the existing index and

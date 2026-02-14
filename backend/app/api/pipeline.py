@@ -1,8 +1,12 @@
 """Pipeline status and statistics API endpoints."""
 
 import asyncio
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.database import get_session
+from backend.app.models import Photo
 from backend.app.workers.queues import pipeline, QueueType
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
@@ -12,6 +16,59 @@ router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 async def get_pipeline_status():
     """Get current pipeline status and statistics."""
     return pipeline.get_pipeline_stats()
+
+
+@router.get("/processing-stats")
+async def get_processing_stats(session: AsyncSession = Depends(get_session)):
+    """Get photo processing completion stats from the database.
+    
+    This returns the actual completion counts based on DB flags,
+    not the in-memory queue counters which reset on restart.
+    """
+    total = await session.execute(select(func.count(Photo.file_hash)))
+    total_photos = total.scalar() or 0
+    
+    exif_done = await session.execute(
+        select(func.count(Photo.file_hash)).where(Photo.exif_extracted == True)
+    )
+    exif_count = exif_done.scalar() or 0
+    
+    thumbs_done = await session.execute(
+        select(func.count(Photo.file_hash)).where(Photo.thumbnail_generated == True)
+    )
+    thumbs_count = thumbs_done.scalar() or 0
+    
+    hashed_done = await session.execute(
+        select(func.count(Photo.file_hash)).where(Photo.perceptual_hashed == True)
+    )
+    hashed_count = hashed_done.scalar() or 0
+    
+    faces_done = await session.execute(
+        select(func.count(Photo.file_hash)).where(Photo.faces_detected == True)
+    )
+    faces_count = faces_done.scalar() or 0
+    
+    captioned_done = await session.execute(
+        select(func.count(Photo.file_hash)).where(Photo.ollama_captioned == True)
+    )
+    captioned_count = captioned_done.scalar() or 0
+    
+    geocoded_done = await session.execute(
+        select(func.count(Photo.file_hash)).where(Photo.location_city.is_not(None))
+    )
+    geocoded_count = geocoded_done.scalar() or 0
+    
+    return {
+        "total_photos": total_photos,
+        "stages": {
+            "exif": {"completed": exif_count, "total": total_photos},
+            "geocoding": {"completed": geocoded_count, "total": total_photos},
+            "thumbnails": {"completed": thumbs_count, "total": total_photos},
+            "hashing": {"completed": hashed_count, "total": total_photos},
+            "faces": {"completed": faces_count, "total": total_photos},
+            "captioning": {"completed": captioned_count, "total": total_photos},
+        },
+    }
 
 
 @router.get("/queues")

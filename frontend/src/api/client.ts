@@ -139,6 +139,18 @@ export interface QueueStats {
   throughput_per_minute: number;
 }
 
+export interface ProcessingStats {
+  total_photos: number;
+  stages: {
+    exif: { completed: number; total: number };
+    geocoding: { completed: number; total: number };
+    thumbnails: { completed: number; total: number };
+    hashing: { completed: number; total: number };
+    faces: { completed: number; total: number };
+    captioning: { completed: number; total: number };
+  };
+}
+
 export interface PipelineStats {
   state: "idle" | "scanning" | "processing" | "done";
   scan_progress: {
@@ -283,6 +295,7 @@ export const api = {
 
   // Pipeline
   getPipelineStatus: () => request<PipelineStats>("/pipeline/status"),
+  getProcessingStats: () => request<ProcessingStats>("/pipeline/processing-stats"),
   getQueueStatus: () => request<Record<string, QueueStats>>("/pipeline/queues"),
   getPipelineFlow: () => request<{ stages: { id: string; name: string; next: string[] }[] }>("/pipeline/flow"),
 

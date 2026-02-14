@@ -270,3 +270,90 @@ async def _process_file_events(queue: asyncio.Queue) -> None:
         except Exception:
             logger.exception("Error processing file event")
             await asyncio.sleep(1.0)
+
+
+async def resume_incomplete_processing() -> int:
+    """Queue photos that have incomplete processing.
+    
+    Called on startup to resume processing after a crash or restart.
+    Returns the number of photos queued.
+    """
+    from sqlalchemy import select
+    from backend.app.database import async_session
+    from backend.app.models import Photo
+    
+    logger.info("Checking for photos with incomplete processing...")
+    
+    queued_count = 0
+    
+    async with async_session() as session:
+        # Find photos that need EXIF extraction
+        result = await session.execute(
+            select(Photo.file_hash, Photo.file_path)
+            .where(Photo.exif_extracted == False)
+        )
+        exif_photos = result.fetchall()
+        for file_hash, file_path in exif_photos:
+            await pipeline.add_file_at(file_hash, QueueType.EXIF)
+            queued_count += 1
+        if exif_photos:
+            logger.info(f"Queued {len(exif_photos)} photos for EXIF extraction")
+        
+        # Find photos that need thumbnails (EXIF done but no thumbnails)
+        result = await session.execute(
+            select(Photo.file_hash, Photo.file_path)
+            .where(Photo.exif_extracted == True)
+            .where(Photo.thumbnail_generated == False)
+        )
+        thumb_photos = result.fetchall()
+        for file_hash, file_path in thumb_photos:
+            await pipeline.add_file_at(file_hash, QueueType.THUMBNAILS)
+            queued_count += 1
+        if thumb_photos:
+            logger.info(f"Queued {len(thumb_photos)} photos for thumbnail generation")
+        
+        # Find photos that need hashing (thumbnails done but no hash)
+        result = await session.execute(
+            select(Photo.file_hash, Photo.file_path)
+            .where(Photo.thumbnail_generated == True)
+            .where(Photo.perceptual_hashed == False)
+        )
+        hash_photos = result.fetchall()
+        for file_hash, file_path in hash_photos:
+            await pipeline.add_file_at(file_hash, QueueType.HASHING)
+            queued_count += 1
+        if hash_photos:
+            logger.info(f"Queued {len(hash_photos)} photos for perceptual hashing")
+        
+        # Find photos that need face detection (hashing done but no faces)
+        result = await session.execute(
+            select(Photo.file_hash, Photo.file_path)
+            .where(Photo.perceptual_hashed == True)
+            .where(Photo.faces_detected == False)
+        )
+        face_photos = result.fetchall()
+        for file_hash, file_path in face_photos:
+            await pipeline.add_file_at(file_hash, QueueType.FACES)
+            queued_count += 1
+        if face_photos:
+            logger.info(f"Queued {len(face_photos)} photos for face detection")
+        
+        # Find photos that need captioning (faces done but no caption)
+        result = await session.execute(
+            select(Photo.file_hash, Photo.file_path)
+            .where(Photo.faces_detected == True)
+            .where(Photo.ollama_captioned == False)
+        )
+        caption_photos = result.fetchall()
+        for file_hash, file_path in caption_photos:
+            await pipeline.add_file_at(file_hash, QueueType.CAPTIONING)
+            queued_count += 1
+        if caption_photos:
+            logger.info(f"Queued {len(caption_photos)} photos for AI captioning")
+    
+    if queued_count > 0:
+        logger.info(f"Total: {queued_count} photos queued for processing")
+    else:
+        logger.info("All photos are fully processed")
+    
+    return queued_count
