@@ -22,9 +22,6 @@ class Settings(BaseSettings):
 
     thumbnail_sizes: list[int] = [200, 600, 1200]
 
-    # File watching
-    watch_interval: int = 30  # seconds
-
     # Ollama
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3-vl:30b-a3b-instruct"
@@ -34,9 +31,6 @@ class Settings(BaseSettings):
     ENABLE_GEOCODING: bool = True
     ENABLE_FACE_DETECTION: bool = False
     ENABLE_CAPTIONING: bool = False
-
-    # Processing`
-    batch_size: int = 50
 
     # Maximum number of photos to process concurrently (limits memory usage)
     # Each concurrent photo uses memory for image loading, thumbnails, face detection, etc.

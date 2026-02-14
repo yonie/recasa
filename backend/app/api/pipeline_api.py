@@ -115,14 +115,6 @@ async def stop_pipeline():
     return {"status": "stopped"}
 
 
-@router.post("/start")
-async def start_pipeline():
-    """Resume pipeline processing by re-queuing incomplete photos."""
-    from backend.app.workers.pipeline import resume_incomplete_processing
-    count = await resume_incomplete_processing()
-    return {"status": "started", "queued": count}
-
-
 @router.websocket("/ws")
 async def pipeline_websocket(websocket: WebSocket):
     """WebSocket endpoint for real-time pipeline statistics."""

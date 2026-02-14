@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifiedEvent
+from watchdog.events import FileSystemEventHandler
 
 from backend.app.config import settings
 from backend.app.services.scanner import scan_directory, index_single_file, is_supported_photo, thumb_exists

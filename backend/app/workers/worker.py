@@ -8,13 +8,11 @@ Simplified architecture:
 
 import asyncio
 import logging
-from datetime import datetime
-from pathlib import Path
 
 from sqlalchemy import select, func
 
 from backend.app.config import settings
-from backend.app.database import async_session, get_session
+from backend.app.database import async_session
 from backend.app.models import Photo, PhotoHash, Face, Caption
 from backend.app.services.exif import extract_exif
 from backend.app.services.thumbnail import generate_thumbnails
