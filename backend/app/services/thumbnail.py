@@ -6,9 +6,6 @@ from pathlib import Path
 
 from PIL import Image
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.models import Photo
@@ -96,29 +93,6 @@ async def generate_thumbnails(file_hash: str) -> bool:
             return True
 
         return False
-
-
-async def process_pending_thumbnails(batch_size: int | None = None) -> int:
-    """Process all photos that haven't had thumbnails generated yet."""
-    if batch_size is None:
-        batch_size = settings.batch_size
-
-    async with async_session() as session:
-        result = await session.execute(
-            select(Photo.file_hash).limit(batch_size)
-        )
-        hashes = result.scalars().all()
-
-    processed = 0
-    for file_hash in hashes:
-        thumb_path = _get_thumbnail_path(file_hash, 200)
-        if not thumb_path.exists():
-            if await generate_thumbnails(file_hash):
-                processed += 1
-
-    if processed:
-        logger.info("Generated thumbnails for %d photos", processed)
-    return processed
 
 
 def get_thumbnail_path(file_hash: str, size: int = 600) -> Path | None:

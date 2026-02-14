@@ -297,32 +297,3 @@ async def caption_photo(file_hash: str) -> bool:
 
         logger.debug("Captioned %s: %s", file_hash, caption_text[:80])
         return True
-
-
-async def process_pending_captions(batch_size: int | None = None) -> int:
-    """Process all photos that haven't been captioned yet."""
-    if batch_size is None:
-        batch_size = settings.batch_size
-
-    # Check if Ollama is available first
-    if not await _check_ollama_available():
-        logger.info("Ollama not available at %s, skipping captioning", settings.ollama_url)
-        return 0
-
-    async with async_session() as session:
-        # Find photos without Caption records
-        result = await session.execute(
-            select(Photo.file_hash)
-            .where(~Photo.file_hash.in_(select(Caption.file_hash)))
-            .limit(batch_size)
-        )
-        hashes = result.scalars().all()
-
-    processed = 0
-    for file_hash in hashes:
-        if await caption_photo(file_hash):
-            processed += 1
-
-    if processed:
-        logger.info("Generated captions for %d photos", processed)
-    return processed

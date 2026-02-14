@@ -60,30 +60,3 @@ async def geocode_photo(file_hash: str) -> bool:
             logger.exception("Error geocoding %s", file_hash)
 
     return False
-
-
-async def process_pending_geocoding(batch_size: int | None = None) -> int:
-    """Geocode all photos that have GPS but no location names."""
-    if batch_size is None:
-        batch_size = settings.batch_size
-
-    async with async_session() as session:
-        result = await session.execute(
-            select(Photo.file_hash)
-            .where(
-                Photo.gps_latitude.is_not(None),
-                Photo.gps_longitude.is_not(None),
-                Photo.location_city.is_(None),
-            )
-            .limit(batch_size)
-        )
-        hashes = result.scalars().all()
-
-    processed = 0
-    for file_hash in hashes:
-        if await geocode_photo(file_hash):
-            processed += 1
-
-    if processed:
-        logger.info("Geocoded %d photos", processed)
-    return processed

@@ -15,13 +15,22 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileModifiedEvent
 
 from backend.app.config import settings
-from backend.app.services.scanner import scan_directory, index_single_file, is_supported_photo
+from backend.app.services.scanner import scan_directory, index_single_file, is_supported_photo, thumb_exists
 from backend.app.workers.queues import pipeline, QueueType
 from backend.app.database import async_session
 from backend.app.models import Photo, PhotoHash, Face, Caption
 from sqlalchemy import select, func
 
 logger = logging.getLogger(__name__)
+
+STAGE_TO_QUEUE: dict[str, QueueType] = {
+    "exif": QueueType.EXIF,
+    "geocoding": QueueType.GEOCODING,
+    "thumbnails": QueueType.THUMBNAILS,
+    "hashing": QueueType.HASHING,
+    "faces": QueueType.FACES,
+    "captioning": QueueType.CAPTIONING,
+}
 
 
 async def run_initial_scan() -> dict:
@@ -38,15 +47,7 @@ async def run_initial_scan() -> dict:
 
     async def on_file_discovered(file_hash: str, entry_stage: str):
         """Queue a photo for processing at the appropriate stage."""
-        stage_to_queue = {
-            "exif": QueueType.EXIF,
-            "geocoding": QueueType.GEOCODING,
-            "thumbnails": QueueType.THUMBNAILS,
-            "hashing": QueueType.HASHING,
-            "faces": QueueType.FACES,
-            "captioning": QueueType.CAPTIONING,
-        }
-        queue_type = stage_to_queue.get(entry_stage)
+        queue_type = STAGE_TO_QUEUE.get(entry_stage)
         if queue_type:
             await pipeline.add_file_at(file_hash, queue_type)
             logger.debug(f"Queued {file_hash} for {entry_stage}")
@@ -98,11 +99,12 @@ async def resume_incomplete_processing() -> int:
 
     # Thumbnails: photos missing thumb file (always enabled)
     async with async_session() as session:
+        from backend.app.services.scanner import thumb_exists
         result = await session.execute(select(Photo.file_hash))
         photos = result.fetchall()
         missing_thumbs = 0
         for (file_hash,) in photos:
-            if not (settings.thumbnails_dir / f"{file_hash}_200.jpg").exists():
+            if not thumb_exists(file_hash):
                 await pipeline.add_file_at(file_hash, QueueType.THUMBNAILS)
                 missing_thumbs += 1
                 queued_count += 1
@@ -181,15 +183,7 @@ class FileEventHandler(FileSystemEventHandler):
         result = await index_single_file(filepath)
         if result:
             file_hash, entry_queue = result
-            stage_to_queue = {
-                "exif": QueueType.EXIF,
-                "geocoding": QueueType.GEOCODING,
-                "thumbnails": QueueType.THUMBNAILS,
-                "hashing": QueueType.HASHING,
-                "faces": QueueType.FACES,
-                "captioning": QueueType.CAPTIONING,
-            }
-            queue_type = stage_to_queue.get(entry_queue)
+            queue_type = STAGE_TO_QUEUE.get(entry_queue)
             if queue_type:
                 await pipeline.add_file_at(file_hash, queue_type)
                 logger.info(f"Indexed new file: {filepath} ({file_hash})")

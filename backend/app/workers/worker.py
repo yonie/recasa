@@ -24,6 +24,7 @@ from backend.app.services.face_detector import detect_faces, cluster_faces
 from backend.app.services.captioner import caption_photo
 from backend.app.services.event_detector import detect_events
 from backend.app.services.motion_photo import extract_motion_video
+from backend.app.services.scanner import thumb_exists
 from backend.app.workers.queues import Pipeline, QueueType
 
 logger = logging.getLogger(__name__)
@@ -63,12 +64,6 @@ class Worker:
         """Get photo from database."""
         async with async_session() as session:
             return await session.get(Photo, file_hash)
-
-    def _thumb_exists(self, file_hash: str) -> bool:
-        """Check if thumbnail file exists on disk."""
-        prefix = file_hash[:2]
-        thumb_path = settings.thumbnails_dir / prefix / f"{file_hash}_200.webp"
-        return thumb_path.exists()
 
     async def _has_photo_hash(self, file_hash: str) -> bool:
         """Check if perceptual hash exists in database."""
@@ -157,7 +152,7 @@ class Worker:
         """Process thumbnail generation stage."""
         # Thumbnails always enabled - core functionality
         
-        if self._thumb_exists(file_hash):
+        if thumb_exists(file_hash):
             logger.debug(f"Thumbnails already exist for {file_hash}")
             await self.pipeline.route_to_next(file_hash, QueueType.THUMBNAILS)
             return True

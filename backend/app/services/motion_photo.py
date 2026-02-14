@@ -102,27 +102,3 @@ async def extract_motion_video(file_hash: str) -> bool:
             return True
 
         return False
-
-
-async def process_pending_motion_photos(batch_size: int | None = None) -> int:
-    """Process all motion photos that haven't had their video extracted."""
-    if batch_size is None:
-        batch_size = settings.batch_size
-
-    async with async_session() as session:
-        result = await session.execute(
-            select(Photo.file_hash)
-            .where(Photo.motion_photo == True)  # noqa: E712
-            .where(Photo.live_photo_video.is_(None))
-            .limit(batch_size)
-        )
-        hashes = result.scalars().all()
-
-    processed = 0
-    for file_hash in hashes:
-        if await extract_motion_video(file_hash):
-            processed += 1
-
-    if processed:
-        logger.info("Extracted motion videos for %d photos", processed)
-    return processed

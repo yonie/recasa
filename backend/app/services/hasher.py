@@ -135,27 +135,3 @@ async def find_duplicates() -> list[list[str]]:
 
     logger.info("Found %d duplicate groups", len(duplicate_groups))
     return duplicate_groups
-
-
-async def process_pending_hashes(batch_size: int | None = None) -> int:
-    """Process all photos that haven't been perceptually hashed yet."""
-    if batch_size is None:
-        batch_size = settings.batch_size
-
-    async with async_session() as session:
-        # Find photos without PhotoHash records
-        result = await session.execute(
-            select(Photo.file_hash)
-            .where(~Photo.file_hash.in_(select(PhotoHash.file_hash)))
-            .limit(batch_size)
-        )
-        hashes = result.scalars().all()
-
-    processed = 0
-    for file_hash in hashes:
-        if await compute_hashes(file_hash):
-            processed += 1
-
-    if processed:
-        logger.info("Computed perceptual hashes for %d photos", processed)
-    return processed

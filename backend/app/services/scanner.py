@@ -76,7 +76,9 @@ def detect_google_motion_photo(filepath: Path) -> bool:
 
 def thumb_exists(file_hash: str) -> bool:
     """Check if thumbnail file exists."""
-    return (settings.thumbnails_dir / f"{file_hash}_200.jpg").exists()
+    prefix = file_hash[:2]
+    thumb_path = settings.thumbnails_dir / prefix / f"{file_hash}_200.webp"
+    return thumb_path.exists()
 
 
 async def scan_directory(progress_callback=None, cancel_check=None, on_file_discovered=None) -> dict:

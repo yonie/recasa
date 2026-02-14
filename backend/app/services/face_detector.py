@@ -317,31 +317,3 @@ async def cluster_faces() -> int:
         len(encodings), n_clusters, noise_count, new_persons,
     )
     return new_persons
-
-
-async def process_pending_faces(batch_size: int | None = None) -> int:
-    """Process all photos that haven't had face detection run yet."""
-    if batch_size is None:
-        batch_size = settings.batch_size
-
-    if not _load_insightface():
-        logger.info("insightface not available, skipping face detection")
-        return 0
-
-    async with async_session() as session:
-        # Find photos without Face records (that have thumbnails)
-        result = await session.execute(
-            select(Photo.file_hash)
-            .where(~Photo.file_hash.in_(select(Face.file_hash)))
-            .limit(batch_size)
-        )
-        hashes = result.scalars().all()
-
-    processed = 0
-    for file_hash in hashes:
-        if await detect_faces(file_hash):
-            processed += 1
-
-    if processed:
-        logger.info("Detected faces in %d photos", processed)
-    return processed

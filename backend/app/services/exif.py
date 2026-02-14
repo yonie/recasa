@@ -229,27 +229,3 @@ async def extract_exif(file_hash: str) -> bool:
 
         logger.debug("Extracted EXIF for %s", file_hash)
         return True
-
-
-async def process_pending_exif(batch_size: int | None = None) -> int:
-    """Process all photos that haven't had EXIF extracted yet."""
-    if batch_size is None:
-        batch_size = settings.batch_size
-
-    async with async_session() as session:
-        result = await session.execute(
-            select(Photo.file_hash).where(
-                Photo.camera_make.is_(None),
-                Photo.date_taken.is_(None)
-            ).limit(batch_size)
-        )
-        hashes = result.scalars().all()
-
-    processed = 0
-    for file_hash in hashes:
-        if await extract_exif(file_hash):
-            processed += 1
-
-    if processed:
-        logger.info("Extracted EXIF for %d photos", processed)
-    return processed
