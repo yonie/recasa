@@ -102,9 +102,9 @@ def _extract_exif_data(filepath: Path) -> dict:
             result["width"] = img.width
             result["height"] = img.height
 
-            # Use _getexif() for full EXIF data (getexif() is incomplete)
-            exif_data = img._getexif()
-            if not exif_data:
+            # Get EXIF data - use getexif() which works across image formats
+            exif_obj = img.getexif()
+            if not exif_obj:
                 # No EXIF at all -- fall back to filesystem date
                 result["date_taken"] = _get_filesystem_date(filepath)
                 if result["date_taken"]:
@@ -113,7 +113,7 @@ def _extract_exif_data(filepath: Path) -> dict:
 
             # Decode EXIF tags
             decoded = {}
-            for tag_id, value in exif_data.items():
+            for tag_id, value in exif_obj.items():
                 tag_name = TAGS.get(tag_id, str(tag_id))
                 decoded[tag_name] = value
 
@@ -162,28 +162,29 @@ def _extract_exif_data(filepath: Path) -> dict:
             if "ISOSpeedRatings" in decoded:
                 result["iso"] = int(decoded["ISOSpeedRatings"])
 
-            # GPS data - _getexif() nests GPS tags inside the GPSInfo tag (34853)
+            # GPS data - get_ifd(0x8825) gets the GPS IFD
             try:
-                gps_info = exif_data.get(34853)  # GPSInfo tag
-                if gps_info and isinstance(gps_info, dict):
-                    gps_latitude = gps_info.get(2)  # GPSLatitude
-                    gps_latitude_ref = gps_info.get(1)  # GPSLatitudeRef
-                    gps_longitude = gps_info.get(4)  # GPSLongitude
-                    gps_longitude_ref = gps_info.get(3)  # GPSLongitudeRef
-                    gps_altitude = gps_info.get(6)  # GPSAltitude
+                gps_ifd = exif_obj.get_ifd(0x8825)  # GPSInfo IFD pointer
+                if gps_ifd:
+                    for tag_id, value in gps_ifd.items():
+                        gps_tag = GPSTAGS.get(tag_id, str(tag_id))
+                        decoded[gps_tag] = value
 
-                    if gps_latitude and gps_latitude_ref:
-                        result["gps_latitude"] = _dms_to_decimal(gps_latitude, gps_latitude_ref)
-
-                    if gps_longitude and gps_longitude_ref:
-                        result["gps_longitude"] = _dms_to_decimal(gps_longitude, gps_longitude_ref)
-
-                    if gps_altitude is not None:
-                        if isinstance(gps_altitude, tuple):
-                            result["gps_altitude"] = float(gps_altitude[0]) / float(gps_altitude[1]) if gps_altitude[1] else None
+                    if "GPSLatitude" in decoded and "GPSLatitudeRef" in decoded:
+                        result["gps_latitude"] = _dms_to_decimal(
+                            decoded["GPSLatitude"], decoded["GPSLatitudeRef"]
+                        )
+                    if "GPSLongitude" in decoded and "GPSLongitudeRef" in decoded:
+                        result["gps_longitude"] = _dms_to_decimal(
+                            decoded["GPSLongitude"], decoded["GPSLongitudeRef"]
+                        )
+                    if "GPSAltitude" in decoded:
+                        alt = decoded["GPSAltitude"]
+                        if isinstance(alt, tuple) and alt[1]:
+                            result["gps_altitude"] = float(alt[0]) / float(alt[1])
                         else:
-                            result["gps_altitude"] = float(gps_altitude)
-            except (TypeError, ValueError):
+                            result["gps_altitude"] = float(alt)
+            except (TypeError, ValueError, AttributeError):
                 pass
 
     except Exception:
