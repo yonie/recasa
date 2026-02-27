@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "description": "Test fixtures for Recasa integration tests - minimal set",
+  "config": {
+    "ENABLE_EXIF_EXTRACTION": true,
+    "ENABLE_GEOCODING": true,
+    "ENABLE_THUMBNAILS": true,
+    "ENABLE_MOTION_PHOTOS": true,
+    "ENABLE_HASHING": true,
+    "ENABLE_FACE_DETECTION": true,
+    "ENABLE_CAPTIONING": true,
+    "OLLAMA_MODEL": "qwen3-vl:235b-instruct-cloud"
+  },
+  "images": [
+    {
+      "filename": "faces/alice/alice_01.jpg",
+      "category": "faces",
+      "exif": {"has_exif": true, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 1, "expected_person": "alice"},
+      "caption_keywords": ["portrait", "woman", "outdoor"]
+    },
+    {
+      "filename": "faces/alice/alice_02.jpg",
+      "category": "faces",
+      "exif": {"has_exif": true, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 1, "expected_person": "alice"},
+      "caption_keywords": ["portrait", "woman", "smile"]
+    },
+    {
+      "filename": "faces/bob/bob_01.jpg",
+      "category": "faces",
+      "exif": {"has_exif": true, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 1, "expected_person": "bob"},
+      "caption_keywords": ["portrait", "man", "outdoor"]
+    },
+    {
+      "filename": "faces/bob/bob_02.jpg",
+      "category": "faces",
+      "exif": {"has_exif": true, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 1, "expected_person": "bob"},
+      "caption_keywords": ["portrait", "man", "city"]
+    },
+    {
+      "filename": "faces/carol/carol_01.jpg",
+      "category": "faces",
+      "exif": {"has_exif": true, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 1, "expected_person": "carol"},
+      "caption_keywords": ["portrait", "woman", "outdoor"]
+    },
+    {
+      "filename": "faces/carol/carol_02.jpg",
+      "category": "faces",
+      "exif": {"has_exif": true, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 1, "expected_person": "carol"},
+      "caption_keywords": ["portrait", "woman", "park"]
+    },
+    {
+      "filename": "faces/group/group_01.jpg",
+      "category": "faces",
+      "exif": {"has_exif": true, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 3, "expected_person": null},
+      "caption_keywords": ["group", "people", "city"]
+    },
+    {
+      "filename": "landscapes/mountain_01.jpg",
+      "category": "landscapes",
+      "exif": {"has_exif": true, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 0, "expected_person": null},
+      "caption_keywords": ["mountain", "landscape", "snow", "nature"]
+    },
+    {
+      "filename": "portraits/portrait_01.jpg",
+      "category": "portraits",
+      "exif": {"has_exif": true, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 1, "expected_person": null},
+      "caption_keywords": ["portrait", "woman", "studio"]
+    },
+    {
+      "filename": "formats/sample.heic",
+      "category": "formats",
+      "exif": {"has_exif": false, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 0, "expected_person": null},
+      "caption_keywords": ["test", "heic", "format"]
+    },
+    {
+      "filename": "formats/sample.webp",
+      "category": "formats",
+      "exif": {"has_exif": false, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 0, "expected_person": null},
+      "caption_keywords": ["test", "webp", "format"]
+    },
+    {
+      "filename": "formats/sample.png",
+      "category": "formats",
+      "exif": {"has_exif": false, "camera_make": null, "date_taken": null},
+      "gps": {"has_gps": false, "expected_city": null},
+      "faces": {"min_faces": 0, "expected_person": null},
+      "caption_keywords": ["test", "png", "format"]
+    }
+  ]
+}

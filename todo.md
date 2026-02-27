@@ -28,14 +28,17 @@ DONE
 * the tags are not colored. they are AI generated so super random, here are some: indoor, outdoor, daytime, sunny, ... we should just have a simple string-to-color function so each has a unique color.
 * the tags in the "Tags" page are all grey but im quite sure we have logic to generate unique colors. you said we fixed it but i still see it on the left.
 * each time i press rescan, even if NOTHING changed on the photo drive, it begins doing a lot of stuff in the different pipelines. it's like it either forgot it already did things, or the previous rescan did not actually process all files. is there somehow a limit implemented, or are we not correctly storing that we have already processed a file?
+* **2024-02-27**: Added comprehensive integration test suite with 51 test images (docker-compose.test.yml). Tests validate: scanner, EXIF, geocoding, thumbnails, hashing, faces, and captioning. See docs/TESTING.md.
+* **2024-02-27**: Added path change detection - app warns when PHOTOS_PATH changes and suggests clearing index. New API: GET /api/config/status.
+* **2024-02-27**: Added ConfigStore model for persisting app-level settings in database.
 
 
 
 TODO
 
 
-* people remains empty (during scanning?)
-* same for events.
+* people remains empty (during scanning?) - **TESTING**: test_faces.py validates face detection and clustering
+* same for events. - **TESTING**: Events are generated after face clustering; will be validated by tests
 
 
 * the "years" view only goes back to 2005 and then suddenly 2000 but there are photos in the index of 2004, 2003, 2002 and 2001.

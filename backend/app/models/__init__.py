@@ -5,6 +5,7 @@ from backend.app.models.caption import Caption
 from backend.app.models.tag import Tag, PhotoTag
 from backend.app.models.event import Event, EventPhoto
 from backend.app.models.duplicate import DuplicateGroup, DuplicateMember
+from backend.app.models.config import ConfigStore
 
 __all__ = [
     "Base",
@@ -20,4 +21,5 @@ __all__ = [
     "EventPhoto",
     "DuplicateGroup",
     "DuplicateMember",
+    "ConfigStore",
 ]

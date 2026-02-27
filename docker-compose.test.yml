@@ -1,0 +1,62 @@
+# Test configuration for Recasa
+# Runs autonomous integration tests with built-in fixture data
+#
+# Usage:
+#   docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit
+#
+# Exit codes:
+#   0 = all tests passed
+#   1 = some tests failed
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "7001:8080"
+    volumes:
+      - ./backend/tests/fixtures/images:/photos:ro
+      - recasa_test_data:/data
+    environment:
+      - PHOTOS_DIR=/photos
+      - DATA_DIR=/data
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3-vl:235b-instruct-cloud}
+      - ENABLE_EXIF_EXTRACTION=true
+      - ENABLE_GEOCODING=true
+      - ENABLE_THUMBNAILS=true
+      - ENABLE_MOTION_PHOTOS=true
+      - ENABLE_HASHING=true
+      - ENABLE_FACE_DETECTION=true
+      - ENABLE_CAPTIONING=true
+      - MAX_CONCURRENT=2
+      - LOG_LEVEL=info
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  tester:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./backend/tests:/tests:ro
+      - ./backend/app:/app/backend/app:ro
+      - recasa_test_data:/data:ro
+    environment:
+      - PYTHONPATH=/app
+      - BASE_URL=http://app:8000
+    depends_on:
+      app:
+        condition: service_healthy
+    working_dir: /app
+    command: ["sh", "-c", "pip install pytest pytest-asyncio httpx && python -m pytest /tests/ -v --tb=short -s"]
+    
+volumes:
+  recasa_test_data:

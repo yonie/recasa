@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.config import settings
 from backend.app.database import init_db
-from backend.app.api import photos, directories, timeline, scan, duplicates, persons, events, locations, pipeline_api, tags
+from backend.app.api import photos, directories, timeline, scan, duplicates, persons, events, locations, pipeline_api, tags, config
 from backend.app.workers.queues import pipeline
 from backend.app.workers.worker import start_pipeline_workers
 from backend.app.workers.pipeline import start_file_watcher, resume_incomplete_processing
@@ -37,6 +37,10 @@ async def lifespan(app: FastAPI):
 
     # Initialize database
     await init_db()
+
+    # Initialize config store (stores photos_path for change detection)
+    from backend.app.api.config import init_config_store
+    await init_config_store()
 
     # Start the pipeline workers (face detection, event detection, etc.)
     workers = await start_pipeline_workers(pipeline)
@@ -88,6 +92,7 @@ app.include_router(events.router)
 app.include_router(locations.router)
 app.include_router(pipeline_api.router)
 app.include_router(tags.router)
+app.include_router(config.router)
 
 
 @app.get("/api/health")

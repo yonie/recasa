@@ -176,6 +176,36 @@ All endpoints are under `/api`. Key routes:
 | `WS /api/scan/ws` | Real-time scan progress via WebSocket |
 | `GET /api/health` | Health check |
 
+## Testing
+
+Recasa includes a comprehensive integration test suite. See [docs/TESTING.md](docs/TESTING.md) for details.
+
+### Quick Test
+
+```bash
+# Run tests with built-in demo data
+docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit
+
+# Check exit code (0 = pass)
+echo $?
+```
+
+Test images are included in `backend/tests/fixtures/images/` and cover:
+- Historical figures (Einstein, Curie, Lincoln) for face recognition
+- Portraits for face clustering
+- Landscapes (no faces) for false-positive validation
+- City photos with GPS coordinates
+- Various formats (HEIC, WebP, PNG, TIFF)
+
+### Demo Mode
+
+The test fixtures also serve as demo data for new users:
+
+```bash
+docker-compose -f docker-compose.test.yml up
+open http://localhost:7001
+```
+
 ## License
 
 MIT
