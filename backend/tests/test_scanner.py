@@ -1,7 +1,7 @@
 """Scanner/indexing tests."""
 
 import pytest
-from backend.tests.utils import APIClient
+from tests.utils import APIClient
 
 
 class TestScanner:

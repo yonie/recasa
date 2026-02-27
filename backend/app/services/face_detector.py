@@ -30,6 +30,9 @@ _face_app = None
 # Face thumbnail size
 FACE_THUMB_SIZE = 150
 
+# Face detection confidence threshold - filter low-confidence detections
+FACE_DET_THRESHOLD = 0.5
+
 # DBSCAN clustering parameters
 # Using cosine distance since insightface produces normalized embeddings
 CLUSTER_DISTANCE_THRESHOLD = 0.5  # Cosine distance; lower = stricter matching
@@ -95,19 +98,26 @@ def _detect_faces(filepath: Path) -> list[dict]:
             return []
 
         results = []
+        filtered_count = 0
         for face in faces:
-            # face.bbox is [x1, y1, x2, y2] as float
+            det_score = float(face.det_score) if hasattr(face, 'det_score') else 1.0
+            if det_score < FACE_DET_THRESHOLD:
+                filtered_count += 1
+                continue
+
             x1, y1, x2, y2 = face.bbox.astype(int)
-            # Convert to native Python int (numpy int64 gets stored as bytes in SQLite)
             x, y, w, h = int(x1), int(y1), int(x2 - x1), int(y2 - y1)
 
-            # face.normed_embedding is a 512-dim normalized vector
             embedding = face.normed_embedding
 
             results.append({
                 "bbox": (x, y, w, h),
                 "encoding": embedding,
+                "confidence": det_score,
             })
+
+        if filtered_count > 0:
+            logger.debug("Filtered %d low-confidence face detections (threshold=%.2f)", filtered_count, FACE_DET_THRESHOLD)
 
         return results
 
@@ -181,8 +191,8 @@ async def detect_faces(file_hash: str) -> bool:
         for i, face_data in enumerate(faces):
             x, y, w, h = face_data["bbox"]
             encoding = face_data["encoding"]
+            confidence = face_data.get("confidence")
 
-            # Generate face thumbnail
             thumb_path = await asyncio.to_thread(
                 _generate_face_thumbnail, filepath, face_data["bbox"], file_hash, i
             )
@@ -195,6 +205,7 @@ async def detect_faces(file_hash: str) -> bool:
                 bbox_h=h,
                 encoding=pickle.dumps(encoding),
                 face_thumbnail=thumb_path,
+                confidence=confidence,
             )
             session.add(face)
 

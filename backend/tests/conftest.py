@@ -11,7 +11,7 @@ import pytest_asyncio
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backend.tests.utils import APIClient
+from tests.utils import APIClient
 
 MANIFEST_PATH = Path(__file__).parent / "fixtures" / "manifest.json"
 

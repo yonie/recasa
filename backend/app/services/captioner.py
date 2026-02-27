@@ -23,19 +23,15 @@ logger = logging.getLogger(__name__)
 # Max dimension to resize images before sending to Ollama (saves bandwidth)
 MAX_IMAGE_DIMENSION = 1024
 
-CAPTION_PROMPT = (
-    "Describe this photo in one or two concise sentences. "
-    "Focus on the main subject, setting, and any notable details. "
-    "Be specific and descriptive."
-)
+COMBINED_PROMPT = """Analyze this photo and provide:
 
-TAG_PROMPT = (
-    "List tags for this photo as a comma-separated list. "
-    "Include: specific objects, scenes, activities, locations/landmarks, "
-    "colors, mood, weather, time of day, and any other relevant descriptors. "
-    "Be specific (e.g. 'golden retriever' not just 'dog', 'Eiffel Tower' not just 'tower'). "
-    "Return ONLY the comma-separated tags, nothing else. Example: sunset, beach, ocean, golden hour, waves, silhouette"
-)
+1. CAPTION: One or two concise sentences describing the main subject, setting, and notable details. Be specific and descriptive.
+
+2. TAGS: A comma-separated list of specific objects, scenes, activities, locations/landmarks, colors, mood, weather, time of day. Be specific (e.g. 'golden retriever' not 'dog', 'Eiffel Tower' not 'tower').
+
+Format your response exactly like this:
+CAPTION: [your caption here]
+TAGS: [tag1, tag2, tag3, ...]"""
 
 
 def _strip_think_blocks(text: str) -> str:
@@ -86,29 +82,28 @@ async def _check_ollama_available() -> bool:
         return False
 
 
-async def _generate_caption(image_base64: str) -> str | None:
-    """Send an image to Ollama and get a caption."""
+async def _generate_caption_and_tags(image_base64: str) -> tuple[str | None, list[str] | None]:
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 f"{settings.ollama_url}/api/generate",
                 json={
                     "model": settings.ollama_model,
-                    "prompt": CAPTION_PROMPT,
+                    "prompt": COMBINED_PROMPT,
                     "images": [image_base64],
                     "stream": False,
                     "options": {
                         "temperature": 0.3,
-                        "num_predict": 150,
+                        "num_predict": 300,
                     },
                 },
             )
 
             if response.status_code == 200:
                 data = response.json()
-                caption = _strip_think_blocks(data.get("response", ""))
-                if caption:
-                    return caption
+                raw = _strip_think_blocks(data.get("response", ""))
+                if raw:
+                    return _parse_combined_response(raw)
             else:
                 logger.warning(
                     "Ollama returned status %d: %s",
@@ -121,56 +116,33 @@ async def _generate_caption(image_base64: str) -> str | None:
     except Exception:
         logger.exception("Error generating caption via Ollama")
 
-    return None
+    return None, None
 
 
-async def _generate_tags(image_base64: str) -> list[str] | None:
-    """Send an image to Ollama and get tags."""
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"{settings.ollama_url}/api/generate",
-                json={
-                    "model": settings.ollama_model,
-                    "prompt": TAG_PROMPT,
-                    "images": [image_base64],
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.3,
-                        "num_predict": 200,
-                    },
-                },
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                raw = _strip_think_blocks(data.get("response", ""))
-                if raw:
-                    # Parse comma-separated tags, normalize
-                    tags = [t.strip().lower() for t in raw.split(",")]
-                    # Remove empty, too-short, or too-long tags
-                    tags = [t for t in tags if 2 <= len(t) <= 80]
-                    # Deduplicate preserving order
-                    seen = set()
-                    unique = []
-                    for t in tags:
-                        if t not in seen:
-                            seen.add(t)
-                            unique.append(t)
-                    return unique[:15]  # Cap at 15 tags
-            else:
-                logger.warning(
-                    "Ollama tags returned status %d: %s",
-                    response.status_code,
-                    response.text[:200],
-                )
-
-    except httpx.TimeoutException:
-        logger.warning("Ollama tag request timed out")
-    except Exception:
-        logger.exception("Error generating tags via Ollama")
-
-    return None
+def _parse_combined_response(raw: str) -> tuple[str | None, list[str] | None]:
+    caption = None
+    tags = None
+    
+    import re
+    
+    caption_match = re.search(r"CAPTION:\s*(.+?)(?=TAGS:|$)", raw, re.DOTALL | re.IGNORECASE)
+    if caption_match:
+        caption = caption_match.group(1).strip()
+    
+    tags_match = re.search(r"TAGS:\s*(.+?)$", raw, re.DOTALL | re.IGNORECASE)
+    if tags_match:
+        tags_raw = tags_match.group(1).strip()
+        tag_list = [t.strip().lower() for t in tags_raw.split(",")]
+        tag_list = [t for t in tag_list if 2 <= len(t) <= 80]
+        seen = set()
+        tags = []
+        for t in tag_list:
+            if t not in seen:
+                seen.add(t)
+                tags.append(t)
+        tags = tags[:15]
+    
+    return caption, tags
 
 
 async def _ensure_tag_ids(tag_names: list[str]) -> dict[str, int]:
@@ -235,13 +207,11 @@ async def _ensure_tag_ids(tag_names: list[str]) -> dict[str, int]:
 
 
 async def caption_photo(file_hash: str) -> bool:
-    """Generate an AI caption for a photo using Ollama."""
     async with async_session() as session:
         photo = await session.get(Photo, file_hash)
         if not photo:
             return False
 
-        # Check if caption already exists
         existing_caption = await session.get(Caption, file_hash)
         if existing_caption:
             return True
@@ -250,28 +220,20 @@ async def caption_photo(file_hash: str) -> bool:
         if not filepath.exists():
             return False
 
-        # Prepare image
         image_base64 = await asyncio.to_thread(_prepare_image_base64, filepath)
         if not image_base64:
             return False
 
-        # Generate caption
-        caption_text = await _generate_caption(image_base64)
-        if not caption_text:
-            return True
+        caption_text, tag_list = await _generate_caption_and_tags(image_base64)
+        
+        if caption_text:
+            session.add(Caption(
+                file_hash=file_hash,
+                caption=caption_text,
+                model=settings.ollama_model,
+            ))
 
-        # Store caption
-        session.add(Caption(
-            file_hash=file_hash,
-            caption=caption_text,
-            model=settings.ollama_model,
-        ))
-
-        # Generate and store tags
-        tag_list = await _generate_tags(image_base64)
         if tag_list:
-            # Resolve tag names -> IDs in a separate session to avoid
-            # rollback contamination if concurrent tag creation races.
             tag_id_map = await _ensure_tag_ids(tag_list)
 
             from backend.app.models import PhotoTag
@@ -279,7 +241,6 @@ async def caption_photo(file_hash: str) -> bool:
                 tag_id = tag_id_map.get(tag_name)
                 if tag_id is None:
                     continue
-                # Check if association exists
                 existing = await session.execute(
                     select(PhotoTag).where(
                         PhotoTag.file_hash == file_hash,
@@ -295,5 +256,6 @@ async def caption_photo(file_hash: str) -> bool:
 
         await session.commit()
 
-        logger.debug("Captioned %s: %s", file_hash, caption_text[:80])
+        if caption_text:
+            logger.debug("Captioned %s: %s", file_hash, caption_text[:80])
         return True
