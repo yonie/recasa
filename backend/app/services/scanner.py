@@ -44,6 +44,25 @@ def is_supported_photo(filepath: Path) -> bool:
     return filepath.suffix.lower() in settings.photo_extensions
 
 
+def is_valid_image(filepath: Path) -> bool:
+    """Check if file is a valid readable image (not corrupted).
+    
+    Returns False for:
+    - Files too small to be valid images (< 1KB)
+    - Truncated/corrupted images
+    - Files that can't be opened
+    """
+    try:
+        if filepath.stat().st_size < 1024:
+            return False
+        from PIL import Image
+        with Image.open(filepath) as img:
+            img.verify()
+        return True
+    except Exception:
+        return False
+
+
 def find_live_photo_video(photo_path: Path) -> Path | None:
     """Find an associated Live Photo video (MOV) for a HEIC/JPEG file."""
     for ext in [".mov", ".MOV"]:
@@ -116,7 +135,7 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in files:
             filepath = Path(root) / f
-            if is_supported_photo(filepath):
+            if is_supported_photo(filepath) and is_valid_image(filepath):
                 photo_files.append(filepath)
         if cancel_check and cancel_check():
             logger.info("Scan cancelled during file collection")
@@ -334,6 +353,10 @@ async def index_single_file(filepath: Path) -> tuple[str, str] | None:
     Returns (file_hash, entry_stage) or None if file not supported/unchanged.
     """
     if not is_supported_photo(filepath):
+        return None
+    
+    if not is_valid_image(filepath):
+        logger.warning("Skipping corrupted/invalid image: %s", filepath)
         return None
 
     try:
