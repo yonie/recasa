@@ -53,16 +53,18 @@ export function Sidebar() {
   }, [isToolRoute, toolsOpen]);
 
   useEffect(() => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${window.location.host}/api/pipeline/ws`);
-    ws.onmessage = (event) => {
+    async function fetchPipelineStatus() {
       try {
-        setPipelineStats(JSON.parse(event.data));
+        const res = await fetch("/api/pipeline/status");
+        const data = await res.json();
+        setPipelineStats(data);
       } catch {
         // ignore
       }
-    };
-    return () => ws.close();
+    }
+    fetchPipelineStatus();
+    const interval = setInterval(fetchPipelineStatus, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   const pipelineActive = pipelineStats?.state === "scanning" || pipelineStats?.state === "processing";
