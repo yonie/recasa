@@ -57,7 +57,7 @@ def _load_insightface():
         )
         app.prepare(ctx_id=-1, det_size=(640, 640))
         _face_app = app
-        logger.info("insightface FaceAnalysis loaded successfully (buffalo_l)")
+        logger.info(f"insightface FaceAnalysis loaded successfully ({app.name})")
         return True
     except ImportError as e:
         logger.error(

@@ -24,6 +24,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 12G
 
 volumes:
   recasa_data:
