@@ -200,10 +200,21 @@ export function Pipeline() {
   }
 
   const isActive = stats.state === "scanning" || stats.state === "processing";
-  const totalInProgress = Object.values(stats.queues).reduce(
-    (acc, q) => acc + q.pending + q.processing,
-    0
-  );
+
+  const totalPhotos = processingStats?.total_photos || 0;
+
+  // Calculate photos needing any processing stage
+  const photosNeedingWork = (() => {
+    if (!processingStats) return 0;
+    let maxNeeded = 0;
+    for (const data of Object.values(processingStats.stages)) {
+      if (data.enabled && data.total > 0) {
+        const needed = data.total - data.completed;
+        if (needed > maxNeeded) maxNeeded = needed;
+      }
+    }
+    return maxNeeded;
+  })();
 
   // Map queue types to processing stats keys
   const getStageStats = (queueType: string): { completed: number; total: number } => {
@@ -211,8 +222,6 @@ export function Pipeline() {
     const key = queueType === "motion_photos" ? "exif" : queueType as keyof typeof processingStats.stages;
     return processingStats.stages[key] || { completed: 0, total: processingStats.total_photos };
   };
-
-  const totalPhotos = processingStats?.total_photos || 0;
 
   return (
     <div className="p-6 max-w-[960px] mx-auto">
@@ -319,21 +328,21 @@ export function Pipeline() {
           </div>
         </div>
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
-          <div className="text-xs text-gray-500 mb-0.5">In Progress</div>
+          <div className="text-xs text-gray-500 mb-0.5">Need Processing</div>
           <div className="text-2xl font-bold text-blue-600 tabular-nums">
-            {formatNumber(totalInProgress)}
+            {formatNumber(photosNeedingWork)}
           </div>
         </div>
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
           <div className="text-xs text-gray-500 mb-0.5">Completed</div>
           <div className="text-2xl font-bold text-green-600 tabular-nums">
-            {stats.completion_summary ? formatNumber(stats.completion_summary.files_processed) : "-"}
+            {processingStats ? formatNumber(processingStats.stages.exif?.completed || 0) : "-"}
           </div>
         </div>
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
           <div className="text-xs text-gray-500 mb-0.5">Errors</div>
           <div className={`text-2xl font-bold tabular-nums ${stats.error_count > 0 ? "text-red-600" : "text-gray-400"}`}>
-            {stats.error_count}
+            {stats.error_count || 0}
           </div>
         </div>
       </div>

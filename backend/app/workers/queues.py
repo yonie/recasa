@@ -123,8 +123,27 @@ class Pipeline:
         if len(self.error_log) > 100:
             self.error_log = self.error_log[-100:]
 
+    def get_queue_info(self) -> dict[str, dict]:
+        """Get detailed queue information for each queue type."""
+        return {
+            qtype.value: {
+                "queue_type": qtype.value,
+                "pending": queue.qsize(),
+                "processing": 1 if queue.current_file_hash else 0,
+                "completed_total": 0,
+                "skipped_total": 0,
+                "failed_total": 0,
+                "last_processed_at": None,
+                "last_file_hash": None,
+                "current_file_hash": queue.current_file_hash,
+                "current_file_path": queue.current_file_path,
+                "throughput_per_minute": 0,
+            }
+            for qtype, queue in self.queues.items()
+        }
+
     def get_queue_sizes(self) -> dict[str, int]:
-        """Get current queue sizes."""
+        """Get current queue sizes (legacy format for compatibility)."""
         return {
             qtype.value: queue.qsize()
             for qtype, queue in self.queues.items()

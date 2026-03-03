@@ -17,12 +17,17 @@ router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 @router.get("/status")
 async def get_pipeline_status():
     """Get current pipeline status."""
-    queue_sizes = pipeline.get_queue_sizes()
+    queue_info = pipeline.get_queue_info()
     return {
         "running": pipeline.is_running,
         "stop_requested": pipeline._stop_requested,
-        "queues": queue_sizes,
+        "state": "processing" if pipeline.is_running else "idle",
+        "scan_progress": None,
+        "processing_progress": None,
+        "completion_summary": None,
         "error_log": pipeline.error_log[-20:],
+        "error_count": len(pipeline.error_log),
+        "queues": queue_info,
     }
 
 
@@ -122,7 +127,18 @@ async def pipeline_websocket(websocket: WebSocket):
 
     try:
         while True:
-            status = await get_pipeline_status()
+            queue_info = pipeline.get_queue_info()
+            status = {
+                "running": pipeline.is_running,
+                "stop_requested": pipeline._stop_requested,
+                "state": "processing" if pipeline.is_running else "idle",
+                "scan_progress": None,
+                "processing_progress": None,
+                "completion_summary": None,
+                "error_log": pipeline.error_log[-20:],
+                "error_count": len(pipeline.error_log),
+                "queues": queue_info,
+            }
             await websocket.send_json(status)
             await asyncio.sleep(1)
     except WebSocketDisconnect:
