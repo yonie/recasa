@@ -148,6 +148,7 @@ export interface ProcessingStats {
     hashing: { completed: number; total: number; enabled: boolean };
     faces: { completed: number; total: number; enabled: boolean };
     captioning: { completed: number; total: number; enabled: boolean };
+    events: { completed: number; total: number; enabled: boolean };
   };
 }
 

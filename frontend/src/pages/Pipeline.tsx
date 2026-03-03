@@ -219,8 +219,12 @@ export function Pipeline() {
   // Map queue types to processing stats keys
   const getStageStats = (queueType: string): { completed: number; total: number } => {
     if (!processingStats) return { completed: 0, total: 0 };
-    const key = queueType === "motion_photos" ? "exif" : queueType as keyof typeof processingStats.stages;
-    return processingStats.stages[key] || { completed: 0, total: processingStats.total_photos };
+    const keyMap: Record<string, string> = {
+      motion_photos: "exif",
+      events: "events",
+    };
+    const key = keyMap[queueType] || queueType;
+    return processingStats.stages[key as keyof typeof processingStats.stages] || { completed: 0, total: processingStats.total_photos };
   };
 
   return (

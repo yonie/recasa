@@ -7,7 +7,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.database import get_session
-from backend.app.models import Photo, PhotoHash, Face, Caption
+from backend.app.models import Photo, PhotoHash, Face, Caption, Event
 from backend.app.workers.queues import pipeline, QueueType
 from backend.app.config import settings
 
@@ -84,6 +84,10 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
     caption_done = await session.execute(select(func.count(Caption.file_hash)))
     caption_count = caption_done.scalar() or 0
 
+    # Events: Event records exist
+    events_done = await session.execute(select(func.count(Event.event_id)))
+    event_count = events_done.scalar() or 0
+
     return {
         "total_photos": total_photos,
         "stages": {
@@ -93,6 +97,7 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
             "hashing": {"completed": hash_count, "total": total_photos, "enabled": True},
             "faces": {"completed": faces_count, "total": total_photos, "enabled": settings.ENABLE_FACE_DETECTION},
             "captioning": {"completed": caption_count, "total": total_photos, "enabled": settings.ENABLE_CAPTIONING},
+            "events": {"completed": event_count, "total": total_photos, "enabled": True},
         },
     }
 
