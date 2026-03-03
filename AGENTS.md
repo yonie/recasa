@@ -249,18 +249,68 @@ The `/api/scan/trigger` endpoint is **blocking** - it runs the entire scan befor
 
 | Issue | Status | Fix Needed |
 |-------|--------|------------|
-| Scan blocks API | TODO | BackgroundTasks |
+| Scan blocks API | FIXED | BackgroundTasks in `/api/scan/trigger` |
 | WebSocket 403 errors | WORKAROUND | Use HTTP polling |
 | Thumbnail generation slow | OK | Normal, memory-intensive |
 | Face detection slow | OK | Normal, CPU-intensive |
 
 ---
 
+## Architecture Issues (TODO)
+
+### Docker Build Performance
+
+The Dockerfile rebuilds take 1-2 minutes because:
+1. No layer caching for Python dependencies
+2. `apt-get purge` runs on every build (should be in base layer)
+3. Frontend rebuilds even when only backend changed
+
+**Recommended fix:** Multi-stage Dockerfile with better layer caching.
+
+### File Watcher vs Scanner
+
+The app has two mechanisms for detecting new photos:
+1. **File watcher** (`watchdog`) - Detects new files in real-time
+2. **Scanner** - Walks filesystem on demand/trigger
+
+Current state: File watcher runs but the scanner must be manually triggered for initial indexing or after adding many new folders. The watcher may miss directories added while the app was down.
+
+---
+
 ## What Was Fixed Today (2026-03-03)
 
 1. **Pipeline page NaN** - Changed from queue sizes to "photos needing processing" based on DB
-2. **Sidebar offline** - WebSocket was getting 403, switched to HTTP polling
+2. **Sidebar offline** - WebSocket getting 403, switched to HTTP polling  
 3. **Events showing 0** - Added events to processing-stats API
 4. **Corrupted photos indexed** - Scanner now skips files < 1KB and unopenable images
-5. **Missing 2024-2026 photos** - Scan was interrupted; need to re-run
+5. **Missing 2024-2026 photos** - Consistency test revealed 10K+ missing photos; rescan triggered
 6. **Confusing UI metrics** - Changed to "Indexed Photos" / "Queued" / "Status"
+7. **Scan API blocking** - Made `/api/scan/trigger` non-blocking with BackgroundTasks
+
+---
+
+## Running Tests
+
+### Consistency Test
+
+```bash
+# Inside container
+docker exec -it recasa-recasa-1 python -m backend.tests.test_consistency
+
+# Check specific years
+docker exec -it recasa-recasa-1 python -c "
+import asyncio
+from backend.app.database import async_session
+from backend.app.models import Photo
+from backend.app.config import settings
+from sqlalchemy import select, func
+# ... count photos on disk vs in DB
+"
+```
+
+### Expected Results
+
+When all photos are indexed:
+- Disk total ≈ DB total (within 5% tolerance)
+- All years with photos on disk have entries in DB
+- Newest year in DB is within 1 year of current date
