@@ -326,27 +326,34 @@ export function Pipeline() {
       {/* Quick Stats */}
       <div className="grid grid-cols-4 gap-3 mb-6">
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
-          <div className="text-xs text-gray-500 mb-0.5">Total Photos</div>
+          <div className="text-xs text-gray-500 mb-0.5">Indexed Photos</div>
           <div className="text-2xl font-bold text-gray-900 tabular-nums">
             {formatNumber(totalPhotos)}
           </div>
         </div>
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
-          <div className="text-xs text-gray-500 mb-0.5">Need Processing</div>
+          <div className="text-xs text-gray-500 mb-0.5">{isActive ? "Queued" : "Need Processing"}</div>
           <div className="text-2xl font-bold text-blue-600 tabular-nums">
             {formatNumber(photosNeedingWork)}
-          </div>
-        </div>
-        <div className="bg-white border border-gray-200 rounded-xl p-3.5">
-          <div className="text-xs text-gray-500 mb-0.5">Completed</div>
-          <div className="text-2xl font-bold text-green-600 tabular-nums">
-            {processingStats ? formatNumber(processingStats.stages.exif?.completed || 0) : "-"}
           </div>
         </div>
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
           <div className="text-xs text-gray-500 mb-0.5">Errors</div>
           <div className={`text-2xl font-bold tabular-nums ${stats.error_count > 0 ? "text-red-600" : "text-gray-400"}`}>
             {stats.error_count || 0}
+          </div>
+        </div>
+        <div className="bg-white border border-gray-200 rounded-xl p-3.5">
+          <div className="text-xs text-gray-500 mb-0.5">Status</div>
+          <div className="text-lg font-semibold text-gray-900">
+            {isActive ? (
+              <span className="flex items-center gap-1.5 text-green-600">
+                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                Processing
+              </span>
+            ) : (
+              <span className="text-gray-400">Idle</span>
+            )}
           </div>
         </div>
       </div>
