@@ -30,17 +30,30 @@ def _photo_to_summary(photo: Photo) -> PhotoSummary:
 @router.get("/years")
 async def get_years(session: AsyncSession = Depends(get_session)):
     """Get list of years with photo counts."""
+    # Use COALESCE to fall back to file_modified year when date_taken is null
     result = await session.execute(
         select(
-            extract("year", Photo.date_taken).label("year"),
+            func.coalesce(
+                extract("year", Photo.date_taken),
+                extract("year", Photo.file_modified)
+            ).label("year"),
             func.count(Photo.file_hash).label("count"),
         )
-        .where(Photo.date_taken.is_not(None))
-        .group_by(extract("year", Photo.date_taken))
-        .order_by(extract("year", Photo.date_taken).desc())
+        .group_by(
+            func.coalesce(
+                extract("year", Photo.date_taken),
+                extract("year", Photo.file_modified)
+            )
+        )
+        .order_by(
+            func.coalesce(
+                extract("year", Photo.date_taken),
+                extract("year", Photo.file_modified)
+            ).desc()
+        )
     )
 
-    return [{"year": int(row.year), "count": row.count} for row in result]
+    return [{"year": int(row.year), "count": row.count} for row in result if row.year]
 
 
 @router.get("", response_model=list[TimelineGroup])
@@ -60,22 +73,24 @@ async def get_timeline(
     if month:
         query = query.where(extract("month", Photo.date_taken) == month)
 
-    query = query.order_by(Photo.date_taken.desc())
+    query = query.order_by(Photo.date_taken.desc().nullslast(), Photo.file_modified.desc().nullslast())
 
     result = await session.execute(query)
     photos = result.scalars().all()
 
     # Group photos by the specified time period
+    # Use file_modified as fallback when date_taken is null
     groups: dict[str, list[Photo]] = {}
     for photo in photos:
-        if not photo.date_taken:
+        date = photo.date_taken or photo.file_modified
+        if not date:
             key = "unknown"
         elif group_by == "year":
-            key = str(photo.date_taken.year)
+            key = str(date.year)
         elif group_by == "month":
-            key = f"{photo.date_taken.year}-{photo.date_taken.month:02d}"
+            key = f"{date.year}-{date.month:02d}"
         else:  # day
-            key = photo.date_taken.strftime("%Y-%m-%d")
+            key = date.strftime("%Y-%m-%d")
 
         if key not in groups:
             groups[key] = []
