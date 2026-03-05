@@ -187,8 +187,8 @@ def _extract_exif_data(filepath: Path) -> dict:
             except (TypeError, ValueError, AttributeError):
                 pass
 
-    except Exception:
-        logger.exception("Error extracting EXIF from %s", filepath)
+    except Exception as e:
+        logger.warning("Skipping EXIF for %s: %s", filepath, type(e).__name__)
 
     # Fallback: if no EXIF date was found, use filesystem date so the photo
     # still appears in timelines and can be grouped into events.

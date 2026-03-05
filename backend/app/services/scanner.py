@@ -161,8 +161,8 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
                     file_hash = entry_stage[0]
                     stage = entry_stage[1]
                     await on_file_discovered(file_hash, stage)
-        except Exception:
-            logger.exception("Error indexing %s", filepath)
+        except Exception as e:
+            logger.warning("Skipping %s: %s", filepath, type(e).__name__)
             stats["errors"] += 1
 
         if progress_callback:
@@ -370,6 +370,6 @@ async def index_single_file(filepath: Path) -> tuple[str, str] | None:
             logger.info("Indexed new file: %s (%s) -> %s", filepath, file_hash, entry_stage)
             return (file_hash, entry_stage)
         return None
-    except Exception:
-        logger.exception("Error indexing file: %s", filepath)
+    except Exception as e:
+        logger.warning("Skipping %s: %s", filepath, type(e).__name__)
         return None

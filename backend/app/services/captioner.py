@@ -67,8 +67,8 @@ def _prepare_image_base64(filepath: Path) -> str | None:
             img.save(buffer, format="JPEG", quality=85)
             return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    except Exception:
-        logger.exception("Error preparing image for captioning: %s", filepath)
+    except Exception as e:
+        logger.warning("Skipping caption for %s: %s", filepath, type(e).__name__)
         return None
 
 
@@ -113,8 +113,8 @@ async def _generate_caption_and_tags(image_base64: str) -> tuple[str | None, lis
 
     except httpx.TimeoutException:
         logger.warning("Ollama request timed out")
-    except Exception:
-        logger.exception("Error generating caption via Ollama")
+    except Exception as e:
+        logger.warning("Ollama captioning failed: %s", type(e).__name__)
 
     return None, None
 

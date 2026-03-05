@@ -142,13 +142,14 @@ export interface QueueStats {
 export interface ProcessingStats {
   total_photos: number;
   stages: {
+    discovery: { completed: number; total: number; enabled: boolean };
     exif: { completed: number; total: number; enabled: boolean };
     geocoding: { completed: number; total: number; enabled: boolean };
     thumbnails: { completed: number; total: number; enabled: boolean };
     hashing: { completed: number; total: number; enabled: boolean };
     faces: { completed: number; total: number; enabled: boolean };
     captioning: { completed: number; total: number; enabled: boolean };
-    events: { completed: number; total: number; enabled: boolean };
+    events: { completed: number; total: number; enabled: boolean; count?: number };
   };
 }
 

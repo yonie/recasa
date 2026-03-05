@@ -18,9 +18,11 @@ import {
   Check,
   Loader2,
   Square,
+  FolderOpen,
 } from "lucide-react";
 
 const QUEUE_ORDER = [
+  "discovery",
   "exif",
   "geocoding",
   "thumbnails",
@@ -32,6 +34,7 @@ const QUEUE_ORDER = [
 ];
 
 const QUEUE_LABELS: Record<string, string> = {
+  discovery: "File Discovery",
   exif: "EXIF Extraction",
   geocoding: "Geocoding",
   thumbnails: "Thumbnails",
@@ -43,6 +46,7 @@ const QUEUE_LABELS: Record<string, string> = {
 };
 
 const QUEUE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  discovery: FolderOpen,
   exif: FileImage,
   geocoding: MapPin,
   thumbnails: Image,
@@ -54,6 +58,7 @@ const QUEUE_ICONS: Record<string, React.ComponentType<{ className?: string }>> =
 };
 
 const STAGE_COLORS: Record<string, { bg: string; bar: string; text: string; light: string }> = {
+  discovery: { bg: "bg-purple-50", bar: "bg-purple-500", text: "text-purple-700", light: "bg-purple-100" },
   exif: { bg: "bg-blue-50", bar: "bg-blue-500", text: "text-blue-700", light: "bg-blue-100" },
   geocoding: { bg: "bg-cyan-50", bar: "bg-cyan-500", text: "text-cyan-700", light: "bg-cyan-100" },
   thumbnails: { bg: "bg-teal-50", bar: "bg-teal-500", text: "text-teal-700", light: "bg-teal-100" },
@@ -82,7 +87,14 @@ function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
-function StageBadge({ queue }: { queue: QueueStats }) {
+function StageBadge({ queue, enabled = true }: { queue: QueueStats; enabled?: boolean }) {
+  if (!enabled) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">
+        Disabled
+      </span>
+    );
+  }
   const isActive = queue.processing > 0;
   const hasPending = queue.pending > 0;
   if (isActive) {
@@ -217,14 +229,14 @@ export function Pipeline() {
   })();
 
   // Map queue types to processing stats keys
-  const getStageStats = (queueType: string): { completed: number; total: number } => {
-    if (!processingStats) return { completed: 0, total: 0 };
+  const getStageStats = (queueType: string): { completed: number; total: number; enabled: boolean } => {
+    if (!processingStats) return { completed: 0, total: 0, enabled: true };
     const keyMap: Record<string, string> = {
       motion_photos: "exif",
       events: "events",
     };
     const key = keyMap[queueType] || queueType;
-    return processingStats.stages[key as keyof typeof processingStats.stages] || { completed: 0, total: processingStats.total_photos };
+    return processingStats.stages[key as keyof typeof processingStats.stages] || { completed: 0, total: processingStats.total_photos, enabled: true };
   };
 
   return (
@@ -374,12 +386,22 @@ export function Pipeline() {
           <tbody>
             {QUEUE_ORDER.map((queueType) => {
               const queue = stats.queues[queueType];
-              if (!queue) return null;
+              // Discovery and events don't have queues - they're batch operations
+              const isBatchOnly = queueType === "discovery" || queueType === "events";
+              if (!queue && !isBatchOnly) return null;
+              
               const Icon = QUEUE_ICONS[queueType] || Activity;
               const label = QUEUE_LABELS[queueType] || queueType;
               const colors = STAGE_COLORS[queueType] ?? STAGE_COLORS.discovery!;
               const stageStats = getStageStats(queueType);
               const pct = stageStats.total > 0 ? Math.min(100, Math.round((stageStats.completed / stageStats.total) * 100)) : 0;
+              
+              // Events is a batch operation - show count instead of progress
+              const isBatchStage = queueType === "events";
+              const eventCount = (stageStats as any).count || 0;
+              const fakeQueue: QueueStats = { queue_type: queueType, pending: 0, processing: 0, completed_total: stageStats.completed, skipped_total: 0, failed_total: 0, last_processed_at: null, last_file_hash: null, current_file_hash: null, current_file_path: null, throughput_per_minute: 0 };
+              const displayQueue = queue || fakeQueue;
+              
               return (
                 <tr key={queueType} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/40">
                   <td className="px-3 py-1.5">
@@ -389,35 +411,54 @@ export function Pipeline() {
                     </div>
                   </td>
                   <td className="px-3 py-1.5">
-                    <StageBadge queue={queue} />
+                    <StageBadge queue={displayQueue} enabled={stageStats.enabled} />
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums font-medium text-gray-900">
-                    {formatNumber(stageStats.completed)}<span className="text-gray-400">/{formatNumber(stageStats.total)}</span>
+                    {isBatchStage ? (
+                      <span className="text-gray-500">{formatNumber(eventCount)} events</span>
+                    ) : (
+                      <>
+                        {formatNumber(stageStats.completed)}<span className="text-gray-400">/{formatNumber(stageStats.total)}</span>
+                      </>
+                    )}
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">
-                    {queue.failed_total > 0 ? (
-                      <span className="font-medium text-red-500">{formatNumber(queue.failed_total)}</span>
+                    {isBatchStage || isBatchOnly ? (
+                      <span className="text-gray-300">-</span>
+                    ) : displayQueue.failed_total > 0 ? (
+                      <span className="font-medium text-red-500">{formatNumber(displayQueue.failed_total)}</span>
                     ) : (
                       <span className="text-gray-300">-</span>
                     )}
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">
-                    {queue.pending + queue.processing > 0 ? (
-                      <span className="font-medium text-gray-600">{formatNumber(queue.pending + queue.processing)}</span>
+                    {isBatchStage || isBatchOnly ? (
+                      <span className="text-gray-300">-</span>
+                    ) : displayQueue.pending + displayQueue.processing > 0 ? (
+                      <span className="font-medium text-gray-600">{formatNumber(displayQueue.pending + displayQueue.processing)}</span>
                     ) : (
                       <span className="text-gray-300">-</span>
                     )}
                   </td>
                   <td className="px-3 py-1.5">
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full ${colors.bar} rounded-full transition-all duration-700 ease-out ${queue.processing > 0 ? "animate-pulse" : ""}`}
-                          style={{ width: `${pct}%` }}
-                        />
+                    {isBatchStage ? (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
+                          <div className={`h-full ${colors.bar} rounded-full`} style={{ width: "100%" }} />
+                        </div>
+                        <span className="text-[10px] tabular-nums text-gray-500 w-8 text-right">done</span>
                       </div>
-                      <span className="text-[10px] tabular-nums text-gray-500 w-8 text-right">{pct}%</span>
-                    </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full ${colors.bar} rounded-full transition-all duration-700 ease-out ${displayQueue.processing > 0 ? "animate-pulse" : ""}`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] tabular-nums text-gray-500 w-8 text-right">{pct}%</span>
+                      </div>
+                    )}
                   </td>
                 </tr>
               );

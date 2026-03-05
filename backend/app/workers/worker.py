@@ -116,7 +116,7 @@ class Worker:
             else:
                 self._log_error(file_hash, str(filepath), "EXIF extraction failed")
         except Exception as e:
-            logger.exception(f"EXIF extraction failed for {file_hash}")
+            logger.warning(f"EXIF failed for {file_hash}: {type(e).__name__}")
             self._log_error(file_hash, str(filepath), str(e)[:100])
 
         self.queue.current_file_hash = None
@@ -169,7 +169,7 @@ class Worker:
             if not success:
                 self._log_error(file_hash, str(filepath), "Thumbnail generation failed")
         except Exception as e:
-            logger.exception(f"Thumbnail generation failed for {file_hash}")
+            logger.warning(f"Thumbnails failed for {file_hash}: {type(e).__name__}")
             self._log_error(file_hash, str(filepath), str(e)[:100])
 
         self.queue.current_file_hash = None
@@ -310,8 +310,8 @@ class Worker:
                     await self.process_item(file_hash)
             except asyncio.TimeoutError:
                 continue
-            except Exception:
-                logger.exception(f"Unhandled error in worker {self.worker_id} ({self.queue_type.value})")
+            except Exception as e:
+                logger.warning(f"Worker {self.worker_id} error ({self.queue_type.value}): {type(e).__name__}")
                 await asyncio.sleep(0.5)
 
         logger.info(f"Worker {self.worker_id} stopped for queue {self.queue_type.value}")
@@ -327,9 +327,12 @@ class EventDetectionWorker:
     def __init__(self, pipeline: Pipeline):
         self.pipeline = pipeline
         self._running = False
+        self._last_event_run: float = 0
+        self._min_event_interval: float = 60.0
 
     async def run(self):
         """Run the event detection worker."""
+        import time
         self._running = True
         logger.info("Event detection worker started")
 
@@ -363,19 +366,25 @@ class EventDetectionWorker:
             # Wait for upstream to settle
             await asyncio.sleep(5)
 
-            # Run batch operations
+            # Face clustering - runs on every drain (already fixed to only process unassigned faces)
             if settings.ENABLE_FACE_DETECTION:
                 logger.info("Running batch face clustering...")
                 try:
                     await cluster_faces()
-                except Exception:
-                    logger.exception("Face clustering failed")
+                except Exception as e:
+                    logger.warning(f"Face clustering failed: {type(e).__name__}")
 
-            logger.info("Running batch event detection...")
-            try:
-                await detect_events()
-            except Exception:
-                logger.exception("Event detection failed")
+            # Event detection - debounced to run at most once per minute during active processing
+            now = time.time()
+            if now - self._last_event_run >= self._min_event_interval:
+                logger.info("Running batch event detection...")
+                try:
+                    await detect_events()
+                    self._last_event_run = now
+                except Exception as e:
+                    logger.warning(f"Event detection failed: {type(e).__name__}")
+            else:
+                logger.debug("Skipping event detection (debounced)")
 
         logger.info("Event detection worker stopped")
 

@@ -32,8 +32,8 @@ def _compute_perceptual_hashes(filepath: Path) -> dict:
                 "ahash": str(imagehash.average_hash(img)),
                 "dhash": str(imagehash.dhash(img)),
             }
-    except Exception:
-        logger.exception("Error computing hashes for %s", filepath)
+    except Exception as e:
+        logger.warning("Skipping hash for %s: %s", filepath, type(e).__name__)
         return {}
 
 

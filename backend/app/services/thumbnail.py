@@ -59,8 +59,8 @@ def _generate_thumbnail(filepath: Path, file_hash: str, sizes: list[int]) -> lis
                 thumb.save(thumb_path, "WEBP", quality=80)
                 created.append(thumb_path)
 
-    except Exception:
-        logger.exception("Error generating thumbnails for %s", filepath)
+    except Exception as e:
+        logger.warning("Skipping corrupted image %s: %s", filepath, type(e).__name__)
 
     return created
 

@@ -49,7 +49,11 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
     )
     exif_count = exif_done.scalar() or 0
 
-    # Geocoding: location_city exists
+    # Geocoding: photos with GPS that can be geocoded
+    geo_eligible = await session.execute(
+        select(func.count(Photo.file_hash)).where(Photo.gps_latitude.is_not(None))
+    )
+    geo_total = geo_eligible.scalar() or 0
     geo_done = await session.execute(
         select(func.count(Photo.file_hash)).where(Photo.location_city.is_not(None))
     )
@@ -80,24 +84,25 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
     faces_done = await session.execute(select(func.count(func.distinct(Face.file_hash))))
     faces_count = faces_done.scalar() or 0
 
-    # Captioning: Caption records exist
+    # Captioning: Caption records exist (show count even if disabled)
     caption_done = await session.execute(select(func.count(Caption.file_hash)))
     caption_count = caption_done.scalar() or 0
 
-    # Events: Event records exist
+    # Events: count of events detected (not per-photo, just informational)
     events_done = await session.execute(select(func.count(Event.event_id)))
     event_count = events_done.scalar() or 0
 
     return {
         "total_photos": total_photos,
         "stages": {
+            "discovery": {"completed": total_photos, "total": total_photos, "enabled": True},
             "exif": {"completed": exif_count, "total": total_photos, "enabled": True},
-            "geocoding": {"completed": geo_count, "total": total_photos, "enabled": settings.ENABLE_GEOCODING},
+            "geocoding": {"completed": geo_count, "total": geo_total, "enabled": settings.ENABLE_GEOCODING},
             "thumbnails": {"completed": thumbs_count, "total": total_photos, "enabled": True},
             "hashing": {"completed": hash_count, "total": total_photos, "enabled": True},
             "faces": {"completed": faces_count, "total": total_photos, "enabled": settings.ENABLE_FACE_DETECTION},
             "captioning": {"completed": caption_count, "total": total_photos, "enabled": settings.ENABLE_CAPTIONING},
-            "events": {"completed": event_count, "total": total_photos, "enabled": True},
+            "events": {"completed": total_photos, "total": total_photos, "enabled": True, "count": event_count},
         },
     }
 

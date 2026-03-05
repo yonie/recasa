@@ -70,8 +70,8 @@ def _extract_motion_photo_video(filepath: Path) -> Path | None:
 
         return video_path
 
-    except Exception:
-        logger.exception("Error extracting motion photo from %s", filepath)
+    except Exception as e:
+        logger.warning("Skipping motion photo %s: %s", filepath, type(e).__name__)
         return None
 
 

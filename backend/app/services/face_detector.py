@@ -122,7 +122,7 @@ def _detect_faces(filepath: Path) -> list[dict]:
         return results
 
     except Exception as e:
-        logger.error("Error detecting faces in %s: %s", filepath, e)
+        logger.warning("Skipping face detection for %s: %s", filepath, type(e).__name__)
         return []
 
 
@@ -163,8 +163,8 @@ def _generate_face_thumbnail(filepath: Path, bbox: tuple, file_hash: str, face_i
 
             return str(thumb_path.relative_to(settings.data_dir))
 
-    except Exception:
-        logger.exception("Error generating face thumbnail for %s face %d", file_hash, face_idx)
+    except Exception as e:
+        logger.warning("Face thumbnail failed for %s face %d: %s", file_hash, face_idx, type(e).__name__)
         return None
 
 
@@ -224,9 +224,12 @@ async def cluster_faces() -> int:
     Returns the number of new person clusters created.
     """
     async with async_session() as session:
-        # Get all faces with encodings that aren't yet assigned to a person
+        # Get faces with encodings that aren't yet assigned to a person
         result = await session.execute(
-            select(Face).where(Face.encoding.is_not(None))
+            select(Face).where(
+                Face.encoding.is_not(None),
+                Face.person_id.is_(None)
+            )
         )
         all_faces = result.scalars().all()
 
@@ -264,8 +267,8 @@ async def cluster_faces() -> int:
     except ImportError:
         logger.warning("scikit-learn not installed, cannot cluster faces")
         return 0
-    except Exception:
-        logger.exception("Error clustering faces")
+    except Exception as e:
+        logger.warning("Face clustering failed: %s", type(e).__name__)
         return 0
 
     # Build cluster -> face_ids mapping

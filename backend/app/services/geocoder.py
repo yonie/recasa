@@ -56,7 +56,7 @@ async def geocode_photo(file_hash: str) -> bool:
                     photo.location_address = f"{photo.location_city}, {photo.location_country}"
                 await session.commit()
                 return True
-        except Exception:
-            logger.exception("Error geocoding %s", file_hash)
+        except Exception as e:
+            logger.warning("Geocoding failed for %s: %s", file_hash, type(e).__name__)
 
     return False
