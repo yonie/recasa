@@ -189,13 +189,18 @@ def _generate_face_thumbnail(filepath: Path, bbox: tuple, file_hash: str, face_i
 
 
 async def detect_faces(file_hash: str) -> bool:
-    """Detect faces in a photo and store them in the database."""
+    """Detect faces in a photo and store them in the database.
+    
+    Even when no faces are found, we store a marker record to prevent
+    re-processing on restart. The marker has encoding=NULL to indicate
+    "checked but no faces".
+    """
     async with async_session() as session:
         photo = await session.get(Photo, file_hash)
         if not photo:
             return False
 
-        # Check if faces already exist
+        # Check if faces already processed (including marker record for no faces)
         result = await session.execute(
             select(Face).where(Face.file_hash == file_hash).limit(1)
         )
@@ -208,33 +213,44 @@ async def detect_faces(file_hash: str) -> bool:
 
         faces = await asyncio.to_thread(_detect_faces, filepath)
 
-        for i, face_data in enumerate(faces):
-            x, y, w, h = face_data["bbox"]
-            encoding = face_data["encoding"]
-            confidence = face_data.get("confidence")
-
-            thumb_path = await asyncio.to_thread(
-                _generate_face_thumbnail, filepath, face_data["bbox"], file_hash, i
-            )
-
-            face = Face(
-                file_hash=file_hash,
-                bbox_x=x,
-                bbox_y=y,
-                bbox_w=w,
-                bbox_h=h,
-                encoding=pickle.dumps(encoding),
-                face_thumbnail=thumb_path,
-                confidence=confidence,
-            )
-            session.add(face)
-
-        await session.commit()
-
         if faces:
+            for i, face_data in enumerate(faces):
+                x, y, w, h = face_data["bbox"]
+                encoding = face_data["encoding"]
+                confidence = face_data.get("confidence")
+
+                thumb_path = await asyncio.to_thread(
+                    _generate_face_thumbnail, filepath, face_data["bbox"], file_hash, i
+                )
+
+                face = Face(
+                    file_hash=file_hash,
+                    bbox_x=x,
+                    bbox_y=y,
+                    bbox_w=w,
+                    bbox_h=h,
+                    encoding=pickle.dumps(encoding),
+                    face_thumbnail=thumb_path,
+                    confidence=confidence,
+                )
+                session.add(face)
+
             logger.info("Detected %d face(s) in %s", len(faces), file_hash)
         else:
-            logger.debug("No faces detected in %s", file_hash)
+            # Store a marker record to indicate "processed, no faces found"
+            # This prevents re-processing on restart
+            marker = Face(
+                file_hash=file_hash,
+                bbox_x=0,
+                bbox_y=0,
+                bbox_w=0,
+                bbox_h=0,
+                encoding=None,  # NULL encoding = no faces, just checked
+            )
+            session.add(marker)
+            logger.debug("No faces detected in %s (marked as processed)", file_hash)
+
+        await session.commit()
         return True
 
 

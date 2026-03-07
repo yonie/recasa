@@ -207,6 +207,11 @@ async def _ensure_tag_ids(tag_names: list[str]) -> dict[str, int]:
 
 
 async def caption_photo(file_hash: str) -> bool:
+    """Generate caption and tags for a photo.
+    
+    Even if captioning fails, we store a marker record (caption=NULL)
+    to prevent re-processing on restart.
+    """
     async with async_session() as session:
         photo = await session.get(Photo, file_hash)
         if not photo:
@@ -222,16 +227,19 @@ async def caption_photo(file_hash: str) -> bool:
 
         image_base64 = await asyncio.to_thread(_prepare_image_base64, filepath)
         if not image_base64:
+            # Store marker to prevent re-processing
+            session.add(Caption(file_hash=file_hash, caption=None, model=None))
+            await session.commit()
             return False
 
         caption_text, tag_list = await _generate_caption_and_tags(image_base64)
         
-        if caption_text:
-            session.add(Caption(
-                file_hash=file_hash,
-                caption=caption_text,
-                model=settings.ollama_model,
-            ))
+        # Always store a Caption record (marker) to prevent re-processing
+        session.add(Caption(
+            file_hash=file_hash,
+            caption=caption_text,  # May be None if generation failed
+            model=settings.ollama_model if caption_text else None,
+        ))
 
         if tag_list:
             tag_id_map = await _ensure_tag_ids(tag_list)
@@ -258,4 +266,6 @@ async def caption_photo(file_hash: str) -> bool:
 
         if caption_text:
             logger.debug("Captioned %s: %s", file_hash, caption_text[:80])
+        else:
+            logger.debug("No caption generated for %s (marked as processed)", file_hash)
         return True

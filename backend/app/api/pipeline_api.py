@@ -87,11 +87,18 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
     # Faces: queue-based completion
     faces_queued = queue_sizes.get("faces", 0)
     faces_completed = total_photos - faces_queued if faces_queued > 0 else total_photos
-    faces_with_detected = (await session.execute(select(func.count(func.distinct(Face.file_hash))))).scalar() or 0
+    # Count photos with actual faces (encoding IS NOT NULL), exclude markers
+    faces_with_detected = (await session.execute(
+        select(func.count(func.distinct(Face.file_hash))).where(Face.encoding.is_not(None))
+    )).scalar() or 0
 
     # Captioning: queue-based completion
     caption_queued = queue_sizes.get("captioning", 0)
     caption_completed = total_photos - caption_queued if caption_queued > 0 else total_photos
+    # Count photos with actual captions (caption IS NOT NULL), exclude markers
+    captions_generated = (await session.execute(
+        select(func.count(Caption.file_hash)).where(Caption.caption.is_not(None))
+    )).scalar() or 0
 
     # Events: batch-processed, not per-photo. Show event count.
     events_done = await session.execute(select(func.count(Event.event_id)))
@@ -156,6 +163,7 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
                 "completed": caption_completed,
                 "total": total_photos,
                 "enabled": settings.ENABLE_CAPTIONING,
+                "captions_generated": captions_generated,
             },
             "events": {
                 "status": "done" if event_count > 0 else "pending",
