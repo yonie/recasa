@@ -85,9 +85,29 @@ def _detect_faces(filepath: Path) -> list[dict]:
         return []
 
     try:
-        # Load image as BGR numpy array (insightface expects BGR from OpenCV)
+        # Load image - handle HEIC/HEIF files specially
         import cv2
-        img = cv2.imread(str(filepath))
+        
+        # Check if HEIC/HEIF - OpenCV doesn't support these
+        ext = filepath.suffix.lower()
+        if ext in ('.heic', '.heif'):
+            try:
+                from pillow_heif import register_heif_opener
+                from PIL import Image
+                register_heif_opener()
+                
+                with Image.open(filepath) as pil_img:
+                    pil_img = pil_img.convert('RGB')
+                    img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            except ImportError:
+                logger.debug("pillow-heif not installed, skipping HEIC: %s", filepath)
+                return []
+            except Exception as e:
+                logger.debug("Could not read HEIC %s: %s", filepath, type(e).__name__)
+                return []
+        else:
+            img = cv2.imread(str(filepath))
+            
         if img is None:
             logger.error("Could not read image: %s", filepath)
             return []

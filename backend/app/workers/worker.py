@@ -42,6 +42,10 @@ def get_processing_semaphore() -> asyncio.Semaphore:
 class Worker:
     """Worker that processes files from a specific queue."""
 
+    # Progress tracking - shared across all worker instances for each queue type
+    _progress_counts: dict[str, int] = {}
+    _progress_logs: dict[str, int] = {}  # Track last logged milestone
+
     def __init__(self, pipeline: Pipeline, queue_type: QueueType, worker_id: int = 0):
         self.pipeline = pipeline
         self.queue_type = queue_type
@@ -289,8 +293,27 @@ class Worker:
 
         handler = handlers.get(self.queue_type)
         if handler:
-            return await handler(file_hash)
+            result = await handler(file_hash)
+            self._log_progress()
+            return result
         return False
+
+    def _log_progress(self):
+        """Log progress every 100 items."""
+        queue_name = self.queue_type.value
+        if queue_name not in Worker._progress_counts:
+            Worker._progress_counts[queue_name] = 0
+            Worker._progress_logs[queue_name] = 0
+        
+        Worker._progress_counts[queue_name] += 1
+        count = Worker._progress_counts[queue_name]
+        last_milestone = Worker._progress_logs[queue_name]
+        
+        # Log every 100 items
+        if count >= last_milestone + 100:
+            Worker._progress_logs[queue_name] = (count // 100) * 100
+            pending = self.queue.qsize()
+            logger.info(f"[{queue_name}] Progress: {count} processed, {pending} pending")
 
     async def run(self):
         """Run the worker loop."""
@@ -361,14 +384,14 @@ class EventDetectionWorker:
             if drained == 0:
                 continue
 
-            logger.info(f"Event worker: drained {drained} items")
+            logger.debug(f"Event worker: drained {drained} items")
 
             # Wait for upstream to settle
             await asyncio.sleep(5)
 
             # Face clustering - runs on every drain (already fixed to only process unassigned faces)
             if settings.ENABLE_FACE_DETECTION:
-                logger.info("Running batch face clustering...")
+                logger.debug("Running batch face clustering...")
                 try:
                     await cluster_faces()
                 except Exception as e:

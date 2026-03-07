@@ -34,8 +34,8 @@ class Settings(BaseSettings):
 
     # Maximum number of photos to process concurrently (limits memory usage)
     # Each concurrent photo uses memory for image loading, thumbnails, face detection, etc.
-    # Recommended: 2-3 for systems with limited RAM, higher for systems with more RAM
-    max_concurrent: int = 2
+    # Recommended: 2-4 for systems with limited RAM, 4-8 for systems with more RAM
+    max_concurrent: int = 4
 
     # Supported file extensions
     photo_extensions: set[str] = {
