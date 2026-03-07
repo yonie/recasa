@@ -54,10 +54,9 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
             return "disabled"
         if queued > 0:
             return "processing"
-        # If queue empty and we have completions or total is 0, we're done
-        if completed >= total or (total == 0 and queued == 0):
+        # If queue is empty, stage is done (some may have failed, but all attempts complete)
+        if queued == 0:
             return "done"
-        # Queue empty but not all completed - might be waiting for upstream
         return "pending"
 
     # EXIF: camera_make OR date_taken exists
@@ -102,11 +101,11 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
     hash_done = await session.execute(select(func.count(PhotoHash.file_hash)))
     hash_completed = hash_done.scalar() or 0
 
-    # Motion Photos: check motion_photo flag in Photo model
-    motion_done = await session.execute(
-        select(func.count(Photo.file_hash)).where(Photo.motion_photo == True)
-    )
-    motion_completed = motion_done.scalar() or 0
+    # Motion Photos: Stage is always enabled. If queue empty, all processed.
+    # motion_photo=True means the photo IS a motion photo (Live Photo), not that it was checked.
+    # All photos are checked - completed = total when queue is empty.
+    motion_queue_empty = pipeline.queues[QueueType.MOTION_PHOTOS].empty()
+    motion_completed = total_photos if motion_queue_empty else 0
 
     # Faces: distinct file_hashes with Face records = photos with faces detected
     # But "processed" means we CHECKED all photos, not just found faces
