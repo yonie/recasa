@@ -33,13 +33,32 @@ async def get_pipeline_status():
 
 @router.get("/processing-stats")
 async def get_processing_stats(session: AsyncSession = Depends(get_session)):
-    """Get photo processing completion stats from the database."""
+    """Get photo processing completion stats from the database.
+    
+    For each stage, returns:
+    - status: "pending" | "processing" | "done" | "disabled"
+    - queued: items waiting in queue (0 if disabled or done)
+    - completed: items successfully processed
+    - total: total items to process for this stage
+    - enabled: whether the stage is enabled
+    """
     total = await session.execute(select(func.count(Photo.file_hash)))
     total_photos = total.scalar() or 0
 
-    # Get all file hashes
-    hashes_result = await session.execute(select(Photo.file_hash))
-    all_hashes = set(hashes_result.scalars().all())
+    # Get queue sizes
+    queue_sizes = pipeline.get_queue_sizes()
+
+    # Helper to determine stage status
+    def get_stage_status(enabled: bool, queued: int, completed: int, total: int) -> str:
+        if not enabled:
+            return "disabled"
+        if queued > 0:
+            return "processing"
+        # If queue empty and we have completions or total is 0, we're done
+        if completed >= total or (total == 0 and queued == 0):
+            return "done"
+        # Queue empty but not all completed - might be waiting for upstream
+        return "pending"
 
     # EXIF: camera_make OR date_taken exists
     exif_done = await session.execute(
@@ -47,9 +66,9 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
             Photo.camera_make.is_not(None) | Photo.date_taken.is_not(None)
         )
     )
-    exif_count = exif_done.scalar() or 0
+    exif_completed = exif_done.scalar() or 0
 
-    # Geocoding: photos with GPS that can be geocoded
+    # Geocoding: only photos with GPS coordinates are eligible
     geo_eligible = await session.execute(
         select(func.count(Photo.file_hash)).where(Photo.gps_latitude.is_not(None))
     )
@@ -57,9 +76,12 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
     geo_done = await session.execute(
         select(func.count(Photo.file_hash)).where(Photo.location_city.is_not(None))
     )
-    geo_count = geo_done.scalar() or 0
+    geo_completed = geo_done.scalar() or 0
 
-    # Thumbnails: count files on disk that match our photos
+    # Thumbnails: count files on disk
+    hashes_result = await session.execute(select(Photo.file_hash))
+    all_hashes = set(hashes_result.scalars().all())
+    
     def count_thumbnails_for_photos(hashes: set) -> int:
         thumbs_dir = settings.thumbnails_dir
         if not thumbs_dir.exists():
@@ -74,35 +96,104 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
                             count += 1
         return count
 
-    thumbs_count = await asyncio.to_thread(count_thumbnails_for_photos, all_hashes)
+    thumbs_completed = await asyncio.to_thread(count_thumbnails_for_photos, all_hashes)
 
     # Hashing: PhotoHash records exist
     hash_done = await session.execute(select(func.count(PhotoHash.file_hash)))
-    hash_count = hash_done.scalar() or 0
+    hash_completed = hash_done.scalar() or 0
 
-    # Faces: Face records exist
+    # Motion Photos: check motion_photo flag in Photo model
+    motion_done = await session.execute(
+        select(func.count(Photo.file_hash)).where(Photo.motion_photo == True)
+    )
+    motion_completed = motion_done.scalar() or 0
+
+    # Faces: distinct file_hashes with Face records = photos with faces detected
+    # But "processed" means we CHECKED all photos, not just found faces
     faces_done = await session.execute(select(func.count(func.distinct(Face.file_hash))))
-    faces_count = faces_done.scalar() or 0
+    faces_with_detected = faces_done.scalar() or 0
+    
+    # All photos go through faces queue. If queue is empty and enabled, all were processed.
+    # If disabled, show what we have.
+    faces_queued = queue_sizes.get("faces", 0)
+    faces_completed = total_photos if (settings.ENABLE_FACE_DETECTION and faces_queued == 0) else faces_with_detected
 
-    # Captioning: Caption records exist (show count even if disabled)
+    # Captioning: Caption records exist
     caption_done = await session.execute(select(func.count(Caption.file_hash)))
-    caption_count = caption_done.scalar() or 0
+    caption_completed = caption_done.scalar() or 0
 
-    # Events: count of events detected (not per-photo, just informational)
+    # Events: batch-processed, not per-photo. Show event count.
     events_done = await session.execute(select(func.count(Event.event_id)))
     event_count = events_done.scalar() or 0
 
     return {
         "total_photos": total_photos,
         "stages": {
-            "discovery": {"completed": total_photos, "total": total_photos, "enabled": True},
-            "exif": {"completed": exif_count, "total": total_photos, "enabled": True},
-            "geocoding": {"completed": geo_count, "total": geo_total, "enabled": settings.ENABLE_GEOCODING},
-            "thumbnails": {"completed": thumbs_count, "total": total_photos, "enabled": True},
-            "hashing": {"completed": hash_count, "total": total_photos, "enabled": True},
-            "faces": {"completed": faces_count, "total": total_photos, "enabled": settings.ENABLE_FACE_DETECTION},
-            "captioning": {"completed": caption_count, "total": total_photos, "enabled": settings.ENABLE_CAPTIONING},
-            "events": {"completed": total_photos, "total": total_photos, "enabled": True, "count": event_count},
+            "discovery": {
+                "status": "done",
+                "queued": 0,
+                "completed": total_photos,
+                "total": total_photos,
+                "enabled": True,
+            },
+            "exif": {
+                "status": get_stage_status(True, queue_sizes.get("exif", 0), exif_completed, total_photos),
+                "queued": queue_sizes.get("exif", 0),
+                "completed": exif_completed,
+                "total": total_photos,
+                "enabled": True,
+            },
+            "geocoding": {
+                "status": get_stage_status(settings.ENABLE_GEOCODING, queue_sizes.get("geocoding", 0), geo_completed, geo_total),
+                "queued": queue_sizes.get("geocoding", 0) if settings.ENABLE_GEOCODING else 0,
+                "completed": geo_completed,
+                "total": geo_total,
+                "enabled": settings.ENABLE_GEOCODING,
+            },
+            "thumbnails": {
+                "status": get_stage_status(True, queue_sizes.get("thumbnails", 0), thumbs_completed, total_photos),
+                "queued": queue_sizes.get("thumbnails", 0),
+                "completed": thumbs_completed,
+                "total": total_photos,
+                "enabled": True,
+            },
+            "motion_photos": {
+                "status": "done",  # Motion photos is always enabled
+                "queued": 0,
+                "completed": motion_completed,
+                "total": total_photos,
+                "enabled": True,
+            },
+            "hashing": {
+                "status": get_stage_status(True, queue_sizes.get("hashing", 0), hash_completed, total_photos),
+                "queued": queue_sizes.get("hashing", 0),
+                "completed": hash_completed,
+                "total": total_photos,
+                "enabled": True,
+            },
+            "faces": {
+                "status": get_stage_status(settings.ENABLE_FACE_DETECTION, faces_queued, faces_completed, total_photos),
+                "queued": faces_queued if settings.ENABLE_FACE_DETECTION else 0,
+                "completed": faces_completed,
+                "total": total_photos,
+                "enabled": settings.ENABLE_FACE_DETECTION,
+                "faces_found": faces_with_detected,
+            },
+            "captioning": {
+                "status": get_stage_status(settings.ENABLE_CAPTIONING, queue_sizes.get("captioning", 0), caption_completed, total_photos),
+                "queued": queue_sizes.get("captioning", 0) if settings.ENABLE_CAPTIONING else 0,
+                "completed": caption_completed,
+                "total": total_photos,
+                "enabled": settings.ENABLE_CAPTIONING,
+            },
+            "events": {
+                "status": "done" if event_count > 0 else "pending",
+                "queued": 0,
+                "completed": event_count,
+                "total": 1,  # Events is a batch operation, just need to know if done
+                "enabled": True,
+                "count": event_count,
+            },
         },
     }
 

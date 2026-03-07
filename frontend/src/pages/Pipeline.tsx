@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type QueueStats, type PipelineStats, type ProcessingStats } from "../api/client";
+import { api, type PipelineStats, type ProcessingStats } from "../api/client";
 import {
   Activity,
   RotateCcw,
@@ -87,7 +87,7 @@ function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
-function StageBadge({ queue, enabled = true }: { queue: QueueStats; enabled?: boolean }) {
+function StageBadge({ status, queued, enabled }: { status: string; queued: number; enabled?: boolean }) {
   if (!enabled) {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">
@@ -95,9 +95,7 @@ function StageBadge({ queue, enabled = true }: { queue: QueueStats; enabled?: bo
       </span>
     );
   }
-  const isActive = queue.processing > 0;
-  const hasPending = queue.pending > 0;
-  if (isActive) {
+  if (status === "processing") {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full">
         <Activity className="w-2.5 h-2.5 animate-pulse" />
@@ -105,7 +103,7 @@ function StageBadge({ queue, enabled = true }: { queue: QueueStats; enabled?: bo
       </span>
     );
   }
-  if (hasPending) {
+  if (status === "pending" || queued > 0) {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">
         <Clock className="w-2.5 h-2.5" />
@@ -113,7 +111,7 @@ function StageBadge({ queue, enabled = true }: { queue: QueueStats; enabled?: bo
       </span>
     );
   }
-  if (queue.completed_total > 0) {
+  if (status === "done") {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] font-medium text-green-600 bg-green-50 px-1.5 py-0.5 rounded-full">
         <CheckCircle2 className="w-2.5 h-2.5" />
@@ -229,14 +227,18 @@ export function Pipeline() {
   })();
 
   // Map queue types to processing stats keys
-  const getStageStats = (queueType: string): { completed: number; total: number; enabled: boolean } => {
-    if (!processingStats) return { completed: 0, total: 0, enabled: true };
-    const keyMap: Record<string, string> = {
-      motion_photos: "exif",
-      events: "events",
-    };
-    const key = keyMap[queueType] || queueType;
-    return processingStats.stages[key as keyof typeof processingStats.stages] || { completed: 0, total: processingStats.total_photos, enabled: true };
+  const getStageStats = (queueType: string): { 
+    status: string; 
+    queued: number; 
+    completed: number; 
+    total: number; 
+    enabled: boolean;
+    count?: number;
+    faces_found?: number;
+  } => {
+    if (!processingStats) return { status: "pending", queued: 0, completed: 0, total: 0, enabled: true };
+    const key = queueType as keyof typeof processingStats.stages;
+    return processingStats.stages[key] || { status: "pending", queued: 0, completed: 0, total: 0, enabled: true };
   };
 
   return (
@@ -386,10 +388,6 @@ export function Pipeline() {
           <tbody>
             {QUEUE_ORDER.map((queueType) => {
               const queue = stats.queues[queueType];
-              // Discovery and events don't have queues - they're batch operations
-              const isBatchOnly = queueType === "discovery" || queueType === "events";
-              if (!queue && !isBatchOnly) return null;
-              
               const Icon = QUEUE_ICONS[queueType] || Activity;
               const label = QUEUE_LABELS[queueType] || queueType;
               const colors = STAGE_COLORS[queueType] ?? STAGE_COLORS.discovery!;
@@ -398,9 +396,8 @@ export function Pipeline() {
               
               // Events is a batch operation - show count instead of progress
               const isBatchStage = queueType === "events";
-              const eventCount = (stageStats as any).count || 0;
-              const fakeQueue: QueueStats = { queue_type: queueType, pending: 0, processing: 0, completed_total: stageStats.completed, skipped_total: 0, failed_total: 0, last_processed_at: null, last_file_hash: null, current_file_hash: null, current_file_path: null, throughput_per_minute: 0 };
-              const displayQueue = queue || fakeQueue;
+              const eventCount = stageStats.count || 0;
+              const facesFound = stageStats.faces_found;
               
               return (
                 <tr key={queueType} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/40">
@@ -408,10 +405,13 @@ export function Pipeline() {
                     <div className="flex items-center gap-2">
                       <Icon className={`w-3.5 h-3.5 ${colors.text} shrink-0`} />
                       <span className="font-medium text-gray-900">{label}</span>
+                      {facesFound !== undefined && facesFound > 0 && (
+                        <span className="text-[10px] text-gray-400">({formatNumber(facesFound)} faces)</span>
+                      )}
                     </div>
                   </td>
                   <td className="px-3 py-1.5">
-                    <StageBadge queue={displayQueue} enabled={stageStats.enabled} />
+                    <StageBadge status={stageStats.status} queued={stageStats.queued} enabled={stageStats.enabled} />
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums font-medium text-gray-900">
                     {isBatchStage ? (
@@ -423,19 +423,19 @@ export function Pipeline() {
                     )}
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">
-                    {isBatchStage || isBatchOnly ? (
+                    {isBatchStage ? (
                       <span className="text-gray-300">-</span>
-                    ) : displayQueue.failed_total > 0 ? (
-                      <span className="font-medium text-red-500">{formatNumber(displayQueue.failed_total)}</span>
+                    ) : queue && queue.failed_total > 0 ? (
+                      <span className="font-medium text-red-500">{formatNumber(queue.failed_total)}</span>
                     ) : (
                       <span className="text-gray-300">-</span>
                     )}
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">
-                    {isBatchStage || isBatchOnly ? (
+                    {isBatchStage ? (
                       <span className="text-gray-300">-</span>
-                    ) : displayQueue.pending + displayQueue.processing > 0 ? (
-                      <span className="font-medium text-gray-600">{formatNumber(displayQueue.pending + displayQueue.processing)}</span>
+                    ) : stageStats.queued > 0 ? (
+                      <span className="font-medium text-gray-600">{formatNumber(stageStats.queued)}</span>
                     ) : (
                       <span className="text-gray-300">-</span>
                     )}
@@ -448,11 +448,18 @@ export function Pipeline() {
                         </div>
                         <span className="text-[10px] tabular-nums text-gray-500 w-8 text-right">done</span>
                       </div>
+                    ) : !stageStats.enabled ? (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
+                          <div className="h-full bg-gray-300 rounded-full" style={{ width: "0%" }} />
+                        </div>
+                        <span className="text-[10px] tabular-nums text-gray-400 w-8 text-right">off</span>
+                      </div>
                     ) : (
                       <div className="flex items-center gap-2">
                         <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
                           <div
-                            className={`h-full ${colors.bar} rounded-full transition-all duration-700 ease-out ${displayQueue.processing > 0 ? "animate-pulse" : ""}`}
+                            className={`h-full ${colors.bar} rounded-full transition-all duration-700 ease-out ${stageStats.status === "processing" ? "animate-pulse" : ""}`}
                             style={{ width: `${pct}%` }}
                           />
                         </div>
