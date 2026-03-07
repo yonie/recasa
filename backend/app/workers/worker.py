@@ -8,6 +8,8 @@ Simplified architecture:
 
 import asyncio
 import logging
+from collections import deque
+from datetime import datetime
 
 from sqlalchemy import select, func
 
@@ -26,6 +28,32 @@ from backend.app.services.scanner import thumb_exists
 from backend.app.workers.queues import Pipeline, QueueType
 
 logger = logging.getLogger(__name__)
+
+# In-memory log storage for recent pipeline activity
+pipeline_logs: deque = deque(maxlen=500)
+
+class PipelineLogHandler(logging.Handler):
+    """Custom handler to capture pipeline logs."""
+    
+    def emit(self, record: logging.LogRecord) -> None:
+        # Only capture pipeline worker logs
+        if record.name.startswith('backend.app.workers') or record.name.startswith('backend.app.services'):
+            # Only INFO level or higher, skip progress spam
+            if record.levelno >= logging.INFO:
+                msg = record.getMessage()
+                # Skip progress messages (they're for cumulative tracking)
+                if 'Progress:' not in msg:
+                    pipeline_logs.append({
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'level': record.levelname,
+                        'message': msg,
+                    })
+
+# Install the handler
+pipeline_handler = PipelineLogHandler()
+pipeline_handler.setLevel(logging.INFO)
+logging.getLogger('backend.app.workers').addHandler(pipeline_handler)
+logging.getLogger('backend.app.services').addHandler(pipeline_handler)
 
 processing_semaphore: asyncio.Semaphore | None = None
 
@@ -104,23 +132,26 @@ class Worker:
             self._log_error(file_hash, None, "Photo not found in database")
             return False
 
+        filepath = settings.photos_dir / photo.file_path
+
         if self._exif_exists(photo):
-            logger.debug(f"EXIF already exists for {file_hash}")
+            logger.debug(f"[exif] Skip: {photo.file_path} (already extracted)")
             await self.pipeline.route_to_next(file_hash, QueueType.EXIF)
             return True
 
-        filepath = settings.photos_dir / photo.file_path
         self.queue.current_file_hash = file_hash
         self.queue.current_file_path = str(filepath)
+        logger.info(f"[exif] Processing: {photo.file_path}")
 
         try:
             success = await extract_exif(file_hash)
             if success:
-                logger.debug(f"EXIF extracted for {file_hash}")
+                logger.info(f"[exif] Done: {photo.file_path}")
             else:
                 self._log_error(file_hash, str(filepath), "EXIF extraction failed")
+                logger.warning(f"[exif] Failed: {photo.file_path}")
         except Exception as e:
-            logger.warning(f"EXIF failed for {file_hash}: {type(e).__name__}")
+            logger.warning(f"[exif] Failed: {photo.file_path} - {type(e).__name__}")
             self._log_error(file_hash, str(filepath), str(e)[:100])
 
         self.queue.current_file_hash = None
@@ -138,15 +169,36 @@ class Worker:
         if not photo:
             return False
 
+        filepath = settings.photos_dir / photo.file_path
+
         if photo.location_city is not None:
+            logger.debug(f"[geocoding] Skip: {photo.file_path} (already geocoded: {photo.location_city})")
             await self.pipeline.route_to_next(file_hash, QueueType.GEOCODING)
             return True
 
+        if photo.gps_latitude is None:
+            logger.debug(f"[geocoding] Skip: {photo.file_path} (no GPS data)")
+            await self.pipeline.route_to_next(file_hash, QueueType.GEOCODING)
+            return True
+
+        logger.info(f"[geocoding] Processing: {photo.file_path}")
+        self.queue.current_file_hash = file_hash
+        self.queue.current_file_path = str(filepath)
+
         try:
             await geocode_photo(file_hash)
+            # Refresh to get updated location
+            async with async_session() as session:
+                updated = await session.get(Photo, file_hash)
+                if updated and updated.location_city:
+                    logger.info(f"[geocoding] Done: {photo.file_path} -> {updated.location_city}, {updated.location_city}")
+                else:
+                    logger.info(f"[geocoding] Done: {photo.file_path} (no location found)")
         except Exception as e:
-            logger.warning(f"Geocoding failed for {file_hash}: {e}")
+            logger.warning(f"[geocoding] Failed: {photo.file_path} - {e}")
 
+        self.queue.current_file_hash = None
+        self.queue.current_file_path = None
         await self.pipeline.route_to_next(file_hash, QueueType.GEOCODING)
         return True
 
@@ -154,26 +206,31 @@ class Worker:
         """Process thumbnail generation stage."""
         # Thumbnails always enabled - core functionality
         
-        if thumb_exists(file_hash):
-            logger.debug(f"Thumbnails already exist for {file_hash}")
-            await self.pipeline.route_to_next(file_hash, QueueType.THUMBNAILS)
-            return True
-
         photo = await self._get_photo(file_hash)
         if not photo:
             self._log_error(file_hash, None, "Photo not found in database")
             return False
 
         filepath = settings.photos_dir / photo.file_path
+
+        if thumb_exists(file_hash):
+            logger.debug(f"[thumbnails] Skip: {photo.file_path} (already exists)")
+            await self.pipeline.route_to_next(file_hash, QueueType.THUMBNAILS)
+            return True
+
         self.queue.current_file_hash = file_hash
         self.queue.current_file_path = str(filepath)
+        logger.info(f"[thumbnails] Processing: {photo.file_path}")
 
         try:
             success = await generate_thumbnails(file_hash)
-            if not success:
+            if success:
+                logger.info(f"[thumbnails] Done: {photo.file_path}")
+            else:
                 self._log_error(file_hash, str(filepath), "Thumbnail generation failed")
+                logger.warning(f"[thumbnails] Failed: {photo.file_path}")
         except Exception as e:
-            logger.warning(f"Thumbnails failed for {file_hash}: {type(e).__name__}")
+            logger.warning(f"[thumbnails] Failed: {photo.file_path} - {type(e).__name__}")
             self._log_error(file_hash, str(filepath), str(e)[:100])
 
         self.queue.current_file_hash = None
@@ -184,12 +241,27 @@ class Worker:
     async def _process_motion_photos(self, file_hash: str) -> bool:
         """Process motion photo extraction stage."""
         # Motion photos always enabled
-        
-        try:
-            await extract_motion_video(file_hash)
-        except Exception as e:
-            logger.warning(f"Motion photo extraction failed for {file_hash}: {e}")
 
+        photo = await self._get_photo(file_hash)
+        if not photo:
+            return False
+
+        filepath = settings.photos_dir / photo.file_path
+        logger.info(f"[motion] Processing: {photo.file_path}")
+        self.queue.current_file_hash = file_hash
+        self.queue.current_file_path = str(filepath)
+
+        try:
+            result = await extract_motion_video(file_hash)
+            if result:
+                logger.info(f"[motion] Done: {photo.file_path} (motion video extracted)")
+            else:
+                logger.debug(f"[motion] Done: {photo.file_path} (not a motion photo)")
+        except Exception as e:
+            logger.warning(f"[motion] Failed: {photo.file_path} - {e}")
+
+        self.queue.current_file_hash = None
+        self.queue.current_file_path = None
         await self.pipeline.route_to_next(file_hash, QueueType.MOTION_PHOTOS)
         return True
 
@@ -197,23 +269,31 @@ class Worker:
         """Process perceptual hashing stage."""
         # Hashing always enabled - core functionality
         
+        photo = await self._get_photo(file_hash)
+        if not photo:
+            return False
+
+        filepath = settings.photos_dir / photo.file_path
+
         if await self._has_photo_hash(file_hash):
-            logger.debug(f"Hash already exists for {file_hash}")
+            logger.debug(f"[hashing] Skip: {photo.file_path} (already hashed)")
             await self.pipeline.route_to_next(file_hash, QueueType.HASHING)
             return True
 
-        photo = await self._get_photo(file_hash)
-        filepath = settings.photos_dir / photo.file_path if photo else None
         self.queue.current_file_hash = file_hash
-        self.queue.current_file_path = str(filepath) if filepath else None
+        self.queue.current_file_path = str(filepath)
+        logger.info(f"[hashing] Processing: {photo.file_path}")
 
         try:
             success = await compute_hashes(file_hash)
-            if not success:
-                self._log_error(file_hash, str(filepath) if filepath else None, "Hashing failed")
+            if success:
+                logger.info(f"[hashing] Done: {photo.file_path}")
+            else:
+                self._log_error(file_hash, str(filepath), "Hashing failed")
+                logger.warning(f"[hashing] Failed: {photo.file_path}")
         except Exception as e:
-            logger.warning(f"Hashing failed for {file_hash}: {e}")
-            self._log_error(file_hash, str(filepath) if filepath else None, str(e)[:100])
+            logger.warning(f"[hashing] Failed: {photo.file_path} - {e}")
+            self._log_error(file_hash, str(filepath), str(e)[:100])
 
         self.queue.current_file_hash = None
         self.queue.current_file_path = None
@@ -226,21 +306,36 @@ class Worker:
             await self.pipeline.route_to_next(file_hash, QueueType.FACES)
             return True
 
+        photo = await self._get_photo(file_hash)
+        if not photo:
+            return False
+
+        filepath = settings.photos_dir / photo.file_path
+
         if await self._has_faces(file_hash):
-            logger.debug(f"Faces already detected for {file_hash}")
+            logger.debug(f"[faces] Skip: {photo.file_path} (already processed)")
             await self.pipeline.route_to_next(file_hash, QueueType.FACES)
             return True
 
-        photo = await self._get_photo(file_hash)
-        filepath = settings.photos_dir / photo.file_path if photo else None
         self.queue.current_file_hash = file_hash
-        self.queue.current_file_path = str(filepath) if filepath else None
+        self.queue.current_file_path = str(filepath)
+        logger.info(f"[faces] Processing: {photo.file_path}")
 
         try:
             await detect_faces(file_hash)
+            # Check how many faces were found
+            async with async_session() as session:
+                result = await session.execute(
+                    select(func.count(Face.face_id)).where(Face.file_hash == file_hash)
+                )
+                count = result.scalar() or 0
+                if count > 0:
+                    logger.info(f"[faces] Done: {photo.file_path} ({count} face{'s' if count != 1 else ''} found)")
+                else:
+                    logger.info(f"[faces] Done: {photo.file_path} (no faces)")
         except Exception as e:
-            logger.warning(f"Face detection failed for {file_hash}: {e}")
-            self._log_error(file_hash, str(filepath) if filepath else None, str(e)[:100])
+            logger.warning(f"[faces] Failed: {photo.file_path} - {e}")
+            self._log_error(file_hash, str(filepath), str(e)[:100])
 
         self.queue.current_file_hash = None
         self.queue.current_file_path = None
@@ -253,21 +348,37 @@ class Worker:
             await self.pipeline.route_to_next(file_hash, QueueType.CAPTIONING)
             return True
 
+        photo = await self._get_photo(file_hash)
+        if not photo:
+            return False
+
+        filepath = settings.photos_dir / photo.file_path
+
         if await self._has_caption(file_hash):
-            logger.debug(f"Caption already exists for {file_hash}")
+            logger.debug(f"[captioning] Skip: {photo.file_path} (already captioned)")
             await self.pipeline.route_to_next(file_hash, QueueType.CAPTIONING)
             return True
 
-        photo = await self._get_photo(file_hash)
-        filepath = settings.photos_dir / photo.file_path if photo else None
         self.queue.current_file_hash = file_hash
-        self.queue.current_file_path = str(filepath) if filepath else None
+        self.queue.current_file_path = str(filepath)
+        logger.info(f"[captioning] Processing: {photo.file_path}")
 
         try:
             await caption_photo(file_hash)
+            # Get the generated caption
+            async with async_session() as session:
+                result = await session.execute(
+                    select(Caption).where(Caption.file_hash == file_hash)
+                )
+                caption = result.scalar_one_or_none()
+                if caption and caption.caption:
+                    preview = caption.caption[:80] + "..." if len(caption.caption) > 80 else caption.caption
+                    logger.info(f"[captioning] Done: {photo.file_path} -> \"{preview}\"")
+                else:
+                    logger.info(f"[captioning] Done: {photo.file_path} (no caption generated)")
         except Exception as e:
-            logger.warning(f"Captioning failed for {file_hash}: {e}")
-            self._log_error(file_hash, str(filepath) if filepath else None, str(e)[:100])
+            logger.warning(f"[captioning] Failed: {photo.file_path} - {e}")
+            self._log_error(file_hash, str(filepath), str(e)[:100])
 
         self.queue.current_file_hash = None
         self.queue.current_file_path = None

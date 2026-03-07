@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { api, type PipelineStats, type ProcessingStats } from "../api/client";
 import {
   Activity,
@@ -128,24 +128,33 @@ export function Pipeline() {
   const [connected, setConnected] = useState(false);
   const [isTriggering, setIsTriggering] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [logs, setLogs] = useState<Array<{ timestamp: string; level: string; message: string }>>([]);
+  const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function loadStats() {
       try {
-        const [pipelineData, processingData] = await Promise.all([
+        const [pipelineData, processingData, logsData] = await Promise.all([
           api.getPipelineStatus(),
           api.getProcessingStats(),
+          api.getPipelineLogs(),
         ]);
         setStats(pipelineData);
         setProcessingStats(processingData);
+        setLogs(logsData);
       } catch {
         // ignore
       }
     }
     loadStats();
-    const interval = setInterval(loadStats, 3000);
+    const interval = setInterval(loadStats, 2000);
     return () => clearInterval(interval);
   }, []);
+
+  // Auto-scroll logs to bottom when new logs arrive
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs]);
 
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -476,7 +485,7 @@ export function Pipeline() {
 
       {/* Error Log */}
       {stats.error_log && stats.error_log.length > 0 && (
-        <div className="bg-white border border-red-200 rounded-xl overflow-hidden">
+        <div className="bg-white border border-red-200 rounded-xl overflow-hidden mb-4">
           <div className="px-3 py-2 bg-red-50 border-b border-red-100 flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-red-500" />
             <span className="text-sm font-medium text-red-700">Recent Errors</span>
@@ -513,6 +522,42 @@ export function Pipeline() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Processing Log */}
+      {logs.length > 0 && (
+        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <div className="px-3 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
+            <Activity className="w-4 h-4 text-gray-500" />
+            <span className="text-sm font-medium text-gray-700">Processing Log</span>
+            <span className="text-xs text-gray-400 ml-auto">{logs.length} entries</span>
+          </div>
+          <div className="max-h-80 overflow-y-auto font-mono text-[11px]">
+            {logs.slice(-100).reverse().map((log, i) => {
+              const stageMatch = log.message.match(/^\[(\w+)\]/);
+              const stage = stageMatch ? stageMatch[1] : null;
+              const colors: Record<string, string> = {
+                exif: "text-blue-600",
+                geocoding: "text-cyan-600",
+                thumbnails: "text-teal-600",
+                motion: "text-emerald-600",
+                hashing: "text-amber-600",
+                faces: "text-rose-600",
+                captioning: "text-pink-600",
+              };
+              const colorClass = stage ? colors[stage] || "text-gray-700" : "text-gray-700";
+              const levelColor = log.level === "WARNING" ? "text-amber-600" : log.level === "ERROR" ? "text-red-600" : colorClass;
+              
+              return (
+                <div key={i} className={`px-3 py-1 border-b border-gray-50 ${levelColor}`}>
+                  <span className="text-gray-400 mr-2">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                  {log.message}
+                </div>
+              );
+            })}
+            <div ref={logsEndRef} />
           </div>
         </div>
       )}

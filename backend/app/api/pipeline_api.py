@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.database import get_session
 from backend.app.models import Photo, PhotoHash, Face, Caption, Event
 from backend.app.workers.queues import pipeline, QueueType
+from backend.app.workers.worker import pipeline_logs
 from backend.app.config import settings
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
@@ -195,6 +196,12 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
             },
         },
     }
+
+
+@router.get("/logs")
+async def get_pipeline_logs():
+    """Get recent pipeline processing logs."""
+    return list(pipeline_logs)
 
 
 @router.get("/queues")

@@ -301,6 +301,7 @@ export const api = {
   getProcessingStats: () => request<ProcessingStats>("/pipeline/processing-stats"),
   getQueueStatus: () => request<Record<string, QueueStats>>("/pipeline/queues"),
   getPipelineFlow: () => request<{ stages: { id: string; name: string; next: string[] }[] }>("/pipeline/flow"),
+  getPipelineLogs: () => request<Array<{ timestamp: string; level: string; message: string }>>("/pipeline/logs"),
 
   // Duplicates
   getDuplicates: (params?: Record<string, string | number>) =>
