@@ -2,7 +2,7 @@
 
 ![Recasa Screenshot](screenshot.png)
 
-A self-hosted, intelligent local photo explorer. Point it at your photo directory and get a Google Photos-like experience -- without the cloud, accounts, or uploads.
+A self-hosted, intelligent local photo explorer. Point it at your photo directory and get a Google Picasa-like experience -- without the cloud, accounts, or uploads.
 
 Runs as a single Docker container. Your photos are mounted read-only. All processing happens locally.
 
