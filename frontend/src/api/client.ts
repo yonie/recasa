@@ -129,14 +129,8 @@ export interface QueueStats {
   queue_type: string;
   pending: number;
   processing: number;
-  completed_total: number;
-  skipped_total: number;
-  failed_total: number;
-  last_processed_at: string | null;
-  last_file_hash: string | null;
   current_file_hash: string | null;
   current_file_path: string | null;
-  throughput_per_minute: number;
 }
 
 export interface ProcessingStats {

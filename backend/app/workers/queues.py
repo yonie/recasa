@@ -130,14 +130,8 @@ class Pipeline:
                 "queue_type": qtype.value,
                 "pending": queue.qsize(),
                 "processing": 1 if queue.current_file_hash else 0,
-                "completed_total": 0,
-                "skipped_total": 0,
-                "failed_total": 0,
-                "last_processed_at": None,
-                "last_file_hash": None,
                 "current_file_hash": queue.current_file_hash,
                 "current_file_path": queue.current_file_path,
-                "throughput_per_minute": 0,
             }
             for qtype, queue in self.queues.items()
         }
@@ -148,6 +142,17 @@ class Pipeline:
             qtype.value: queue.qsize()
             for qtype, queue in self.queues.items()
         }
+
+    def stop_and_drain(self):
+        """Stop the pipeline and drain all queues."""
+        self._stop_requested = True
+        for qtype in QueueType:
+            queue = self.queues[qtype]
+            while not queue.empty():
+                try:
+                    queue.queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
 
 
 # Global pipeline instance

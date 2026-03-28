@@ -64,9 +64,13 @@ async def resume_incomplete_processing() -> int:
     """Queue photos that have incomplete processing based on config and actual data.
 
     Called on startup to resume processing after a crash or restart.
+    Each photo is queued at its earliest incomplete stage only -- the pipeline
+    routing will carry it through subsequent stages automatically.
     Returns the number of photos queued.
     """
-    queued_count = 0
+    # Collect sets of file_hashes needing each stage (ordered earliest to latest)
+    # Stage order matches the pipeline flow: EXIF -> GEOCODING -> THUMBNAILS -> HASHING -> FACES -> CAPTIONING
+    needs: dict[QueueType, set[str]] = {}
 
     # EXIF: photos missing camera_make AND date_taken (always enabled)
     async with async_session() as session:
@@ -76,11 +80,8 @@ async def resume_incomplete_processing() -> int:
                 Photo.date_taken.is_(None)
             )
         )
-        photos = result.fetchall()
-        for (file_hash,) in photos:
-            await pipeline.add_file_at(file_hash, QueueType.EXIF)
-            queued_count += 1
-        logger.info(f"Queued {len(photos)} photos for EXIF extraction")
+        needs[QueueType.EXIF] = {row[0] for row in result.fetchall()}
+        logger.info(f"Found {len(needs[QueueType.EXIF])} photos needing EXIF extraction")
 
     # Geocoding: photos with GPS but no city
     if settings.ENABLE_GEOCODING:
@@ -91,24 +92,15 @@ async def resume_incomplete_processing() -> int:
                     Photo.gps_latitude.is_not(None)
                 )
             )
-            photos = result.fetchall()
-            for (file_hash,) in photos:
-                await pipeline.add_file_at(file_hash, QueueType.GEOCODING)
-                queued_count += 1
-            logger.info(f"Queued {len(photos)} photos for geocoding")
+            needs[QueueType.GEOCODING] = {row[0] for row in result.fetchall()}
+            logger.info(f"Found {len(needs[QueueType.GEOCODING])} photos needing geocoding")
 
     # Thumbnails: photos missing thumb file (always enabled)
     async with async_session() as session:
-        from backend.app.services.scanner import thumb_exists
         result = await session.execute(select(Photo.file_hash))
-        photos = result.fetchall()
-        missing_thumbs = 0
-        for (file_hash,) in photos:
-            if not thumb_exists(file_hash):
-                await pipeline.add_file_at(file_hash, QueueType.THUMBNAILS)
-                missing_thumbs += 1
-                queued_count += 1
-        logger.info(f"Queued {missing_thumbs} photos for thumbnail generation")
+        all_hashes = [row[0] for row in result.fetchall()]
+        needs[QueueType.THUMBNAILS] = {fh for fh in all_hashes if not thumb_exists(fh)}
+        logger.info(f"Found {len(needs[QueueType.THUMBNAILS])} photos needing thumbnails")
 
     # Hashing: photos missing perceptual hash (always enabled)
     async with async_session() as session:
@@ -117,11 +109,8 @@ async def resume_incomplete_processing() -> int:
                 ~Photo.file_hash.in_(select(PhotoHash.file_hash))
             )
         )
-        photos = result.fetchall()
-        for (file_hash,) in photos:
-            await pipeline.add_file_at(file_hash, QueueType.HASHING)
-            queued_count += 1
-        logger.info(f"Queued {len(photos)} photos for perceptual hashing")
+        needs[QueueType.HASHING] = {row[0] for row in result.fetchall()}
+        logger.info(f"Found {len(needs[QueueType.HASHING])} photos needing hashing")
 
     # Faces: photos missing faces
     if settings.ENABLE_FACE_DETECTION:
@@ -131,11 +120,8 @@ async def resume_incomplete_processing() -> int:
                     ~Photo.file_hash.in_(select(Face.file_hash))
                 )
             )
-            photos = result.fetchall()
-            for (file_hash,) in photos:
-                await pipeline.add_file_at(file_hash, QueueType.FACES)
-                queued_count += 1
-            logger.info(f"Queued {len(photos)} photos for face detection")
+            needs[QueueType.FACES] = {row[0] for row in result.fetchall()}
+            logger.info(f"Found {len(needs[QueueType.FACES])} photos needing face detection")
 
     # Captioning: photos missing caption
     if settings.ENABLE_CAPTIONING:
@@ -145,11 +131,26 @@ async def resume_incomplete_processing() -> int:
                     ~Photo.file_hash.in_(select(Caption.file_hash))
                 )
             )
-            photos = result.fetchall()
-            for (file_hash,) in photos:
-                await pipeline.add_file_at(file_hash, QueueType.CAPTIONING)
-                queued_count += 1
-            logger.info(f"Queued {len(photos)} photos for captioning")
+            needs[QueueType.CAPTIONING] = {row[0] for row in result.fetchall()}
+            logger.info(f"Found {len(needs[QueueType.CAPTIONING])} photos needing captioning")
+
+    # Deduplicate: queue each photo at its earliest incomplete stage only.
+    # Pipeline routing carries it through subsequent stages.
+    stage_order = [QueueType.EXIF, QueueType.GEOCODING, QueueType.THUMBNAILS,
+                   QueueType.HASHING, QueueType.FACES, QueueType.CAPTIONING]
+    already_queued: set[str] = set()
+    queued_count = 0
+
+    for stage in stage_order:
+        if stage not in needs:
+            continue
+        to_queue = needs[stage] - already_queued
+        for file_hash in to_queue:
+            await pipeline.add_file_at(file_hash, stage)
+            queued_count += 1
+        already_queued |= needs[stage]
+        if to_queue:
+            logger.info(f"Queued {len(to_queue)} photos at {stage.value} (earliest incomplete stage)")
 
     if queued_count > 0:
         logger.info(f"Total: {queued_count} photos queued for processing")
@@ -162,22 +163,22 @@ async def resume_incomplete_processing() -> int:
 class FileEventHandler(FileSystemEventHandler):
     """Handle file system events for new/modified photos."""
 
-    def __init__(self, queue: asyncio.Queue):
-        self.queue = queue
+    def __init__(self, loop: asyncio.AbstractEventLoop):
+        self.loop = loop
 
     def on_created(self, event):
         if event.is_directory:
             return
         filepath = Path(event.src_path)
         if is_supported_photo(filepath):
-            asyncio.create_task(self._queue_file(filepath))
+            asyncio.run_coroutine_threadsafe(self._queue_file(filepath), self.loop)
 
     def on_modified(self, event):
         if event.is_directory:
             return
         filepath = Path(event.src_path)
         if is_supported_photo(filepath):
-            asyncio.create_task(self._queue_file(filepath))
+            asyncio.run_coroutine_threadsafe(self._queue_file(filepath), self.loop)
 
     async def _queue_file(self, filepath: Path):
         result = await index_single_file(filepath)
@@ -191,7 +192,7 @@ class FileEventHandler(FileSystemEventHandler):
 
 async def start_file_watcher():
     """Start watching the photos directory for new files."""
-    handler = FileEventHandler(asyncio.Queue())
+    handler = FileEventHandler(asyncio.get_running_loop())
     observer = Observer()
     observer.schedule(handler, str(settings.photos_dir), recursive=True)
     observer.start()

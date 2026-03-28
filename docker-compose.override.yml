@@ -1,0 +1,15 @@
+## Dev overrides — mounts source code into the container so you don't need
+## to rebuild the image for code changes.
+##
+## First-time / after dependency changes:  docker compose up --build -d
+## After code changes:                     container auto-reloads (backend)
+##                                         npm run build (frontend, then refresh)
+services:
+  recasa:
+    volumes:
+      - "${PHOTOS_PATH}:/photos:ro"
+      - recasa_data:/data
+      - ./backend:/app/backend
+      - ./frontend/dist:/app/frontend/dist
+    environment:
+      - UVICORN_RELOAD=true

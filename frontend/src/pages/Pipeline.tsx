@@ -394,7 +394,6 @@ export function Pipeline() {
           </thead>
           <tbody>
             {QUEUE_ORDER.map((queueType) => {
-              const queue = stats.queues[queueType];
               const Icon = QUEUE_ICONS[queueType] || Activity;
               const label = QUEUE_LABELS[queueType] || queueType;
               const colors = STAGE_COLORS[queueType] ?? STAGE_COLORS.discovery!;
@@ -430,13 +429,7 @@ export function Pipeline() {
                     )}
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">
-                    {isBatchStage ? (
-                      <span className="text-gray-300">-</span>
-                    ) : queue && queue.failed_total > 0 ? (
-                      <span className="font-medium text-red-500">{formatNumber(queue.failed_total)}</span>
-                    ) : (
-                      <span className="text-gray-300">-</span>
-                    )}
+                    <span className="text-gray-300">-</span>
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">
                     {isBatchStage ? (

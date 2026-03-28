@@ -1,7 +1,5 @@
 """Scan control and status API endpoints."""
 
-import asyncio
-
 from fastapi import APIRouter, BackgroundTasks
 
 from backend.app.workers.pipeline import run_initial_scan, resume_incomplete_processing
@@ -57,17 +55,7 @@ async def stop_pipeline():
     """Stop all pipeline activity."""
     global _is_scanning
     _is_scanning = False
-    pipeline._stop_requested = True
-
-    # Drain queues
-    for qtype in pipeline.queues:
-        queue = pipeline.queues[qtype]
-        while not queue.empty():
-            try:
-                queue.queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-
+    pipeline.stop_and_drain()
     return {"status": "stopped"}
 
 
