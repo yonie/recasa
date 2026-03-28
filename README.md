@@ -17,10 +17,11 @@ Runs as a single Docker container. Your photos are mounted read-only. All proces
 - **Map view** -- all geotagged photos plotted on OpenStreetMap via Leaflet
 - **AI tagging** -- scene/object/activity classification using Ollama vision models
 - **Face detection** -- insightface-based detection (ONNX Runtime) + 512-dim encoding + DBSCAN clustering into persons
-- **People browser** -- face thumbnails, rename people, merge duplicates
+- **People browser** -- face thumbnails, rename people, merge duplicates, ignore/unignore people
+- **Together albums** -- automatically finds and groups people who frequently appear in the same photos
 - **AI captions** -- natural language photo descriptions via Ollama (LLaVA or any vision model)
 - **Full-text search** -- searches file paths, file names, locations, tags, captions, and person names
-- **Event detection** -- auto-clusters photos by time proximity and location into named events
+- **Event detection** -- auto-clusters photos by time proximity and location into named events with smart cover photos (landscape-oriented, centered faces)
 - **Duplicate finder** -- perceptual hashing (pHash/aHash/dHash) with union-find grouping
 - **Large file finder** -- filter by size threshold (1MB to 50MB+)
 - **Favorites** -- star photos from the grid or viewer

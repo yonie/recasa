@@ -85,6 +85,42 @@ async def clear_index():
     return {"status": "index_cleared"}
 
 
+@router.post("/clear-stage/{stage}")
+async def clear_stage(stage: str):
+    """Clear data for a single pipeline stage, allowing it to be re-processed."""
+    global _is_scanning
+    if _is_scanning:
+        return {"status": "cannot_clear_while_scanning"}
+
+    from sqlalchemy import update
+
+    async with async_session() as session:
+        if stage == "geocoding":
+            await session.execute(
+                update(Photo).where(Photo.location_city.is_not(None)).values(
+                    location_country=None, location_city=None, location_address=None,
+                )
+            )
+        elif stage == "hashing":
+            await session.execute(DuplicateMember.__table__.delete())
+            await session.execute(DuplicateGroup.__table__.delete())
+            await session.execute(PhotoHash.__table__.delete())
+        elif stage == "faces":
+            await session.execute(Face.__table__.delete())
+            await session.execute(Person.__table__.delete())
+        elif stage == "captioning":
+            await session.execute(Caption.__table__.delete())
+        elif stage == "events":
+            await session.execute(EventPhoto.__table__.delete())
+            await session.execute(Event.__table__.delete())
+        else:
+            return {"status": "unsupported_stage", "stage": stage}
+
+        await session.commit()
+
+    return {"status": "stage_cleared", "stage": stage}
+
+
 @router.post("/resume")
 async def resume_processing():
     """Resume processing for incomplete photos."""

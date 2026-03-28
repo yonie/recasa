@@ -31,12 +31,32 @@ _face_app = None
 FACE_THUMB_SIZE = 150
 
 # Face detection confidence threshold - filter low-confidence detections
-FACE_DET_THRESHOLD = 0.5
+FACE_DET_THRESHOLD = 0.6
+
+# Minimum face bounding box size (pixels on shorter edge)
+FACE_MIN_SIZE = 40
+
+# Maximum roll angle (degrees) — faces tilted beyond this are filtered
+FACE_MAX_ROLL = 45.0
 
 # DBSCAN clustering parameters
 # Using cosine distance since insightface produces normalized embeddings
 CLUSTER_DISTANCE_THRESHOLD = 0.5  # Cosine distance; lower = stricter matching
 CLUSTER_MIN_SAMPLES = 1  # Allow single-appearance faces to form their own cluster
+
+
+def _compute_roll_from_kps(kps: np.ndarray) -> float | None:
+    """Compute face roll angle (degrees) from 5-point keypoints.
+
+    kps layout: [right_eye, left_eye, nose, right_mouth, left_mouth].
+    Returns absolute roll in degrees (0 = upright), or None if kps unavailable.
+    """
+    if kps is None or len(kps) < 2:
+        return None
+    right_eye, left_eye = kps[0], kps[1]
+    dx = float(left_eye[0] - right_eye[0])
+    dy = float(left_eye[1] - right_eye[1])
+    return abs(np.degrees(np.arctan2(dy, dx)))
 
 
 def _load_insightface():
@@ -118,15 +138,26 @@ def _detect_faces(filepath: Path) -> list[dict]:
             return []
 
         results = []
-        filtered_count = 0
+        filtered_low_conf = 0
+        filtered_small = 0
+        filtered_roll = 0
         for face in faces:
             det_score = float(face.det_score) if hasattr(face, 'det_score') else 1.0
             if det_score < FACE_DET_THRESHOLD:
-                filtered_count += 1
+                filtered_low_conf += 1
                 continue
 
             x1, y1, x2, y2 = face.bbox.astype(int)
             x, y, w, h = int(x1), int(y1), int(x2 - x1), int(y2 - y1)
+
+            if min(w, h) < FACE_MIN_SIZE:
+                filtered_small += 1
+                continue
+
+            roll = _compute_roll_from_kps(getattr(face, 'kps', None))
+            if roll is not None and roll > FACE_MAX_ROLL:
+                filtered_roll += 1
+                continue
 
             embedding = face.normed_embedding
 
@@ -136,8 +167,12 @@ def _detect_faces(filepath: Path) -> list[dict]:
                 "confidence": det_score,
             })
 
-        if filtered_count > 0:
-            logger.debug("Filtered %d low-confidence face detections (threshold=%.2f)", filtered_count, FACE_DET_THRESHOLD)
+        filtered_total = filtered_low_conf + filtered_small + filtered_roll
+        if filtered_total > 0:
+            logger.debug(
+                "Filtered face detections: %d low-confidence, %d too-small, %d excessive-roll",
+                filtered_low_conf, filtered_small, filtered_roll,
+            )
 
         return results
 

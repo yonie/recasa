@@ -88,21 +88,25 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
         select(func.count(PhotoHash.file_hash))
     )).scalar() or 0
 
-    # Faces: count distinct photos that have been processed (with actual encodings)
+    # Faces: count distinct photos that have been processed (any Face row, including markers)
     faces_queued = queue_sizes.get("faces", 0)
     faces_with_detected = (await session.execute(
         select(func.count(func.distinct(Face.file_hash))).where(Face.encoding.is_not(None))
     )).scalar() or 0
-    # Photos processed = total - queued (faces may find 0 faces, so DB count only shows detected)
-    faces_completed = max(0, total_photos - faces_queued)
+    faces_processed = (await session.execute(
+        select(func.count(func.distinct(Face.file_hash)))
+    )).scalar() or 0
+    faces_completed = max(faces_processed, total_photos - faces_queued) if faces_queued > 0 else faces_processed
 
     # Captioning: count Caption rows
     caption_queued = queue_sizes.get("captioning", 0)
     captions_generated = (await session.execute(
         select(func.count(Caption.file_hash)).where(Caption.caption.is_not(None))
     )).scalar() or 0
-    # Photos processed = total - queued (some may not generate a caption)
-    caption_completed = max(0, total_photos - caption_queued)
+    caption_processed = (await session.execute(
+        select(func.count(Caption.file_hash))
+    )).scalar() or 0
+    caption_completed = max(caption_processed, total_photos - caption_queued) if caption_queued > 0 else caption_processed
 
     # Events: batch-processed
     event_count = (await session.execute(select(func.count(Event.event_id)))).scalar() or 0

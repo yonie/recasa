@@ -296,6 +296,7 @@ export const api = {
   triggerScan: () => request<{ status: string }>("/scan/trigger", { method: "POST" }),
   stopPipeline: () => request<{ status: string }>("/scan/stop", { method: "POST" }),
   clearIndex: () => request<{ status: string }>("/scan/clear-index", { method: "POST" }),
+  clearStage: (stage: string) => request<{ status: string }>(`/scan/clear-stage/${stage}`, { method: "POST" }),
 
   // Pipeline
   getPipelineStatus: () => request<PipelineStats>("/pipeline/status"),

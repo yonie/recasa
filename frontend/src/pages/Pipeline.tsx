@@ -195,6 +195,25 @@ export function Pipeline() {
     }
   };
 
+  const CLEARABLE_STAGES = new Set(["geocoding", "hashing", "faces", "captioning", "events"]);
+
+  const handleClearStage = async (stage: string) => {
+    const label = QUEUE_LABELS[stage] || stage;
+    if (!confirm(`Clear all ${label} data and re-process?`)) return;
+    try {
+      await api.clearStage(stage);
+      // Refresh stats immediately so UI reflects the change
+      const [pipelineData, processingData] = await Promise.all([
+        api.getPipelineStatus(),
+        api.getProcessingStats(),
+      ]);
+      setStats(pipelineData);
+      setProcessingStats(processingData);
+    } catch {
+      // ignore
+    }
+  };
+
   const handleClearIndex = async () => {
     if (!confirm("This will delete all indexed data. Continue?")) return;
     if (isTriggering) return;
@@ -390,6 +409,7 @@ export function Pipeline() {
               <th className="text-right font-medium text-gray-500 px-3 py-2 w-[56px]">Failed</th>
               <th className="text-right font-medium text-gray-500 px-3 py-2 w-[64px]">Pending</th>
               <th className="font-medium text-gray-500 px-3 py-2 w-[160px]">Progress</th>
+              <th className="w-8"></th>
             </tr>
           </thead>
           <tbody>
@@ -465,6 +485,17 @@ export function Pipeline() {
                         </div>
                         <span className="text-[10px] tabular-nums text-gray-500 w-8 text-right">{pct}%</span>
                       </div>
+                    )}
+                  </td>
+                  <td className="px-1 py-1.5">
+                    {CLEARABLE_STAGES.has(queueType) && !isActive && (
+                      <button
+                        onClick={() => handleClearStage(queueType)}
+                        className="p-1 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                        title={`Clear ${label} data and re-process`}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
                     )}
                   </td>
                 </tr>
