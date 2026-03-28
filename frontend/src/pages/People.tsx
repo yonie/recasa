@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { api, type PersonSummary, type PhotoSummary } from "../api/client";
+import { api, type PersonSummary, type PersonGroup, type PhotoSummary, thumbnailUrl } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { useScrollRestore } from "../hooks/useScrollRestore";
@@ -141,9 +141,92 @@ export function PersonDetail() {
   );
 }
 
+// Together detail view (route: /people/together/:personAId/:personBId)
+export function TogetherDetail() {
+  const { personAId, personBId } = useParams<{ personAId: string; personBId: string }>();
+  const navigate = useNavigate();
+  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
+  const [personA, setPersonA] = useState<PersonSummary | null>(null);
+  const [personB, setPersonB] = useState<PersonSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const openViewer = useStore((s) => s.openViewer);
+
+  useEffect(() => {
+    async function load() {
+      if (!personAId || !personBId) return;
+      try {
+        setLoading(true);
+        const [a, b, photosData] = await Promise.all([
+          api.getPerson(Number(personAId)),
+          api.getPerson(Number(personBId)),
+          api.getSharedPhotos(Number(personAId), Number(personBId), { page_size: 200 }),
+        ]);
+        setPersonA(a);
+        setPersonB(b);
+        setPhotos(photosData.items);
+      } catch {
+        // ignore
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [personAId, personBId]);
+
+  const handlePhotoClick = useCallback(
+    async (photo: PhotoSummary, index: number) => {
+      try {
+        const detail = await api.getPhoto(photo.file_hash);
+        openViewer(detail, photos, index);
+      } catch {
+        // ignore
+      }
+    },
+    [openViewer, photos]
+  );
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
+      </div>
+    );
+  }
+
+  const nameA = personA?.name || `Person ${personAId}`;
+  const nameB = personB?.name || `Person ${personBId}`;
+
+  return (
+    <div className="overflow-y-auto h-full">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
+        <button
+          onClick={() => navigate("/people")}
+          className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <div className="flex items-center gap-2">
+          {personA?.face_thumbnail_url && (
+            <img src={personA.face_thumbnail_url} alt="" className="w-8 h-8 rounded-full object-cover" />
+          )}
+          {personB?.face_thumbnail_url && (
+            <img src={personB.face_thumbnail_url} alt="" className="w-8 h-8 rounded-full object-cover -ml-3 ring-2 ring-white" />
+          )}
+        </div>
+        <div>
+          <h1 className="text-lg font-semibold">{nameA} & {nameB}</h1>
+          <span className="text-xs text-gray-400">{photos.length} shared photos</span>
+        </div>
+      </div>
+      <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
+    </div>
+  );
+}
+
 // People list view (route: /people)
 export function People() {
   const [persons, setPersons] = useState<PersonSummary[]>([]);
+  const [groups, setGroups] = useState<PersonGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const { scrollRef, restoreScroll } = useScrollRestore("people");
@@ -152,8 +235,12 @@ export function People() {
     async function load() {
       try {
         setLoading(true);
-        const data = await api.getPersons({ page_size: 200 });
-        setPersons(data);
+        const [personData, groupData] = await Promise.all([
+          api.getPersons({ page_size: 200 }),
+          api.getPersonGroups({ min_photos: 3 }),
+        ]);
+        setPersons(personData);
+        setGroups(groupData);
       } catch {
         // ignore
       } finally {
@@ -225,6 +312,67 @@ export function People() {
           </button>
         ))}
       </div>
+
+      {/* Together section */}
+      {groups.length > 0 && (
+        <>
+          <div className="px-4 py-3 border-t border-b border-gray-100">
+            <h2 className="text-lg font-semibold">
+              Together
+              <span className="ml-2 text-gray-400 font-normal text-sm">
+                {groups.length} pair{groups.length !== 1 ? "s" : ""}
+              </span>
+            </h2>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+            {groups.map((group, i) => {
+              const a = group.persons[0];
+              const b = group.persons[1];
+              if (!a || !b) return null;
+              return (
+                <button
+                  key={i}
+                  onClick={() => navigate(`/people/together/${a.person_id}/${b.person_id}`)}
+                  className="bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow border border-gray-100 text-left group"
+                >
+                  {/* Cover photo */}
+                  <div className="aspect-video bg-gray-100 relative overflow-hidden">
+                    {group.cover_photo ? (
+                      <img
+                        src={thumbnailUrl(group.cover_photo.file_hash, 600)}
+                        alt=""
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <Users className="w-12 h-12 text-gray-300" />
+                      </div>
+                    )}
+                  </div>
+                  {/* Info */}
+                  <div className="p-3 flex items-center gap-3">
+                    <div className="flex -space-x-2">
+                      {a.face_thumbnail_url && (
+                        <img src={a.face_thumbnail_url} alt="" className="w-8 h-8 rounded-full object-cover ring-2 ring-white" />
+                      )}
+                      {b.face_thumbnail_url && (
+                        <img src={b.face_thumbnail_url} alt="" className="w-8 h-8 rounded-full object-cover ring-2 ring-white" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {a.name || `Person ${a.person_id}`} & {b.name || `Person ${b.person_id}`}
+                      </p>
+                      <p className="text-xs text-gray-400">{group.shared_photo_count} photos together</p>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }

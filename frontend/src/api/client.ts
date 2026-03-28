@@ -213,6 +213,12 @@ export interface PersonSummary {
   face_thumbnail_url: string | null;
 }
 
+export interface PersonGroup {
+  persons: PersonSummary[];
+  shared_photo_count: number;
+  cover_photo: PhotoSummary | null;
+}
+
 export interface EventSummary {
   event_id: number;
   name: string | null;
@@ -221,6 +227,7 @@ export interface EventSummary {
   location: string | null;
   photo_count: number;
   cover_photo: PhotoSummary | null;
+  summary: string | null;
 }
 
 export interface CountryCount {
@@ -325,6 +332,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ source_id: sourceId, target_id: targetId }),
     }),
+
+  getPersonGroups: (params?: Record<string, string | number>) =>
+    request<PersonGroup[]>(`/persons/groups/together${buildQuery(params)}`),
+
+  getSharedPhotos: (personAId: number, personBId: number, params?: Record<string, string | number>) =>
+    request<PhotoPage>(`/persons/groups/together/${personAId}/${personBId}/photos${buildQuery(params)}`),
 
   // Events
   getEvents: (params?: Record<string, string | number>) =>

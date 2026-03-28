@@ -2,6 +2,9 @@
 
 from datetime import datetime
 
+# Content addressed by file_hash is immutable — cache for 1 year.
+_IMMUTABLE_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select, or_, exists
@@ -282,7 +285,7 @@ async def get_thumbnail(file_hash: str, size: int = 600):
         thumb_path = get_thumbnail_path(file_hash, size)
         if not thumb_path:
             raise HTTPException(status_code=404, detail="Thumbnail not found")
-    return FileResponse(thumb_path, media_type="image/webp")
+    return FileResponse(thumb_path, media_type="image/webp", headers=_IMMUTABLE_CACHE)
 
 
 @router.get("/{file_hash}/original")
@@ -296,7 +299,7 @@ async def get_original(file_hash: str, session: AsyncSession = Depends(get_sessi
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
-    return FileResponse(filepath, media_type=photo.mime_type or "application/octet-stream")
+    return FileResponse(filepath, media_type=photo.mime_type or "application/octet-stream", headers=_IMMUTABLE_CACHE)
 
 
 @router.get("/{file_hash}/live")
@@ -310,7 +313,7 @@ async def get_live_photo_video(file_hash: str, session: AsyncSession = Depends(g
     if not video_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found on disk")
 
-    return FileResponse(video_path, media_type="video/quicktime")
+    return FileResponse(video_path, media_type="video/quicktime", headers=_IMMUTABLE_CACHE)
 
 
 @router.post("/{file_hash}/favorite")

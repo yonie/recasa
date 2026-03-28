@@ -2,6 +2,8 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+
+_IMMUTABLE_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -141,7 +143,7 @@ async def get_person_thumbnail(person_id: int, session: AsyncSession = Depends(g
     if not thumb_path.exists():
         raise HTTPException(status_code=404, detail="Thumbnail file not found")
 
-    return FileResponse(thumb_path, media_type="image/webp")
+    return FileResponse(thumb_path, media_type="image/webp", headers=_IMMUTABLE_CACHE)
 
 
 @router.put("/{person_id}", response_model=PersonSummary)
@@ -210,3 +212,134 @@ async def merge_persons(
         "target_id": merge.target_id,
         "faces_moved": len(faces),
     }
+
+
+@router.get("/groups/together")
+async def list_person_groups(
+    min_photos: int = Query(3, ge=2),
+    page_size: int = Query(20, ge=1, le=50),
+    session: AsyncSession = Depends(get_session),
+):
+    """Find pairs of people who frequently appear together in the same photos.
+
+    Uses in-memory aggregation (fast) instead of SQL self-join (slow on large face tables).
+    """
+    from collections import Counter
+    from itertools import combinations
+
+    # Get all (file_hash, person_id) pairs — one query, fast
+    result = await session.execute(
+        select(Face.file_hash, Face.person_id)
+        .where(Face.person_id.is_not(None))
+    )
+    rows = result.all()
+
+    # Group person_ids by photo
+    photo_persons: dict[str, set[int]] = {}
+    for file_hash, person_id in rows:
+        photo_persons.setdefault(file_hash, set()).add(person_id)
+
+    # Count co-occurrences for all pairs
+    pair_counts: Counter[tuple[int, int]] = Counter()
+    pair_photos: dict[tuple[int, int], str] = {}  # store one sample photo per pair
+    for file_hash, person_ids in photo_persons.items():
+        if len(person_ids) < 2:
+            continue
+        for a, b in combinations(sorted(person_ids), 2):
+            pair = (a, b)
+            pair_counts[pair] += 1
+            if pair not in pair_photos:
+                pair_photos[pair] = file_hash
+
+    # Filter and sort
+    top_pairs = [
+        (pair, count) for pair, count in pair_counts.most_common()
+        if count >= min_photos
+    ][:page_size]
+
+    if not top_pairs:
+        return []
+
+    # Fetch person details
+    all_person_ids = set()
+    for (a, b), _ in top_pairs:
+        all_person_ids.add(a)
+        all_person_ids.add(b)
+
+    persons_result = await session.execute(
+        select(Person).where(Person.person_id.in_(all_person_ids))
+    )
+    persons_map = {p.person_id: p for p in persons_result.scalars().all()}
+
+    # Fetch cover photos
+    cover_hashes = set(pair_photos[pair] for pair, _ in top_pairs if pair in pair_photos)
+    photos_result = await session.execute(
+        select(Photo).where(Photo.file_hash.in_(cover_hashes))
+    )
+    photos_map = {p.file_hash: p for p in photos_result.scalars().all()}
+
+    def _person_info(p: Person) -> dict:
+        return {
+            "person_id": p.person_id,
+            "name": p.name,
+            "photo_count": p.photo_count,
+            "face_thumbnail_url": f"/api/persons/{p.person_id}/thumbnail" if p.representative_face_id else None,
+        }
+
+    groups = []
+    for (a_id, b_id), count in top_pairs:
+        person_a = persons_map.get(a_id)
+        person_b = persons_map.get(b_id)
+        if not person_a or not person_b:
+            continue
+
+        cover_hash = pair_photos.get((a_id, b_id))
+        cover_photo = photos_map.get(cover_hash) if cover_hash else None
+
+        groups.append({
+            "persons": [_person_info(person_a), _person_info(person_b)],
+            "shared_photo_count": count,
+            "cover_photo": _photo_to_summary(cover_photo) if cover_photo else None,
+        })
+
+    return groups
+
+
+@router.get("/groups/together/{person_a_id}/{person_b_id}/photos", response_model=PhotoPage)
+async def get_shared_photos(
+    person_a_id: int,
+    person_b_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get all photos where two specific people appear together."""
+    from sqlalchemy.orm import aliased
+
+    f1 = aliased(Face)
+    f2 = aliased(Face)
+
+    query = (
+        select(Photo)
+        .join(f1, f1.file_hash == Photo.file_hash)
+        .join(f2, f2.file_hash == Photo.file_hash)
+        .where(f1.person_id == person_a_id, f2.person_id == person_b_id)
+        .distinct()
+    )
+
+    count_query = select(func.count()).select_from(query.subquery())
+    total = (await session.execute(count_query)).scalar() or 0
+
+    offset = (page - 1) * page_size
+    query = query.order_by(Photo.date_taken.desc().nullslast()).offset(offset).limit(page_size)
+
+    result = await session.execute(query)
+    photos = result.scalars().all()
+
+    return PhotoPage(
+        items=[_photo_to_summary(p) for p in photos],
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=offset + page_size < total,
+    )

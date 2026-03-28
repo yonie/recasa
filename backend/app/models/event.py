@@ -17,6 +17,8 @@ class Event(Base):
     end_date: Mapped[datetime | None] = mapped_column(DateTime)
     location: Mapped[str | None] = mapped_column(Text)
     photo_count: Mapped[int] = mapped_column(Integer, default=0)
+    cover_file_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    summary: Mapped[str | None] = mapped_column(Text, default=None)
 
     event_photos: Mapped[list["EventPhoto"]] = relationship(
         back_populates="event", cascade="all, delete"

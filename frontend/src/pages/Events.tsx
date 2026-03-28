@@ -85,6 +85,9 @@ export function EventDetail() {
               {event.photo_count} photo{event.photo_count !== 1 ? "s" : ""}
             </span>
           </div>
+          {event.summary && (
+            <p className="text-sm text-gray-500 mt-1">{event.summary}</p>
+          )}
         </div>
       </div>
 
@@ -189,6 +192,9 @@ export function Events() {
                 </div>
                 <span>{event.photo_count} photos</span>
               </div>
+              {event.summary && (
+                <p className="text-xs text-gray-600 mt-1.5 line-clamp-2">{event.summary}</p>
+              )}
               {event.start_date && (
                 <p className="text-xs text-gray-400 mt-1">
                   {formatDateRange(event.start_date, event.end_date)}

@@ -127,6 +127,7 @@ class EventSummary(BaseModel):
     location: str | None = None
     photo_count: int = 0
     cover_photo: PhotoSummary | None = None
+    summary: str | None = None
 
     model_config = {"from_attributes": True}
 

@@ -42,18 +42,18 @@ async def list_events(
     )
     events = result.scalars().all()
 
+    # Batch-fetch cover photos
+    cover_hashes = [e.cover_file_hash for e in events if e.cover_file_hash]
+    cover_photos: dict[str, Photo] = {}
+    if cover_hashes:
+        cover_result = await session.execute(
+            select(Photo).where(Photo.file_hash.in_(cover_hashes))
+        )
+        cover_photos = {p.file_hash: p for p in cover_result.scalars().all()}
+
     summaries = []
     for event in events:
-        # Get cover photo (first photo in event)
-        cover_result = await session.execute(
-            select(Photo)
-            .join(EventPhoto, EventPhoto.file_hash == Photo.file_hash)
-            .where(EventPhoto.event_id == event.event_id)
-            .order_by(Photo.date_taken.asc().nullslast())
-            .limit(1)
-        )
-        cover_photo = cover_result.scalar_one_or_none()
-
+        cover_photo = cover_photos.get(event.cover_file_hash) if event.cover_file_hash else None
         summaries.append(EventSummary(
             event_id=event.event_id,
             name=event.name,
@@ -62,6 +62,7 @@ async def list_events(
             location=event.location,
             photo_count=event.photo_count,
             cover_photo=_photo_to_summary(cover_photo) if cover_photo else None,
+            summary=event.summary,
         ))
 
     return summaries
@@ -74,14 +75,9 @@ async def get_event(event_id: int, session: AsyncSession = Depends(get_session))
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    cover_result = await session.execute(
-        select(Photo)
-        .join(EventPhoto, EventPhoto.file_hash == Photo.file_hash)
-        .where(EventPhoto.event_id == event.event_id)
-        .order_by(Photo.date_taken.asc().nullslast())
-        .limit(1)
-    )
-    cover_photo = cover_result.scalar_one_or_none()
+    cover_photo = None
+    if event.cover_file_hash:
+        cover_photo = await session.get(Photo, event.cover_file_hash)
 
     return EventSummary(
         event_id=event.event_id,
@@ -91,6 +87,7 @@ async def get_event(event_id: int, session: AsyncSession = Depends(get_session))
         location=event.location,
         photo_count=event.photo_count,
         cover_photo=_photo_to_summary(cover_photo) if cover_photo else None,
+        summary=event.summary,
     )
 
 

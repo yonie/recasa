@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, func, delete
 
 from backend.app.database import async_session
-from backend.app.models import Photo, Event, EventPhoto
+from backend.app.models import Photo, Event, EventPhoto, Face
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,18 @@ async def detect_events() -> int:
             if len(sc) >= MIN_PHOTOS_PER_EVENT:
                 final_clusters.append(sc)
 
+    # Fetch face counts per photo for cover photo selection
+    all_hashes = {p.file_hash for cluster in final_clusters for p in cluster}
+    face_counts: dict[str, int] = {}
+    if all_hashes:
+        async with async_session() as session:
+            result = await session.execute(
+                select(Face.file_hash, func.count(Face.face_id))
+                .where(Face.file_hash.in_(all_hashes), Face.encoding.is_not(None))
+                .group_by(Face.file_hash)
+            )
+            face_counts = dict(result.all())
+
     # Phase 3: Store events in database
     async with async_session() as session:
         # Clear existing auto-detected events
@@ -108,8 +120,9 @@ async def detect_events() -> int:
                         location = ", ".join(parts)
                         break
 
-            # Generate event name
+            # Generate event name and pick cover photo
             name = _generate_event_name(start_date, end_date, location)
+            cover_hash = _pick_cover_photo(cluster, face_counts)
 
             event = Event(
                 name=name,
@@ -117,6 +130,7 @@ async def detect_events() -> int:
                 end_date=end_date,
                 location=location,
                 photo_count=len(cluster),
+                cover_file_hash=cover_hash,
             )
             session.add(event)
             await session.flush()
@@ -165,6 +179,50 @@ def _split_by_location(photos: list[Photo]) -> list[list[Photo]]:
 
     clusters.append(current)
     return clusters
+
+
+def _pick_cover_photo(photos: list[Photo], face_counts: dict[str, int]) -> str:
+    """Pick the best cover photo for an event.
+
+    Scoring heuristic:
+    - Prefer landscape orientation (wider photos look better as covers)
+    - Prefer photos with faces (more interesting)
+    - Prefer higher resolution
+    - Prefer photos from the middle of the event (more representative)
+    """
+    if len(photos) == 1:
+        return photos[0].file_hash
+
+    mid = len(photos) // 2
+    best_hash = photos[0].file_hash
+    best_score = -1
+
+    for i, photo in enumerate(photos):
+        score = 0.0
+        w = photo.width or 0
+        h = photo.height or 0
+
+        # Landscape bonus
+        if w > h and h > 0:
+            score += 2
+
+        # Face bonus (more faces = more interesting)
+        faces = face_counts.get(photo.file_hash, 0)
+        score += min(faces, 3) * 3  # cap at 3 faces
+
+        # Resolution bonus (normalized to ~20MP max)
+        if w and h:
+            score += min(w * h / 5_000_000, 2)
+
+        # Middle-of-event bonus (bell curve centered on midpoint)
+        distance_from_mid = abs(i - mid) / max(len(photos), 1)
+        score += (1 - distance_from_mid) * 1.5
+
+        if score > best_score:
+            best_score = score
+            best_hash = photo.file_hash
+
+    return best_hash
 
 
 def _generate_event_name(start: datetime, end: datetime, location: str | None) -> str:

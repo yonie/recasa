@@ -12,7 +12,7 @@ import { Favorites } from "./pages/Favorites";
 import { Duplicates } from "./pages/Duplicates";
 import { LargeFiles } from "./pages/LargeFiles";
 import { SearchResults } from "./pages/SearchResults";
-import { People, PersonDetail } from "./pages/People";
+import { People, PersonDetail, TogetherDetail } from "./pages/People";
 import { Events, EventDetail } from "./pages/Events";
 import { Locations, LocationCountryCities, LocationCityPhotos } from "./pages/Locations";
 import { Pipeline } from "./pages/Pipeline";
@@ -59,6 +59,7 @@ function AppContent() {
             <Route path="/favorites" element={<Favorites />} />
             <Route path="/people" element={<People />} />
             <Route path="/people/:personId" element={<PersonDetail />} />
+            <Route path="/people/together/:personAId/:personBId" element={<TogetherDetail />} />
             <Route path="/events" element={<Events />} />
             <Route path="/events/:eventId" element={<EventDetail />} />
             <Route path="/locations" element={<Locations />} />
