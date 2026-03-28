@@ -78,17 +78,20 @@ async def detect_events() -> int:
             if len(sc) >= MIN_PHOTOS_PER_EVENT:
                 final_clusters.append(sc)
 
-    # Fetch face counts per photo for cover photo selection
+    # Fetch face data per photo for cover photo selection
     all_hashes = {p.file_hash for cluster in final_clusters for p in cluster}
     face_counts: dict[str, int] = {}
+    face_positions: dict[str, list[tuple[int, int, int, int]]] = {}
     if all_hashes:
         async with async_session() as session:
             result = await session.execute(
-                select(Face.file_hash, func.count(Face.face_id))
+                select(Face.file_hash, Face.bbox_x, Face.bbox_y, Face.bbox_w, Face.bbox_h)
                 .where(Face.file_hash.in_(all_hashes), Face.encoding.is_not(None))
-                .group_by(Face.file_hash)
             )
-            face_counts = dict(result.all())
+            for file_hash, bx, by, bw, bh in result.all():
+                face_counts[file_hash] = face_counts.get(file_hash, 0) + 1
+                if bx is not None and by is not None and bw is not None and bh is not None:
+                    face_positions.setdefault(file_hash, []).append((bx, by, bw, bh))
 
     # Phase 3: Store events in database
     async with async_session() as session:
@@ -122,7 +125,7 @@ async def detect_events() -> int:
 
             # Generate event name and pick cover photo
             name = _generate_event_name(start_date, end_date, location)
-            cover_hash = _pick_cover_photo(cluster, face_counts)
+            cover_hash = _pick_cover_photo(cluster, face_counts, face_positions)
 
             event = Event(
                 name=name,
@@ -181,12 +184,18 @@ def _split_by_location(photos: list[Photo]) -> list[list[Photo]]:
     return clusters
 
 
-def _pick_cover_photo(photos: list[Photo], face_counts: dict[str, int]) -> str:
+def _pick_cover_photo(
+    photos: list[Photo],
+    face_counts: dict[str, int],
+    face_positions: dict[str, list[tuple[int, int, int, int]]],
+) -> str:
     """Pick the best cover photo for an event.
 
     Scoring heuristic:
     - Prefer landscape orientation (wider photos look better as covers)
     - Prefer photos with faces (more interesting)
+    - Penalize photos where faces are near the top/bottom edge (they get
+      cropped by the 16:9 aspect-video display)
     - Prefer higher resolution
     - Prefer photos from the middle of the event (more representative)
     """
@@ -195,26 +204,41 @@ def _pick_cover_photo(photos: list[Photo], face_counts: dict[str, int]) -> str:
 
     mid = len(photos) // 2
     best_hash = photos[0].file_hash
-    best_score = -1
+    best_score = -1.0
 
     for i, photo in enumerate(photos):
         score = 0.0
         w = photo.width or 0
         h = photo.height or 0
 
-        # Landscape bonus
+        # Landscape bonus (strong — landscape photos fill the card much better)
         if w > h and h > 0:
-            score += 2
+            score += 4
+        elif h > w:
+            score -= 2  # penalize portrait
 
-        # Face bonus (more faces = more interesting)
+        # Face bonus
         faces = face_counts.get(photo.file_hash, 0)
-        score += min(faces, 3) * 3  # cap at 3 faces
+        score += min(faces, 3) * 3
 
-        # Resolution bonus (normalized to ~20MP max)
+        # Face position bonus: prefer faces in the vertical middle third.
+        # The event card crops to 16:9 centered, so faces in the top/bottom
+        # ~25% of the image get cut off.
+        bboxes = face_positions.get(photo.file_hash, [])
+        if bboxes and h > 0:
+            # Average vertical center of all faces (0.0=top, 1.0=bottom)
+            avg_center_y = sum(
+                (by + bh / 2) / h for _, by, _, bh in bboxes
+            ) / len(bboxes)
+            # Best score when faces are centered (0.5), worst at edges
+            centeredness = 1.0 - 2.0 * abs(avg_center_y - 0.5)
+            score += centeredness * 4  # strong signal
+
+        # Resolution bonus
         if w and h:
             score += min(w * h / 5_000_000, 2)
 
-        # Middle-of-event bonus (bell curve centered on midpoint)
+        # Middle-of-event bonus
         distance_from_mid = abs(i - mid) / max(len(photos), 1)
         score += (1 - distance_from_mid) * 1.5
 

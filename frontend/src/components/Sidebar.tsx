@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   ImageIcon,
   FolderTree,
@@ -44,6 +44,7 @@ export function Sidebar() {
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const closeSidebar = useStore((s) => s.closeSidebar);
   const location = useLocation();
+  const navigate = useNavigate();
   const isToolRoute = toolItems.some((item) => location.pathname.startsWith(item.to));
   const [toolsOpen, setToolsOpen] = useState(isToolRoute);
   const [pipelineStats, setPipelineStats] = useState<PipelineStats | null>(null);
@@ -91,10 +92,10 @@ export function Sidebar() {
       >
         {/* Logo */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
-          <div className="flex items-center gap-2">
+          <button onClick={() => navigate("/")} className="flex items-center gap-2 hover:opacity-80 transition-opacity">
             <Camera className="w-7 h-7 text-primary-600" />
             <h1 className="text-xl font-bold text-gray-900">Recasa</h1>
-          </div>
+          </button>
           <button
             onClick={closeSidebar}
             className="lg:hidden p-1 hover:bg-gray-200 rounded"
