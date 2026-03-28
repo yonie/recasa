@@ -227,36 +227,31 @@ export function TogetherDetail() {
 export function People() {
   const [persons, setPersons] = useState<PersonSummary[]>([]);
   const [groups, setGroups] = useState<PersonGroup[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingPersons, setLoadingPersons] = useState(true);
+  const [loadingGroups, setLoadingGroups] = useState(true);
   const navigate = useNavigate();
   const { scrollRef, restoreScroll } = useScrollRestore("people");
 
+  // Load persons (fast) and groups (slower) independently
   useEffect(() => {
-    async function load() {
-      try {
-        setLoading(true);
-        const [personData, groupData] = await Promise.all([
-          api.getPersons({ page_size: 200 }),
-          api.getPersonGroups({ min_photos: 3 }),
-        ]);
-        setPersons(personData);
-        setGroups(groupData);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
+    api.getPersons({ page_size: 200 })
+      .then(setPersons)
+      .catch(() => {})
+      .finally(() => setLoadingPersons(false));
+
+    api.getPersonGroups({ min_photos: 3 })
+      .then(setGroups)
+      .catch(() => {})
+      .finally(() => setLoadingGroups(false));
   }, []);
 
   useEffect(() => {
-    if (!loading && persons.length > 0) {
+    if (!loadingPersons && persons.length > 0) {
       restoreScroll();
     }
-  }, [loading, persons.length, restoreScroll]);
+  }, [loadingPersons, persons.length, restoreScroll]);
 
-  if (loading) {
+  if (loadingPersons) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
@@ -314,7 +309,13 @@ export function People() {
       </div>
 
       {/* Together section */}
-      {groups.length > 0 && (
+      {loadingGroups && (
+        <div className="flex items-center gap-2 px-4 py-6 border-t border-gray-100 text-gray-400 text-sm">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Loading together albums...
+        </div>
+      )}
+      {!loadingGroups && groups.length > 0 && (
         <>
           <div className="px-4 py-3 border-t border-b border-gray-100">
             <h2 className="text-lg font-semibold">
