@@ -58,7 +58,7 @@ function AppContent() {
             <Route path="/years" element={<Years />} />
             <Route path="/favorites" element={<Favorites />} />
             <Route path="/people" element={<People />} />
-            <Route path="/people/together/:personAId/:personBId" element={<TogetherDetail />} />
+            <Route path="/people/together/:personIds" element={<TogetherDetail />} />
             <Route path="/people/:personId" element={<PersonDetail />} />
             <Route path="/events" element={<Events />} />
             <Route path="/events/:eventId" element={<EventDetail />} />

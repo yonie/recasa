@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, Integer, LargeBinary, Float, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, LargeBinary, Float, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.models.base import Base
@@ -13,6 +13,7 @@ class Person(Base):
     name: Mapped[str | None] = mapped_column(String(200))
     representative_face_id: Mapped[int | None] = mapped_column(Integer)
     photo_count: Mapped[int] = mapped_column(Integer, default=0)
+    ignored: Mapped[bool] = mapped_column(Boolean, default=False)
 
     faces: Mapped[list["Face"]] = relationship(back_populates="person")
 

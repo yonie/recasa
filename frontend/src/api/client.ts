@@ -333,6 +333,15 @@ export const api = {
       body: JSON.stringify({ source_id: sourceId, target_id: targetId }),
     }),
 
+  ignorePerson: (id: number) =>
+    request<{ status: string }>(`/persons/${id}/ignore`, { method: "POST" }),
+
+  unignorePerson: (id: number) =>
+    request<{ status: string }>(`/persons/${id}/unignore`, { method: "POST" }),
+
+  getIgnoredPersons: () =>
+    request<PersonSummary[]>("/persons/ignored"),
+
   getPersonGroups: (params?: Record<string, string | number>) =>
     request<PersonGroup[]>(`/persons/groups/together${buildQuery(params)}`),
 

@@ -46,7 +46,7 @@ async def list_persons(
     """List all recognized persons, sorted by photo count descending."""
     result = await session.execute(
         select(Person)
-        .where(Person.photo_count > 0)
+        .where(Person.photo_count > 0, Person.ignored == False)
         .order_by(Person.photo_count.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
@@ -68,6 +68,38 @@ async def list_persons(
             face_thumbnail_url=face_thumb_url,
         ))
 
+    return summaries
+
+
+@router.get("/ignored", response_model=list[PersonSummary])
+async def list_ignored_persons(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=500),
+    session: AsyncSession = Depends(get_session),
+):
+    """List all ignored persons."""
+    result = await session.execute(
+        select(Person)
+        .where(Person.ignored == True)
+        .order_by(Person.photo_count.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    persons = result.scalars().all()
+
+    summaries = []
+    for person in persons:
+        face_thumb_url = None
+        if person.representative_face_id:
+            face = await session.get(Face, person.representative_face_id)
+            if face and face.face_thumbnail:
+                face_thumb_url = f"/api/persons/{person.person_id}/thumbnail"
+        summaries.append(PersonSummary(
+            person_id=person.person_id,
+            name=person.name,
+            photo_count=person.photo_count,
+            face_thumbnail_url=face_thumb_url,
+        ))
     return summaries
 
 
@@ -239,40 +271,40 @@ async def list_person_groups(
     for file_hash, person_id in rows:
         photo_persons.setdefault(file_hash, set()).add(person_id)
 
-    # Count co-occurrences for all pairs
-    pair_counts: Counter[tuple[int, int]] = Counter()
-    pair_photos: dict[tuple[int, int], str] = {}  # store one sample photo per pair
+    # Count how often each group of people appears together.
+    # Use the full set of persons per photo (not just pairs) so that
+    # A+B+C appearing together shows as one group, not three pairs.
+    group_counts: Counter[tuple[int, ...]] = Counter()
+    group_photos: dict[tuple[int, ...], str] = {}
     for file_hash, person_ids in photo_persons.items():
         if len(person_ids) < 2:
             continue
-        for a, b in combinations(sorted(person_ids), 2):
-            pair = (a, b)
-            pair_counts[pair] += 1
-            if pair not in pair_photos:
-                pair_photos[pair] = file_hash
+        key = tuple(sorted(person_ids))
+        group_counts[key] += 1
+        if key not in group_photos:
+            group_photos[key] = file_hash
 
     # Filter and sort
-    top_pairs = [
-        (pair, count) for pair, count in pair_counts.most_common()
+    top_groups = [
+        (group, count) for group, count in group_counts.most_common()
         if count >= min_photos
     ][:page_size]
 
-    if not top_pairs:
+    if not top_groups:
         return []
 
-    # Fetch person details
+    # Fetch person details (exclude ignored)
     all_person_ids = set()
-    for (a, b), _ in top_pairs:
-        all_person_ids.add(a)
-        all_person_ids.add(b)
+    for group, _ in top_groups:
+        all_person_ids.update(group)
 
     persons_result = await session.execute(
-        select(Person).where(Person.person_id.in_(all_person_ids))
+        select(Person).where(Person.person_id.in_(all_person_ids), Person.ignored == False)
     )
     persons_map = {p.person_id: p for p in persons_result.scalars().all()}
 
     # Fetch cover photos
-    cover_hashes = set(pair_photos[pair] for pair, _ in top_pairs if pair in pair_photos)
+    cover_hashes = set(group_photos[g] for g, _ in top_groups if g in group_photos)
     photos_result = await session.execute(
         select(Photo).where(Photo.file_hash.in_(cover_hashes))
     )
@@ -286,23 +318,23 @@ async def list_person_groups(
             "face_thumbnail_url": f"/api/persons/{p.person_id}/thumbnail" if p.representative_face_id else None,
         }
 
-    groups = []
-    for (a_id, b_id), count in top_pairs:
-        person_a = persons_map.get(a_id)
-        person_b = persons_map.get(b_id)
-        if not person_a or not person_b:
+    results = []
+    for group, count in top_groups:
+        persons_in_group = [persons_map.get(pid) for pid in group]
+        # Skip if any person in the group is ignored (filtered out of map)
+        if not all(persons_in_group):
             continue
 
-        cover_hash = pair_photos.get((a_id, b_id))
+        cover_hash = group_photos.get(group)
         cover_photo = photos_map.get(cover_hash) if cover_hash else None
 
-        groups.append({
-            "persons": [_person_info(person_a), _person_info(person_b)],
+        results.append({
+            "persons": [_person_info(p) for p in persons_in_group],
             "shared_photo_count": count,
             "cover_photo": _photo_to_summary(cover_photo) if cover_photo else None,
         })
 
-    return groups
+    return results
 
 
 @router.get("/groups/together/{person_a_id}/{person_b_id}/photos", response_model=PhotoPage)
@@ -343,3 +375,25 @@ async def get_shared_photos(
         page_size=page_size,
         has_more=offset + page_size < total,
     )
+
+
+@router.post("/{person_id}/ignore")
+async def ignore_person(person_id: int, session: AsyncSession = Depends(get_session)):
+    """Ignore a person — hides them from the people list and together view."""
+    person = await session.get(Person, person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    person.ignored = True
+    await session.commit()
+    return {"status": "ignored", "person_id": person_id}
+
+
+@router.post("/{person_id}/unignore")
+async def unignore_person(person_id: int, session: AsyncSession = Depends(get_session)):
+    """Un-ignore a person — restores them to the people list."""
+    person = await session.get(Person, person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    person.ignored = False
+    await session.commit()
+    return {"status": "unignored", "person_id": person_id}
