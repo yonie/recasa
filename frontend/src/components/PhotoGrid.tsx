@@ -111,6 +111,9 @@ function PhotoGridItem({ photo, onClick, onFavoriteToggle, thumbSize }: PhotoGri
     }
   }, []);
 
+  const [videoFailed, setVideoFailed] = useState(false);
+  const showVideo = isHovering && photo.has_live_photo && !videoFailed;
+
   return (
     <div
       className="photo-grid-item aspect-square bg-gray-100 group"
@@ -124,7 +127,7 @@ function PhotoGridItem({ photo, onClick, onFavoriteToggle, thumbSize }: PhotoGri
         loading="lazy"
         className={clsx(
           "w-full h-full object-cover transition-opacity duration-200",
-          isHovering && photo.has_live_photo && "opacity-0"
+          showVideo && "opacity-0"
         )}
       />
 
@@ -135,12 +138,13 @@ function PhotoGridItem({ photo, onClick, onFavoriteToggle, thumbSize }: PhotoGri
           src={livePhotoUrl(photo.file_hash)}
           className={clsx(
             "absolute inset-0 w-full h-full object-cover",
-            isHovering ? "opacity-100" : "opacity-0"
+            showVideo ? "opacity-100" : "opacity-0"
           )}
           muted
           loop
           playsInline
           preload="none"
+          onError={() => setVideoFailed(true)}
         />
       )}
 
