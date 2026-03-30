@@ -25,16 +25,16 @@ export function GridSizeToggle() {
   const sizes: GridSize[] = ["S", "M", "L"];
 
   return (
-    <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+    <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden shadow-lg backdrop-blur-sm">
       {sizes.map((size) => (
         <button
           key={size}
           onClick={() => setGridSize(size)}
           className={clsx(
-            "px-2.5 py-1 text-xs font-medium transition-colors",
+            "px-3 py-1.5 text-xs font-medium transition-colors",
             gridSize === size
               ? "bg-gray-800 text-white"
-              : "bg-white text-gray-500 hover:bg-gray-100"
+              : "bg-white/90 text-gray-500 hover:bg-gray-100"
           )}
         >
           {size}
@@ -56,17 +56,22 @@ export function PhotoGrid({ photos, onPhotoClick, onFavoriteToggle }: PhotoGridP
   }
 
   return (
-    <div className={clsx("grid gap-1.5 p-4", GRID_CLASSES[gridSize])}>
-      {photos.map((photo, index) => (
-        <PhotoGridItem
-          key={photo.file_hash}
-          photo={photo}
-          onClick={() => onPhotoClick(photo, index)}
-          onFavoriteToggle={onFavoriteToggle}
-          thumbSize={THUMB_SIZE[gridSize]}
-        />
-      ))}
-    </div>
+    <>
+      <div className={clsx("grid gap-1.5 p-4", GRID_CLASSES[gridSize])}>
+        {photos.map((photo, index) => (
+          <PhotoGridItem
+            key={photo.file_hash}
+            photo={photo}
+            onClick={() => onPhotoClick(photo, index)}
+            onFavoriteToggle={onFavoriteToggle}
+            thumbSize={THUMB_SIZE[gridSize]}
+          />
+        ))}
+      </div>
+      <div className="fixed bottom-4 right-4 z-30">
+        <GridSizeToggle />
+      </div>
+    </>
   );
 }
 
