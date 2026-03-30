@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef } from "react";
-import { Star, Play } from "lucide-react";
+import { Star, Play, Grid2x2, Grid3x3, LayoutGrid } from "lucide-react";
 import { clsx } from "clsx";
 import type { PhotoSummary } from "../api/client";
 import { api, thumbnailUrl, livePhotoUrl } from "../api/client";
@@ -19,28 +19,30 @@ interface PhotoGridProps {
   onFavoriteToggle?: (photo: PhotoSummary) => void;
 }
 
-export function GridSizeToggle() {
+const GRID_CYCLE: GridSize[] = ["S", "M", "L"];
+const GRID_ICON = { S: LayoutGrid, M: Grid3x3, L: Grid2x2 } as const;
+
+function GridSizeToggle() {
   const gridSize = useStore((s) => s.gridSize);
   const setGridSize = useStore((s) => s.setGridSize);
-  const sizes: GridSize[] = ["S", "M", "L"];
+  const Icon = GRID_ICON[gridSize];
+
+  const cycle = () => {
+    const idx = GRID_CYCLE.indexOf(gridSize);
+    const next = GRID_CYCLE[(idx + 1) % GRID_CYCLE.length] as GridSize;
+    setGridSize(next);
+  };
 
   return (
-    <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden shadow-lg backdrop-blur-sm">
-      {sizes.map((size) => (
-        <button
-          key={size}
-          onClick={() => setGridSize(size)}
-          className={clsx(
-            "px-3 py-1.5 text-xs font-medium transition-colors",
-            gridSize === size
-              ? "bg-gray-800 text-white"
-              : "bg-white/90 text-gray-500 hover:bg-gray-100"
-          )}
-        >
-          {size}
-        </button>
-      ))}
-    </div>
+    <button
+      onClick={cycle}
+      className="w-10 h-10 rounded-full bg-white/90 backdrop-blur-sm shadow-lg
+                 border border-gray-200 flex items-center justify-center
+                 hover:bg-gray-100 transition-colors"
+      title={`Grid size: ${gridSize}`}
+    >
+      <Icon className="w-5 h-5 text-gray-600" />
+    </button>
   );
 }
 
