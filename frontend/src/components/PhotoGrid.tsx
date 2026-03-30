@@ -3,6 +3,15 @@ import { Star, Play } from "lucide-react";
 import { clsx } from "clsx";
 import type { PhotoSummary } from "../api/client";
 import { api, thumbnailUrl, livePhotoUrl } from "../api/client";
+import { useStore, type GridSize } from "../store/useStore";
+
+const GRID_CLASSES: Record<GridSize, string> = {
+  S: "grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10",
+  M: "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6",
+  L: "grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4",
+};
+
+const THUMB_SIZE: Record<GridSize, number> = { S: 300, M: 600, L: 600 };
 
 interface PhotoGridProps {
   photos: PhotoSummary[];
@@ -10,7 +19,34 @@ interface PhotoGridProps {
   onFavoriteToggle?: (photo: PhotoSummary) => void;
 }
 
+export function GridSizeToggle() {
+  const gridSize = useStore((s) => s.gridSize);
+  const setGridSize = useStore((s) => s.setGridSize);
+  const sizes: GridSize[] = ["S", "M", "L"];
+
+  return (
+    <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+      {sizes.map((size) => (
+        <button
+          key={size}
+          onClick={() => setGridSize(size)}
+          className={clsx(
+            "px-2.5 py-1 text-xs font-medium transition-colors",
+            gridSize === size
+              ? "bg-gray-800 text-white"
+              : "bg-white text-gray-500 hover:bg-gray-100"
+          )}
+        >
+          {size}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function PhotoGrid({ photos, onPhotoClick, onFavoriteToggle }: PhotoGridProps) {
+  const gridSize = useStore((s) => s.gridSize);
+
   if (photos.length === 0) {
     return (
       <div className="flex items-center justify-center h-64 text-gray-400">
@@ -20,13 +56,14 @@ export function PhotoGrid({ photos, onPhotoClick, onFavoriteToggle }: PhotoGridP
   }
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-1.5 p-4">
+    <div className={clsx("grid gap-1.5 p-4", GRID_CLASSES[gridSize])}>
       {photos.map((photo, index) => (
         <PhotoGridItem
           key={photo.file_hash}
           photo={photo}
           onClick={() => onPhotoClick(photo, index)}
           onFavoriteToggle={onFavoriteToggle}
+          thumbSize={THUMB_SIZE[gridSize]}
         />
       ))}
     </div>
@@ -37,9 +74,10 @@ interface PhotoGridItemProps {
   photo: PhotoSummary;
   onClick: () => void;
   onFavoriteToggle?: (photo: PhotoSummary) => void;
+  thumbSize: number;
 }
 
-function PhotoGridItem({ photo, onClick, onFavoriteToggle }: PhotoGridItemProps) {
+function PhotoGridItem({ photo, onClick, onFavoriteToggle, thumbSize }: PhotoGridItemProps) {
   const [isHovering, setIsHovering] = useState(false);
   const [isFavorite, setIsFavorite] = useState(photo.is_favorite);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -81,7 +119,7 @@ function PhotoGridItem({ photo, onClick, onFavoriteToggle }: PhotoGridItemProps)
       onMouseLeave={handleMouseLeave}
     >
       <img
-        src={thumbnailUrl(photo.file_hash, 600)}
+        src={thumbnailUrl(photo.file_hash, thumbSize)}
         alt={photo.file_name}
         loading="lazy"
         className={clsx(

@@ -1,0 +1,8 @@
+services:
+  recasa:
+    volumes:
+      - ./backend:/app/backend
+      - ./frontend/dist:/app/frontend/dist
+    environment:
+      - UVICORN_RELOAD=true
+      - LOG_LEVEL=debug

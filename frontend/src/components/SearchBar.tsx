@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { Search, X, Menu } from "lucide-react";
 import { useStore } from "../store/useStore";
+import { GridSizeToggle } from "./PhotoGrid";
 
 export function SearchBar() {
   const navigate = useNavigate();
@@ -57,6 +58,7 @@ export function SearchBar() {
           </button>
         )}
       </form>
+      <GridSizeToggle />
     </header>
   );
 }

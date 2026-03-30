@@ -2,6 +2,10 @@ import type { Config } from "tailwindcss";
 
 export default {
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
+  safelist: [
+    // Photo grid zoom levels (S/M/L) — dynamically selected at runtime
+    { pattern: /^grid-cols-(1|2|3|4|5|6|8|10)$/, variants: ["sm", "md", "lg", "xl"] },
+  ],
   theme: {
     extend: {
       colors: {

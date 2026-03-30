@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import type { PhotoDetail, PhotoSummary, ScanStatus, LibraryStats } from "../api/client";
 
+export type GridSize = "S" | "M" | "L";
+
 interface AppStore {
   // Viewer
   viewerPhoto: PhotoDetail | null;
@@ -23,6 +25,10 @@ interface AppStore {
   // Search
   searchQuery: string;
   setSearchQuery: (query: string) => void;
+
+  // Grid size
+  gridSize: GridSize;
+  setGridSize: (size: GridSize) => void;
 
   // Mobile sidebar
   sidebarOpen: boolean;
@@ -55,6 +61,13 @@ export const useStore = create<AppStore>((set) => ({
   // Search
   searchQuery: "",
   setSearchQuery: (query) => set({ searchQuery: query }),
+
+  // Grid size (persist in localStorage)
+  gridSize: (localStorage.getItem("gridSize") as GridSize) || "M",
+  setGridSize: (size) => {
+    localStorage.setItem("gridSize", size);
+    set({ gridSize: size });
+  },
 
   // Mobile sidebar
   sidebarOpen: false,
