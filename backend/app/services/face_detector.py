@@ -41,7 +41,7 @@ FACE_MAX_ROLL = 45.0
 
 # DBSCAN clustering parameters
 # Using cosine distance since insightface produces normalized embeddings
-CLUSTER_DISTANCE_THRESHOLD = 0.5  # Cosine distance; lower = stricter matching
+CLUSTER_DISTANCE_THRESHOLD = 0.3  # Cosine distance; lower = stricter matching
 CLUSTER_MIN_SAMPLES = 1  # Allow single-appearance faces to form their own cluster
 
 
