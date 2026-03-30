@@ -377,6 +377,73 @@ async def get_shared_photos(
     )
 
 
+@router.post("/recluster")
+async def recluster_persons(session: AsyncSession = Depends(get_session)):
+    """Reset all person assignments and re-cluster faces from scratch.
+
+    Preserves person names: after re-clustering, if a new cluster contains
+    faces that previously belonged to a named person, the name is carried over.
+    """
+    from backend.app.services.face_detector import cluster_faces
+
+    # Collect existing names before reset
+    named_result = await session.execute(
+        select(Person).where(Person.name.is_not(None))
+    )
+    named_persons = named_result.scalars().all()
+
+    # Map face_ids to their person's name (so we can restore names after recluster)
+    face_name_map: dict[int, str] = {}
+    for person in named_persons:
+        face_result = await session.execute(
+            select(Face.face_id).where(Face.person_id == person.person_id)
+        )
+        for (face_id,) in face_result.all():
+            face_name_map[face_id] = person.name
+
+    # Clear all person assignments
+    all_faces_result = await session.execute(
+        select(Face).where(Face.person_id.is_not(None))
+    )
+    for face in all_faces_result.scalars().all():
+        face.person_id = None
+    await session.commit()
+
+    # Delete all person records
+    all_persons_result = await session.execute(select(Person))
+    for person in all_persons_result.scalars().all():
+        await session.delete(person)
+    await session.commit()
+
+    # Re-cluster from scratch
+    new_persons = await cluster_faces()
+
+    # Restore names: for each new person, check if any of its faces had a name
+    names_restored = 0
+    if face_name_map:
+        persons_result = await session.execute(select(Person))
+        for person in persons_result.scalars().all():
+            if person.name:
+                continue
+            face_result = await session.execute(
+                select(Face.face_id).where(Face.person_id == person.person_id)
+            )
+            face_ids = [fid for (fid,) in face_result.all()]
+            # Find the most common name among this person's faces
+            from collections import Counter
+            names = [face_name_map[fid] for fid in face_ids if fid in face_name_map]
+            if names:
+                person.name = Counter(names).most_common(1)[0][0]
+                names_restored += 1
+        await session.commit()
+
+    return {
+        "status": "reclustered",
+        "new_persons": new_persons,
+        "names_restored": names_restored,
+    }
+
+
 @router.post("/{person_id}/ignore")
 async def ignore_person(person_id: int, session: AsyncSession = Depends(get_session)):
     """Ignore a person — hides them from the people list and together view."""

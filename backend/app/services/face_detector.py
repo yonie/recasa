@@ -292,29 +292,45 @@ async def detect_faces(file_hash: str) -> bool:
 async def cluster_faces() -> int:
     """Cluster all unassigned faces into persons using DBSCAN.
 
+    Includes already-assigned faces in the clustering so that new faces
+    are matched against existing persons rather than always creating new ones.
+
     Returns the number of new person clusters created.
     """
     async with async_session() as session:
-        # Get faces with encodings that aren't yet assigned to a person
-        result = await session.execute(
-            select(Face).where(
+        # Check if there are any unassigned faces to process
+        unassigned_result = await session.execute(
+            select(func.count(Face.face_id)).where(
                 Face.encoding.is_not(None),
-                Face.person_id.is_(None)
+                Face.person_id.is_(None),
             )
+        )
+        unassigned_count = unassigned_result.scalar() or 0
+
+    if unassigned_count == 0:
+        return 0
+
+    async with async_session() as session:
+        # Load ALL faces with encodings (assigned + unassigned) so DBSCAN
+        # can group new faces with existing persons
+        result = await session.execute(
+            select(Face).where(Face.encoding.is_not(None))
         )
         all_faces = result.scalars().all()
 
     if len(all_faces) < CLUSTER_MIN_SAMPLES:
         return 0
 
-    # Deserialize encodings
+    # Deserialize encodings, tracking which faces are already assigned
     face_ids = []
     encodings = []
+    existing_person_map: dict[int, int | None] = {}  # face_id -> person_id
     for face in all_faces:
         try:
             encoding = pickle.loads(face.encoding)
             face_ids.append(face.face_id)
             encodings.append(encoding)
+            existing_person_map[face.face_id] = face.person_id
         except Exception:
             continue
 
@@ -355,50 +371,60 @@ async def cluster_faces() -> int:
     new_persons = 0
     async with async_session() as session:
         for cluster_label, cluster_face_ids in cluster_map.items():
-            # Count unique photos in this cluster
-            face_result = await session.execute(
-                select(Face).where(Face.face_id.in_(cluster_face_ids))
-            )
-            cluster_faces = face_result.scalars().all()
-            unique_photos = set(f.file_hash for f in cluster_faces)
+            # Check if any faces in this cluster already belong to a person
+            existing_person_ids = [
+                existing_person_map[fid]
+                for fid in cluster_face_ids
+                if existing_person_map.get(fid) is not None
+            ]
 
-            # Check if these faces already belong to a person
-            existing_person_ids = set(
-                f.person_id for f in cluster_faces if f.person_id is not None
-            )
+            # Find unassigned face IDs in this cluster
+            unassigned_face_ids = [
+                fid for fid in cluster_face_ids
+                if existing_person_map.get(fid) is None
+            ]
+
+            if not unassigned_face_ids:
+                # All faces already assigned — nothing to do
+                continue
 
             if existing_person_ids:
                 # Use the most common existing person
-                person_id = max(
-                    existing_person_ids,
-                    key=lambda pid: sum(1 for f in cluster_faces if f.person_id == pid)
-                )
+                from collections import Counter
+                person_id = Counter(existing_person_ids).most_common(1)[0][0]
                 person = await session.get(Person, person_id)
             else:
-                # Create a new person
+                # All faces are new — create a new person
                 person = Person(
-                    photo_count=len(unique_photos),
-                    representative_face_id=cluster_face_ids[0],
+                    photo_count=0,
+                    representative_face_id=unassigned_face_ids[0],
                 )
                 session.add(person)
                 await session.flush()
                 new_persons += 1
 
-            # Assign all faces in this cluster to the person
-            for face in cluster_faces:
+            # Assign only the unassigned faces to the person
+            face_result = await session.execute(
+                select(Face).where(Face.face_id.in_(unassigned_face_ids))
+            )
+            for face in face_result.scalars().all():
                 face.person_id = person.person_id
 
-            # Update person photo count
-            if person:
-                person.photo_count = len(unique_photos)
-                if not person.representative_face_id and cluster_face_ids:
-                    person.representative_face_id = cluster_face_ids[0]
+            # Update person photo count (all faces in cluster, not just new)
+            all_face_result = await session.execute(
+                select(Face).where(Face.person_id == person.person_id)
+            )
+            all_person_faces = all_face_result.scalars().all()
+            unique_photos = set(f.file_hash for f in all_person_faces)
+            person.photo_count = len(unique_photos)
+            if not person.representative_face_id:
+                person.representative_face_id = unassigned_face_ids[0]
 
         await session.commit()
 
     noise_count = sum(1 for l in labels if l == -1)
     logger.info(
-        "Face clustering: %d total faces, %d clusters, %d noise (unmatched), %d new persons",
-        len(encodings), n_clusters, noise_count, new_persons,
+        "Face clustering: %d total faces (%d unassigned), %d clusters, %d noise, %d new persons",
+        len(encodings), unassigned_count, n_clusters, noise_count, new_persons,
     )
     return new_persons
