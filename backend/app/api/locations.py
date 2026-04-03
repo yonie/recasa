@@ -1,5 +1,7 @@
 """Locations API endpoints."""
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -131,6 +133,73 @@ async def get_map_points(
         clusters[key]["count"] += 1
 
     return list(clusters.values())
+
+
+@router.get("/trail")
+async def get_trail(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Get chronological trail of geotagged photos grouped by day and location.
+
+    Returns stops ordered by date, each with a few representative photos.
+    Used by the map "play" mode to animate a journey through photo history.
+    """
+    query = (
+        select(
+            Photo.file_hash,
+            Photo.gps_latitude,
+            Photo.gps_longitude,
+            Photo.location_city,
+            Photo.location_country,
+            Photo.date_taken,
+        )
+        .where(
+            Photo.gps_latitude.is_not(None),
+            Photo.gps_longitude.is_not(None),
+            Photo.date_taken.is_not(None),
+        )
+        .order_by(Photo.date_taken.asc())
+    )
+    if date_from:
+        query = query.where(Photo.date_taken >= date_from.isoformat())
+    if date_to:
+        query = query.where(Photo.date_taken < (date_to.isoformat() + "T23:59:59"))
+    result = await session.execute(query)
+    rows = result.all()
+
+    # Group by day + approximate location (~1km grid)
+    CLUSTER_PRECISION = 2
+    MAX_PHOTOS_PER_STOP = 4
+    stops: dict[str, dict] = {}
+
+    for row in rows:
+        day = row.date_taken.strftime("%Y-%m-%d")
+        lat_key = round(row.gps_latitude, CLUSTER_PRECISION)
+        lon_key = round(row.gps_longitude, CLUSTER_PRECISION)
+        key = f"{day}|{lat_key},{lon_key}"
+
+        if key not in stops:
+            stops[key] = {
+                "date": day,
+                "latitude": row.gps_latitude,
+                "longitude": row.gps_longitude,
+                "city": row.location_city,
+                "country": row.location_country,
+                "photos": [],
+                "total_count": 0,
+            }
+        stops[key]["total_count"] += 1
+        if len(stops[key]["photos"]) < MAX_PHOTOS_PER_STOP:
+            stops[key]["photos"].append({
+                "file_hash": row.file_hash,
+                "thumbnail_url": f"/api/photos/{row.file_hash}/thumbnail/200",
+            })
+
+    # Return sorted by date
+    trail = sorted(stops.values(), key=lambda s: s["date"])
+    return trail
 
 
 @router.get("/photos", response_model=PhotoPage)

@@ -251,6 +251,21 @@ export interface MapPoint {
   thumbnail_url: string;
 }
 
+export interface TrailPhoto {
+  file_hash: string;
+  thumbnail_url: string;
+}
+
+export interface TrailStop {
+  date: string;
+  latitude: number;
+  longitude: number;
+  city: string | null;
+  country: string | null;
+  photos: TrailPhoto[];
+  total_count: number;
+}
+
 // API functions
 
 function buildQuery(params?: Record<string, string | number | boolean>): string {
@@ -365,6 +380,9 @@ export const api = {
     request<CityCount[]>(`/locations/cities${country ? `?country=${encodeURIComponent(country)}` : ""}`),
 
   getMapPoints: () => request<MapPoint[]>("/locations/map-points"),
+
+  getTrail: (params?: { date_from?: string; date_to?: string }) =>
+    request<TrailStop[]>(`/locations/trail${buildQuery(params)}`),
 
   getLocationPhotos: (params?: Record<string, string | number>) =>
     request<PhotoPage>(`/locations/photos${buildQuery(params)}`),

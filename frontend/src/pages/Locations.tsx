@@ -1,43 +1,10 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
-import L from "leaflet";
-import { api, type CountryCount, type CityCount, type PhotoSummary, type MapPoint, thumbnailUrl } from "../api/client";
+import { api, type CountryCount, type CityCount, type PhotoSummary, type MapPoint } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
+import { MapView } from "./MapView";
 import { useStore } from "../store/useStore";
 import { Loader2, MapPin, ArrowLeft, Globe, Map, List } from "lucide-react";
-import "leaflet/dist/leaflet.css";
-
-// Fix default marker icon issue with bundlers
-delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
-  iconUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
-  shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
-});
-
-function createClusterIcon(count: number): L.DivIcon {
-  const size = count > 100 ? 50 : count > 10 ? 40 : 30;
-  return L.divIcon({
-    html: `<div style="
-      background: #3b82f6;
-      color: white;
-      border-radius: 50%;
-      width: ${size}px;
-      height: ${size}px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: ${size > 40 ? 14 : 12}px;
-      font-weight: 600;
-      border: 2px solid white;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-    ">${count}</div>`,
-    className: "custom-cluster-icon",
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
-  });
-}
 
 // Location city photos view (route: /locations/:country/:city)
 export function LocationCityPhotos() {
@@ -199,9 +166,10 @@ export function Locations() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    let first = true;
     async function load() {
       try {
-        setLoading(true);
+        if (first) setLoading(true);
         const [countriesData, mapData] = await Promise.all([
           api.getCountries(),
           api.getMapPoints(),
@@ -211,7 +179,10 @@ export function Locations() {
       } catch {
         // ignore
       } finally {
-        setLoading(false);
+        if (first) {
+          setLoading(false);
+          first = false;
+        }
       }
     }
     load();
@@ -277,9 +248,6 @@ export function Locations() {
       );
     }
 
-    const avgLat = mapPoints.reduce((sum, p) => sum + p.latitude, 0) / mapPoints.length;
-    const avgLng = mapPoints.reduce((sum, p) => sum + p.longitude, 0) / mapPoints.length;
-
     return (
       <div className="h-full flex flex-col">
         <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
@@ -303,56 +271,8 @@ export function Locations() {
             </button>
           </div>
         </div>
-        <div className="flex-1 relative">
-          <MapContainer
-            center={[avgLat, avgLng]}
-            zoom={4}
-            className="h-full w-full z-0"
-            scrollWheelZoom={true}
-          >
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
-            {mapPoints.map((point, i) => (
-              <Marker
-                key={i}
-                position={[point.latitude, point.longitude]}
-                icon={point.count > 1 ? createClusterIcon(point.count) : new L.Icon.Default()}
-              >
-                <Popup>
-                  <div className="text-center min-w-[140px]">
-                    <img
-                      src={thumbnailUrl(point.representative_hash, 200)}
-                      alt=""
-                      className="w-32 h-24 object-cover rounded mb-2 cursor-pointer mx-auto"
-                      onClick={() => handleMarkerClick(point.city, point.country)}
-                    />
-                    {(point.city || point.country) && (
-                      <p className="text-sm font-medium">
-                        {[point.city, point.country].filter(Boolean).join(", ")}
-                      </p>
-                    )}
-                    <p className="text-xs text-gray-500">
-                      {point.count} photo{point.count !== 1 ? "s" : ""}
-                    </p>
-                    <button 
-                      onClick={() => handleMarkerClick(point.city, point.country)}
-                      className="text-xs text-blue-500 hover:text-blue-700 mt-1"
-                    >
-                      View all photos
-                    </button>
-                  </div>
-                </Popup>
-              </Marker>
-            ))}
-          </MapContainer>
-          <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-2 shadow-md z-[1000]">
-            <p className="text-xs text-gray-600">
-              <span className="font-semibold">{mapPoints.length}</span> locations,{" "}
-              <span className="font-semibold">{mapPoints.reduce((s, p) => s + p.count, 0)}</span> photos
-            </p>
-          </div>
+        <div className="flex-1">
+          <MapView onLocationClick={handleMarkerClick} />
         </div>
       </div>
     );

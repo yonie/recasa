@@ -30,15 +30,54 @@ docker-compose down
 - **Frontend**: React/Vite/TypeScript app in `frontend/`
 - **Services**: Defined in `docker-compose.yml`
 
-### Development Flow
+### How Deployment Works
 
-1. Make code changes
-2. Rebuild affected service: `docker-compose up --build backend` or `docker-compose up --build frontend`
-3. Check logs for errors: `docker-compose logs -f backend`
+The app runs as a **single Docker container** (`recasa`) with nginx (port 8080) reverse-proxying to uvicorn (port 8000). Nginx serves the frontend static files from `/app/frontend/dist` and proxies `/api/` to uvicorn.
+
+**Dev mode** (`docker-compose.override.yml`) volume-mounts source code into the container:
+- `./backend` → `/app/backend` (Python code, auto-reloads via `UVICORN_RELOAD=true`)
+- `./frontend/dist` → `/app/frontend/dist` (built frontend assets)
+
+This means:
+
+#### Backend changes (Python)
+No action needed. Uvicorn auto-reloads when files change on disk (the volume mount makes host changes visible inside the container immediately).
+
+#### Frontend changes (React/TypeScript)
+1. Rebuild on the host: `cd frontend && npm run build`
+2. Refresh browser — the new `dist/` files are already visible inside the container via the volume mount.
+
+No `docker compose restart` or `docker compose up --build` needed for either case in dev mode.
+
+#### When to rebuild the Docker image
+Only needed when:
+- Dependencies change (`pyproject.toml` or `package.json`)
+- Dockerfile, nginx config, or `start.sh` changes
+- Starting fresh (no dev override)
+
+```bash
+docker compose up --build -d
+```
+
+### Verifying Changes Are Live
+
+```bash
+# Check frontend: look for the latest Vite asset hash in the container
+MSYS_NO_PATHCONV=1 docker exec recasa-recasa-1 cat /app/frontend/dist/index.html
+
+# Check backend: verify new code is present
+MSYS_NO_PATHCONV=1 docker exec recasa-recasa-1 grep "function_name" /app/backend/app/api/some_file.py
+
+# Test an API endpoint directly
+curl -s http://localhost:7000/api/health
+```
+
+Note: On Git Bash for Windows, prefix docker exec commands with `MSYS_NO_PATHCONV=1` to prevent path mangling.
 
 ### Testing
 
-- Backend tests: `docker-compose exec backend pytest`
+- Integration tests: `docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit`
+- Consistency test: `docker exec -it recasa-recasa-1 python -m backend.tests.test_consistency`
 - Frontend tests: Located in `frontend/tests/` (Playwright)
 
 ---
