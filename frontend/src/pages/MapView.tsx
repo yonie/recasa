@@ -161,6 +161,45 @@ function CountdownRing({
   );
 }
 
+/** A button that displays a formatted date and opens a native date picker on click. */
+function DatePickerButton({
+  value,
+  max,
+  onChange,
+}: {
+  value: string;
+  max: string;
+  onChange: (v: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const label = value
+    ? new Date(value + "T00:00:00").toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
+    : "Select";
+  return (
+    <span className="relative inline-block">
+      <button
+        onClick={() => inputRef.current?.showPicker()}
+        className="text-[11px] font-medium text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 rounded px-1.5 py-0.5 transition-colors"
+      >
+        {label}
+      </button>
+      <input
+        ref={inputRef}
+        type="date"
+        value={value}
+        max={max}
+        onChange={(e) => onChange(e.target.value)}
+        className="absolute inset-0 opacity-0 w-0 h-0 pointer-events-none"
+        tabIndex={-1}
+      />
+    </span>
+  );
+}
+
 /** Horizontal timeline scrubber showing year ticks. Click or drag to seek. */
 function TimelineScrubber({
   trail,
@@ -242,20 +281,16 @@ function TimelineScrubber({
         <span className="text-xs font-medium text-gray-700 truncate">{label}</span>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-[11px] text-gray-500">Date range:</span>
-          <input
-            type="date"
+          <DatePickerButton
             value={dateFrom}
             max={new Date().toISOString().slice(0, 10)}
-            onChange={(e) => onDateFromChange(e.target.value)}
-            className="text-[11px] border border-gray-200 rounded px-1 py-0.5 w-[110px] text-gray-600"
+            onChange={onDateFromChange}
           />
           <span className="text-gray-300 text-[11px]">-</span>
-          <input
-            type="date"
+          <DatePickerButton
             value={dateTo}
             max={new Date().toISOString().slice(0, 10)}
-            onChange={(e) => onDateToChange(e.target.value)}
-            className="text-[11px] border border-gray-200 rounded px-1 py-0.5 w-[110px] text-gray-600"
+            onChange={onDateToChange}
           />
           <span className="text-xs text-gray-400 ml-1">
             {currentStop + 1}/{trail.length}
@@ -603,11 +638,13 @@ export function MapView({
                     <p className="text-xs font-semibold text-gray-700">
                       {formatDate(activeStop.date)}
                     </p>
-                    <CountdownRing
-                      key={currentStop}
-                      duration={speed}
-                      running={playing}
-                    />
+                    {playing && (
+                      <CountdownRing
+                        key={currentStop}
+                        duration={speed}
+                        running={true}
+                      />
+                    )}
                   </div>
                   {(activeStop.city || activeStop.country) && (
                     <p className="text-sm font-medium mb-2">
@@ -636,6 +673,7 @@ export function MapView({
               </Popup>
             </Marker>
             <FlyToAndOpen
+              key={`${currentStop}-${trail.length}`}
               position={[activeStop.latitude, activeStop.longitude]}
               zoom={10}
               markerRef={activeMarkerRef}
