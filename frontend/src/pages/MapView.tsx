@@ -15,7 +15,7 @@ import {
   thumbnailUrl,
 } from "../api/client";
 import { useStore } from "../store/useStore";
-import { Loader2, Map, Play, Pause, Square, SkipForward, SkipBack } from "lucide-react";
+import { Loader2, Map, Play, Pause, Square, SkipForward, SkipBack, Footprints } from "lucide-react";
 import "leaflet/dist/leaflet.css";
 
 // Fix default marker icon issue with bundlers
@@ -362,7 +362,6 @@ export function MapView({
       if (!dateTo) setDateTo(data[data.length - 1]!.date);
       setCurrentStop(0);
       setPlayMode(true);
-      setPlaying(true);
     } catch {
       // ignore
     } finally {
@@ -664,12 +663,12 @@ export function MapView({
           onClick={enterPlayMode}
           disabled={trailLoading}
           className="absolute bottom-6 right-6 z-[1000] bg-blue-500 hover:bg-blue-600 text-white rounded-full p-4 shadow-lg transition-colors disabled:opacity-50"
-          title="Play Hero Trail"
+          title="Hero Trail"
         >
           {trailLoading ? (
             <Loader2 className="w-6 h-6 animate-spin" />
           ) : (
-            <Play className="w-6 h-6" />
+            <Footprints className="w-6 h-6" />
           )}
         </button>
       )}
