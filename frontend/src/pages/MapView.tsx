@@ -89,20 +89,29 @@ function FlyToAndOpen({
   position,
   zoom,
   markerRef,
+  speed,
 }: {
   position: [number, number];
   zoom: number;
   markerRef: React.RefObject<L.Marker | null>;
+  speed: number;
 }) {
   const map = useMap();
   useEffect(() => {
-    map.flyTo(position, zoom, { duration: 1.5 });
-    // Open popup after fly animation settles
-    const t = setTimeout(() => {
+    // Scale fly duration to fit within the stop interval, with a cap
+    const flyDuration = Math.min(1.5, speed / 1000 * 0.6);
+    if (flyDuration < 0.3) {
+      // Too fast for animation — just jump
+      map.setView(position, zoom);
       markerRef.current?.openPopup();
-    }, 1600);
-    return () => clearTimeout(t);
-  }, [map, position[0], position[1], zoom, markerRef]);
+    } else {
+      map.flyTo(position, zoom, { duration: flyDuration });
+      const t = setTimeout(() => {
+        markerRef.current?.openPopup();
+      }, flyDuration * 1000 + 100);
+      return () => clearTimeout(t);
+    }
+  }, [map, position[0], position[1], zoom, markerRef, speed]);
   return null;
 }
 
@@ -164,10 +173,12 @@ function CountdownRing({
 /** A button that displays a formatted date and opens a native date picker on click. */
 function DatePickerButton({
   value,
+  min,
   max,
   onChange,
 }: {
   value: string;
+  min?: string;
   max: string;
   onChange: (v: string) => void;
 }) {
@@ -191,6 +202,7 @@ function DatePickerButton({
         ref={inputRef}
         type="date"
         value={value}
+        min={min}
         max={max}
         onChange={(e) => onChange(e.target.value)}
         className="absolute inset-0 opacity-0 w-0 h-0 pointer-events-none"
@@ -275,7 +287,7 @@ function TimelineScrubber({
     : "";
 
   return (
-    <div className="absolute top-0 left-0 right-0 z-[1000] bg-white/95 backdrop-blur-sm shadow-md select-none">
+    <div className="absolute top-0 left-0 right-0 z-[1001] bg-white/95 backdrop-blur-sm shadow-md select-none">
       {/* Header row: current stop label + date range pickers */}
       <div className="px-4 pt-2 pb-1 flex items-center justify-between gap-3">
         <span className="text-xs font-medium text-gray-700 truncate">{label}</span>
@@ -283,12 +295,13 @@ function TimelineScrubber({
           <span className="text-[11px] text-gray-500">Date range:</span>
           <DatePickerButton
             value={dateFrom}
-            max={new Date().toISOString().slice(0, 10)}
+            max={dateTo || new Date().toISOString().slice(0, 10)}
             onChange={onDateFromChange}
           />
           <span className="text-gray-300 text-[11px]">-</span>
           <DatePickerButton
             value={dateTo}
+            min={dateFrom}
             max={new Date().toISOString().slice(0, 10)}
             onChange={onDateToChange}
           />
@@ -343,6 +356,7 @@ export function MapView({
   const [points, setPoints] = useState<MapPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const openViewer = useStore((s) => s.openViewer);
+  const viewerOpen = useStore((s) => s.viewerOpen);
 
   // Play mode state
   const [playMode, setPlayMode] = useState(false);
@@ -423,19 +437,12 @@ export function MapView({
     }
   }, []);
 
-  // Helper: add N days to a YYYY-MM-DD string
-  const addDays = (d: string, n: number) => {
-    const date = new Date(d + "T00:00:00");
-    date.setDate(date.getDate() + n);
-    return date.toISOString().slice(0, 10);
-  };
-
   // Date change handlers with auto-clamping + immediate reload
   const handleDateFromChange = useCallback(
     (from: string) => {
       let to = dateTo;
-      if (from && to && to <= from) {
-        to = addDays(from, 1);
+      if (from && to && to < from) {
+        to = from;
         setDateTo(to);
       }
       setDateFrom(from);
@@ -447,8 +454,8 @@ export function MapView({
   const handleDateToChange = useCallback(
     (to: string) => {
       let from = dateFrom;
-      if (to && from && from >= to) {
-        from = addDays(to, -1);
+      if (to && from && from > to) {
+        from = to;
         setDateFrom(from);
       }
       setDateTo(to);
@@ -530,11 +537,11 @@ export function MapView({
   };
 
   return (
-    <div className="h-full relative">
+    <div className="h-full relative z-0">
       <MapContainer
         center={[avgLat, avgLng]}
         zoom={4}
-        className="h-full w-full z-0"
+        className="h-full w-full"
         scrollWheelZoom={true}
       >
         <TileLayer
@@ -632,7 +639,7 @@ export function MapView({
               position={[activeStop.latitude, activeStop.longitude]}
               icon={createActiveStopIcon()}
             >
-              <Popup autoClose={false} closeOnClick={false}>
+              <Popup autoClose={false} closeOnClick={false} closeOnEscapeKey={false}>
                 <div className="min-w-[180px]">
                   <div className="flex items-center gap-1.5 mb-1">
                     <p className="text-xs font-semibold text-gray-700">
@@ -677,14 +684,15 @@ export function MapView({
               position={[activeStop.latitude, activeStop.longitude]}
               zoom={10}
               markerRef={activeMarkerRef}
+              speed={speed}
             />
           </>
         )}
       </MapContainer>
 
       {/* Stats overlay (normal mode) */}
-      {!playMode && (
-        <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-2 shadow-md z-[1000]">
+      {!playMode && !viewerOpen && (
+        <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-2 shadow-md z-[1001]">
           <p className="text-xs text-gray-600">
             <span className="font-semibold">{points.length}</span> locations,{" "}
             <span className="font-semibold">
@@ -692,15 +700,16 @@ export function MapView({
             </span>{" "}
             photos
           </p>
+          <p className="text-[10px] text-gray-400 mt-0.5">Only photos with GPS data</p>
         </div>
       )}
 
       {/* Hero Trail launcher (normal mode) */}
-      {!playMode && (
+      {!playMode && !viewerOpen && (
         <button
           onClick={enterPlayMode}
           disabled={trailLoading}
-          className="absolute bottom-6 right-6 z-[1000] bg-blue-500 hover:bg-blue-600 text-white rounded-full p-4 shadow-lg transition-colors disabled:opacity-50"
+          className="absolute bottom-6 right-6 z-[1001] bg-blue-500 hover:bg-blue-600 text-white rounded-full p-4 shadow-lg transition-colors disabled:opacity-50"
           title="Hero Trail"
         >
           {trailLoading ? (
@@ -712,8 +721,8 @@ export function MapView({
       )}
 
       {/* Play mode controls */}
-      {playMode && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1000] bg-white/95 backdrop-blur-sm rounded-xl shadow-lg px-4 py-3 flex items-center gap-3">
+      {playMode && !viewerOpen && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1001] bg-white/95 backdrop-blur-sm rounded-xl shadow-lg px-4 py-3 flex items-center gap-3">
           {/* Progress info */}
           <div className="text-xs text-gray-600 min-w-[80px]">
             <span className="font-semibold">{currentStop + 1}</span>
@@ -787,7 +796,7 @@ export function MapView({
       )}
 
       {/* Timeline scrubber at top */}
-      {playMode && trail.length > 0 && (
+      {playMode && !viewerOpen && trail.length > 0 && (
         <TimelineScrubber
           trail={trail}
           currentStop={currentStop}

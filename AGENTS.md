@@ -47,6 +47,8 @@ No action needed. Uvicorn auto-reloads when files change on disk (the volume mou
 1. Rebuild on the host: `cd frontend && npm run build`
 2. Refresh browser — the new `dist/` files are already visible inside the container via the volume mount.
 
+**IMPORTANT:** Always run `npm run build` after frontend changes. The user tests on localhost:7000 (Docker/nginx), NOT the Vite dev server on port 3000. Without building, changes are invisible. Type-checking (`tsc --noEmit`) alone is not enough.
+
 No `docker compose restart` or `docker compose up --build` needed for either case in dev mode.
 
 #### When to rebuild the Docker image

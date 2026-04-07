@@ -73,7 +73,7 @@ export function PhotoViewer() {
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeViewer();
+      if (e.key === "Escape") { e.stopImmediatePropagation(); closeViewer(); }
       if (e.key === "i") setShowInfo((s) => !s);
       if (e.key === "ArrowLeft" && canGoPrev) navigateTo(viewerIndex - 1);
       if (e.key === "ArrowRight" && canGoNext) navigateTo(viewerIndex + 1);
@@ -162,7 +162,7 @@ export function PhotoViewer() {
   if (!viewerOpen || !detail) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/95 flex flex-col sm:flex-row pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+    <div className="fixed inset-0 z-[2000] bg-black/95 flex flex-col sm:flex-row pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       {/* Main image */}
       <div
         className="flex-1 flex items-center justify-center relative"
