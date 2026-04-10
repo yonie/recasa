@@ -56,13 +56,12 @@ Photos are never uploaded. They are mounted read-only into the container.
 | *Timeline* | *Photo viewer* |
 | ![Photo detail with EXIF info panel](docs/screenshots/photo-detail.jpg) | ![Auto-detected events with cover photos](docs/screenshots/events.jpg) |
 | *Photo detail and EXIF* | *Events* |
-| ![Detected faces clustered into people](docs/screenshots/people.jpg) | ![Locations with Hero Trail replaying route on map](docs/screenshots/hero-trail.jpg) |
-| *People* | *Hero Trail on map* |
+| ![Detected faces clustered into people](docs/screenshots/people.jpg) | ![Hero Trail replaying route on map](docs/screenshots/hero-trail.jpg) |
+| *People* | *Hero Trail* |
 | ![Search across names, tags, and captions](docs/screenshots/search.jpg) | ![AI-generated tags](docs/screenshots/tags.jpg) |
 | *Search* | *Tags* |
-| ![Browse by country and city](docs/screenshots/locations.jpg) | ![Starred favorite photos](docs/screenshots/favorites.jpg) |
-| *Locations* | *Favorites* |
-| ![Folder browser](docs/screenshots/folders.png) | |
+| ![Folder browser](docs/screenshots/folders.jpg) | ![Starred favorite photos](docs/screenshots/favorites.jpg) |
+| *Folders* | *Favorites* |
 
 ## Configuration
 
