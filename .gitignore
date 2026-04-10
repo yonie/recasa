@@ -38,6 +38,18 @@ frontend/tsconfig.tsbuildinfo
 .DS_Store
 Thumbs.db
 
+# AI
+.claude/
+CLAUDE.md
+AGENTS.md
+
+# Demo/tooling
+demo-photos/
+take_screenshots.py
+setup_demo_data.py
+download_demo_photos.py
+nul
+
 # Docker
 .docker/
 
