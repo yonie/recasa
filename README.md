@@ -52,20 +52,17 @@ Photos are never uploaded. They are mounted read-only into the container.
 
 | | |
 |---|---|
-| ![Timeline](docs/screenshots/timeline.jpg) | ![Photo Viewer](docs/screenshots/photo-viewer.jpg) |
-| *Timeline* | *Photo Viewer* |
-| ![Photo Detail](docs/screenshots/photo-detail.jpg) | ![Events](docs/screenshots/events.jpg) |
-| *Photo Detail* | *Events* |
-| ![People](docs/screenshots/people.jpg) | ![Locations](docs/screenshots/locations.jpg) |
-| *People* | *Locations* |
-| ![Search](docs/screenshots/search.jpg) | ![Tags](docs/screenshots/tags.jpg) |
+| ![Timeline view with photos grouped by month](docs/screenshots/timeline.jpg) | ![Full-screen photo viewer](docs/screenshots/photo-viewer.jpg) |
+| *Timeline* | *Photo viewer* |
+| ![Photo detail with EXIF info panel](docs/screenshots/photo-detail.jpg) | ![Auto-detected events with cover photos](docs/screenshots/events.jpg) |
+| *Photo detail and EXIF* | *Events* |
+| ![Detected faces clustered into people](docs/screenshots/people.jpg) | ![Locations with Hero Trail replaying route on map](docs/screenshots/hero-trail.jpg) |
+| *People* | *Hero Trail on map* |
+| ![Search across names, tags, and captions](docs/screenshots/search.jpg) | ![AI-generated tags](docs/screenshots/tags.jpg) |
 | *Search* | *Tags* |
-| ![Folders](docs/screenshots/folders.png) | ![Years](docs/screenshots/years.png) |
-| *Folders* | *Years* |
-| ![Duplicates](docs/screenshots/duplicates.png) | ![Favorites](docs/screenshots/favorites.jpg) |
-| *Duplicates* | *Favorites* |
-| ![Pipeline](docs/screenshots/pipeline.png) | ![Large Files](docs/screenshots/large-files.png) |
-| *Pipeline* | *Large Files* |
+| ![Browse by country and city](docs/screenshots/locations.jpg) | ![Starred favorite photos](docs/screenshots/favorites.jpg) |
+| *Locations* | *Favorites* |
+| ![Folder browser](docs/screenshots/folders.png) | |
 
 ## Configuration
 
