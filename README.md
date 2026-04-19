@@ -62,6 +62,8 @@ Photos are never uploaded. They are mounted read-only into the container.
 | *Search* | *Tags* |
 | ![Folder browser](docs/screenshots/folders.jpg) | ![Starred favorite photos](docs/screenshots/favorites.jpg) |
 | *Folders* | *Favorites* |
+| ![Photo collage generator with grid options](docs/screenshots/collage.jpg) | ![Export and import user data](docs/screenshots/export-import.jpg) |
+| *Collage generator* | *Export / Import* |
 
 ## Configuration
 
