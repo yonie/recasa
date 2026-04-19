@@ -68,19 +68,21 @@ export function TagDetail() {
           <ArrowLeft className="w-5 h-5" />
         </button>
         <Tag className="w-5 h-5 text-gray-400" />
-        <h1 className="text-lg font-semibold flex items-center gap-2">
+        <h1 className="text-lg font-semibold">
           {tag?.name || "Tag"}
-          <span className="text-gray-400 font-normal text-sm">
+          <span className="ml-2 text-gray-400 font-normal text-sm">
             {tag ? `${tag.count} photo${tag.count !== 1 ? "s" : ""}` : ""}
           </span>
-          {tag && (
+        </h1>
+        {tag && (
+          <div className="ml-auto">
             <CollageButton
               url={`/api/photos/collage?tag=${encodeURIComponent(tag.name)}`}
               label={`${tag.name} — Collage`}
               photoCount={tag.count}
             />
-          )}
-        </h1>
+          </div>
+        )}
       </div>
 
       <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />

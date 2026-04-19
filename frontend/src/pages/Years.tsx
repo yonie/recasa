@@ -95,14 +95,14 @@ export function Years() {
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
-        <h1 className="text-lg font-semibold flex items-center gap-2">
-          {selectedYear}
+        <h1 className="text-lg font-semibold">{selectedYear}</h1>
+        <div className="ml-auto">
           <CollageButton
             url={`/api/photos/collage?year=${selectedYear}`}
             label={`${selectedYear} — Collage`}
             photoCount={years.find((y) => y.year === selectedYear)?.count ?? 0}
           />
-        </h1>
+        </div>
       </div>
 
       {photosLoading ? (

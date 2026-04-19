@@ -64,17 +64,19 @@ export function Favorites() {
   return (
     <div className="overflow-y-auto h-full">
       <div className="px-4 py-3 border-b border-gray-100">
-        <h1 className="text-lg font-semibold flex items-center gap-2">
+        <h1 className="text-lg font-semibold">
           Favorites
-          <span className="text-gray-400 font-normal text-sm">
+          <span className="ml-2 text-gray-400 font-normal text-sm">
             {photos.length} photo{photos.length !== 1 ? "s" : ""}
           </span>
+        </h1>
+        <div className="ml-auto">
           <CollageButton
             url="/api/photos/collage?favorite=true"
             label="Favorites — Collage"
             photoCount={photos.length}
           />
-        </h1>
+        </div>
       </div>
       <PhotoGrid
         photos={photos}
