@@ -346,17 +346,52 @@ async def get_shared_photos(
     session: AsyncSession = Depends(get_session),
 ):
     """Get all photos where two specific people appear together."""
-    from sqlalchemy.orm import aliased
+    return await _get_together_photos([person_a_id, person_b_id], page, page_size, session)
 
-    f1 = aliased(Face)
-    f2 = aliased(Face)
 
-    query = (
-        select(Photo)
-        .join(f1, f1.file_hash == Photo.file_hash)
-        .join(f2, f2.file_hash == Photo.file_hash)
-        .where(f1.person_id == person_a_id, f2.person_id == person_b_id)
+@router.get("/groups/together-n/photos", response_model=PhotoPage)
+async def get_shared_photos_n(
+    person_ids: str = Query(..., description="Comma-separated person IDs"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get all photos where ALL specified people appear together."""
+    ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 person IDs")
+    return await _get_together_photos(ids, page, page_size, session)
+
+
+async def _get_together_photos(
+    person_ids: list[int], page: int, page_size: int, session: AsyncSession,
+) -> PhotoPage:
+    """Get photos where EXACTLY the listed persons appear (no others)."""
+    from sqlalchemy import intersect
+
+    target_set = set(person_ids)
+
+    # Step 1: photos where all listed persons appear
+    sets = [
+        select(Face.file_hash).where(Face.person_id == pid).distinct()
+        for pid in person_ids
+    ]
+    together = intersect(*sets).subquery()
+
+    # Step 2: exclude photos that have faces from OTHER person_ids
+    other_faces = (
+        select(Face.file_hash)
+        .where(
+            Face.person_id.is_not(None),
+            Face.person_id.not_in(list(target_set)),
+        )
         .distinct()
+        .subquery()
+    )
+
+    query = select(Photo).where(
+        Photo.file_hash.in_(select(together)),
+        Photo.file_hash.not_in(select(other_faces)),
     )
 
     count_query = select(func.count()).select_from(query.subquery())
@@ -375,6 +410,124 @@ async def get_shared_photos(
         page_size=page_size,
         has_more=offset + page_size < total,
     )
+
+
+@router.get("/{person_id}/collage")
+async def get_person_collage(
+    person_id: int,
+    grid: int = Query(0, ge=0, le=6),
+    seed: int = Query(0),
+    session: AsyncSession = Depends(get_session),
+):
+    """Generate a square photo collage for a person."""
+    import asyncio
+    from fastapi.responses import Response
+    from backend.app.services.collage import generate_collage
+    from backend.app.models import PhotoHash
+
+    query = (
+        select(Photo.file_hash, PhotoHash.phash, Photo.date_taken)
+        .join(Face, Face.file_hash == Photo.file_hash)
+        .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
+        .where(Face.person_id == person_id)
+        .distinct(Photo.file_hash)
+        .order_by(Photo.date_taken.asc().nullslast())
+    )
+    result = await session.execute(query)
+    rows = result.all()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="No photos found")
+
+    hashes = [r[0] for r in rows]
+    phashes = [r[1] for r in rows]
+    dates = [r[2] for r in rows]
+
+    data = await asyncio.to_thread(generate_collage, hashes, phashes, grid, dates=dates, seed=seed)
+    if not data:
+        raise HTTPException(status_code=404, detail="Could not generate collage")
+
+    return Response(content=data, media_type="image/jpeg")
+
+
+@router.get("/groups/together/{person_a_id}/{person_b_id}/collage")
+async def get_together_collage(
+    person_a_id: int,
+    person_b_id: int,
+    grid: int = Query(0, ge=0, le=6),
+    seed: int = Query(0),
+    session: AsyncSession = Depends(get_session),
+):
+    """Generate a square photo collage for two people together."""
+    return await _together_collage([person_a_id, person_b_id], grid, seed, session)
+
+
+@router.get("/groups/together-n/collage")
+async def get_together_collage_n(
+    person_ids: str = Query(..., description="Comma-separated person IDs"),
+    grid: int = Query(0, ge=0, le=6),
+    seed: int = Query(0),
+    session: AsyncSession = Depends(get_session),
+):
+    """Generate a square photo collage for N people together."""
+    ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 person IDs")
+    return await _together_collage(ids, grid, seed, session)
+
+
+async def _together_collage(person_ids: list[int], grid: int, seed: int, session: AsyncSession):
+    import asyncio
+    from fastapi.responses import Response
+    from backend.app.services.collage import generate_collage
+    from backend.app.models import PhotoHash
+
+    from sqlalchemy import intersect
+
+    target_set = set(person_ids)
+
+    # Photos where all listed persons appear
+    sets = [
+        select(Face.file_hash).where(Face.person_id == pid).distinct()
+        for pid in person_ids
+    ]
+    together = intersect(*sets).subquery()
+
+    # Exclude photos with other person_ids
+    other_faces = (
+        select(Face.file_hash)
+        .where(
+            Face.person_id.is_not(None),
+            Face.person_id.not_in(list(target_set)),
+        )
+        .distinct()
+        .subquery()
+    )
+
+    query = (
+        select(Photo.file_hash, PhotoHash.phash, Photo.date_taken)
+        .where(
+            Photo.file_hash.in_(select(together)),
+            Photo.file_hash.not_in(select(other_faces)),
+        )
+        .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
+        .order_by(Photo.date_taken.asc().nullslast())
+    )
+    result = await session.execute(query)
+    rows = result.all()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="No photos found")
+
+    hashes = [r[0] for r in rows]
+    phashes = [r[1] for r in rows]
+    dates = [r[2] for r in rows]
+
+    data = await asyncio.to_thread(generate_collage, hashes, phashes, grid, dates=dates, seed=seed)
+    if not data:
+        raise HTTPException(status_code=404, detail="Could not generate collage")
+
+    return Response(content=data, media_type="image/jpeg")
 
 
 @router.post("/recluster")

@@ -93,7 +93,11 @@ async def detect_events() -> int:
                 if bx is not None and by is not None and bw is not None and bh is not None:
                     face_positions.setdefault(file_hash, []).append((bx, by, bw, bh))
 
-    # Phase 3: Store events in database
+    # Phase 3: Merge nearby consecutive events into "trips"
+    # Events within 36h and ~50km of each other are the same trip/holiday.
+    final_clusters = _merge_nearby_events(final_clusters)
+
+    # Phase 4: Store events in database
     async with async_session() as session:
         # Clear existing auto-detected events
         await session.execute(delete(EventPhoto))
@@ -148,6 +152,74 @@ async def detect_events() -> int:
 
     logger.info("Detected %d events from %d photos", len(final_clusters), len(photos))
     return len(final_clusters)
+
+
+# Maximum hours between consecutive events to consider merging
+MERGE_TIME_GAP_HOURS = 36
+
+# Maximum distance in degrees for merge (~0.5 degrees ≈ 55km)
+MERGE_LOCATION_DEGREES = 0.5
+
+# Maximum duration of a merged event (4 days splits a typical holiday into ~2 parts)
+MAX_EVENT_DAYS = 4
+
+
+def _cluster_centroid(cluster: list[Photo]) -> tuple[float | None, float | None]:
+    """Average GPS coordinates of photos with location data."""
+    lats = [p.gps_latitude for p in cluster if p.gps_latitude is not None]
+    lons = [p.gps_longitude for p in cluster if p.gps_longitude is not None]
+    if not lats or not lons:
+        return None, None
+    return sum(lats) / len(lats), sum(lons) / len(lons)
+
+
+def _merge_nearby_events(clusters: list[list[Photo]]) -> list[list[Photo]]:
+    """Merge consecutive events that are close in time and location.
+
+    This turns per-half-day fine-grained events into multi-day trip events.
+    """
+    if len(clusters) < 2:
+        return clusters
+
+    merged: list[list[Photo]] = [clusters[0]]
+
+    for cluster in clusters[1:]:
+        prev = merged[-1]
+
+        # Time check: gap between end of previous and start of current
+        prev_dates = [p.date_taken for p in prev if p.date_taken]
+        curr_dates = [p.date_taken for p in cluster if p.date_taken]
+        if not prev_dates or not curr_dates:
+            merged.append(cluster)
+            continue
+
+        gap_hours = (min(curr_dates) - max(prev_dates)).total_seconds() / 3600
+        if gap_hours > MERGE_TIME_GAP_HOURS:
+            merged.append(cluster)
+            continue
+
+        # Duration check: merged event wouldn't be too long
+        all_dates = prev_dates + curr_dates
+        span_days = (max(all_dates) - min(all_dates)).days
+        if span_days > MAX_EVENT_DAYS:
+            merged.append(cluster)
+            continue
+
+        # Location check: both clusters have GPS and are within range
+        prev_lat, prev_lon = _cluster_centroid(prev)
+        curr_lat, curr_lon = _cluster_centroid(cluster)
+
+        if prev_lat is not None and curr_lat is not None:
+            lat_diff = abs(curr_lat - prev_lat)
+            lon_diff = abs(curr_lon - prev_lon)
+            if lat_diff > MERGE_LOCATION_DEGREES or lon_diff > MERGE_LOCATION_DEGREES:
+                merged.append(cluster)
+                continue
+
+        # Merge: either both are nearby or one has no GPS (assume same trip)
+        merged[-1] = prev + cluster
+
+    return merged
 
 
 def _split_by_location(photos: list[Photo]) -> list[list[Photo]]:

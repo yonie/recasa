@@ -125,3 +125,44 @@ async def get_event_photos(
         page_size=page_size,
         has_more=offset + page_size < total,
     )
+
+
+@router.get("/{event_id}/collage")
+async def get_event_collage(
+    event_id: int,
+    grid: int = Query(0, ge=0, le=6),
+    seed: int = Query(0),
+    session: AsyncSession = Depends(get_session),
+):
+    """Generate a square photo collage for an event."""
+    import asyncio
+    from fastapi.responses import Response
+    from backend.app.services.collage import generate_collage
+    from backend.app.models import PhotoHash
+
+    event = await session.get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    query = (
+        select(Photo.file_hash, PhotoHash.phash, Photo.date_taken)
+        .join(EventPhoto, EventPhoto.file_hash == Photo.file_hash)
+        .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
+        .where(EventPhoto.event_id == event_id)
+        .order_by(Photo.date_taken.asc().nullslast())
+    )
+    result = await session.execute(query)
+    rows = result.all()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="No photos found")
+
+    hashes = [r[0] for r in rows]
+    phashes = [r[1] for r in rows]
+    dates = [r[2] for r in rows]
+
+    data = await asyncio.to_thread(generate_collage, hashes, phashes, grid, dates=dates, seed=seed)
+    if not data:
+        raise HTTPException(status_code=404, detail="Could not generate collage")
+
+    return Response(content=data, media_type="image/jpeg")

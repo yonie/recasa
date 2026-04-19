@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.config import settings
 from backend.app.database import init_db
-from backend.app.api import photos, directories, timeline, scan, duplicates, persons, events, locations, pipeline_api, tags, config
+from backend.app.api import photos, directories, timeline, scan, duplicates, persons, events, locations, pipeline_api, tags, config, user_data
 from backend.app.workers.queues import pipeline
 from backend.app.workers.worker import start_pipeline_workers
 from backend.app.workers.pipeline import start_file_watcher, resume_incomplete_processing
@@ -93,6 +93,7 @@ app.include_router(locations.router)
 app.include_router(pipeline_api.router)
 app.include_router(tags.router)
 app.include_router(config.router)
+app.include_router(user_data.router)
 
 
 @app.get("/api/health")

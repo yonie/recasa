@@ -3,6 +3,7 @@ import { api, type YearCount, type PhotoSummary, type TimelineGroup } from "../a
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { Loader2, ChevronLeft } from "lucide-react";
+import { CollageButton } from "../components/CollagePopover";
 
 export function Years() {
   const [years, setYears] = useState<YearCount[]>([]);
@@ -94,7 +95,14 @@ export function Years() {
         >
           <ChevronLeft className="w-5 h-5" />
         </button>
-        <h1 className="text-lg font-semibold">{selectedYear}</h1>
+        <h1 className="text-lg font-semibold flex items-center gap-2">
+          {selectedYear}
+          <CollageButton
+            url={`/api/photos/collage?year=${selectedYear}`}
+            label={`${selectedYear} — Collage`}
+            photoCount={years.find((y) => y.year === selectedYear)?.count ?? 0}
+          />
+        </h1>
       </div>
 
       {photosLoading ? (

@@ -5,6 +5,7 @@ import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { useScrollRestore } from "../hooks/useScrollRestore";
 import { Loader2, Tag, ArrowLeft } from "lucide-react";
+import { CollageButton } from "../components/CollagePopover";
 
 // Tag detail view (route: /tags/:tagId)
 export function TagDetail() {
@@ -67,11 +68,18 @@ export function TagDetail() {
           <ArrowLeft className="w-5 h-5" />
         </button>
         <Tag className="w-5 h-5 text-gray-400" />
-        <h1 className="text-lg font-semibold">
+        <h1 className="text-lg font-semibold flex items-center gap-2">
           {tag?.name || "Tag"}
-          <span className="ml-2 text-gray-400 font-normal text-sm">
+          <span className="text-gray-400 font-normal text-sm">
             {tag ? `${tag.count} photo${tag.count !== 1 ? "s" : ""}` : ""}
           </span>
+          {tag && (
+            <CollageButton
+              url={`/api/photos/collage?tag=${encodeURIComponent(tag.name)}`}
+              label={`${tag.name} — Collage`}
+              photoCount={tag.count}
+            />
+          )}
         </h1>
       </div>
 

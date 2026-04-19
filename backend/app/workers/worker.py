@@ -21,11 +21,12 @@ from backend.app.database import async_session
 from backend.app.models import Photo, PhotoHash, Face, Caption
 from backend.app.services.exif import extract_exif
 from backend.app.services.thumbnail import generate_thumbnails
-from backend.app.services.hasher import compute_hashes
+from backend.app.services.hasher import compute_hashes, find_duplicates
 from backend.app.services.geocoder import geocode_photo
 from backend.app.services.face_detector import detect_faces, cluster_faces
 from backend.app.services.captioner import caption_photo
 from backend.app.services.event_detector import detect_events
+from backend.app.services.user_data import apply_pending_person_imports
 from backend.app.services.motion_photo import extract_motion_video
 from backend.app.services.scanner import thumb_exists
 from backend.app.workers.queues import Pipeline, QueueType
@@ -357,6 +358,19 @@ class EventDetectionWorker:
                     await cluster_faces()
                 except Exception as e:
                     logger.warning(f"Face clustering failed: {type(e).__name__}")
+
+                # Apply pending person name imports (from Export/Import)
+                try:
+                    await apply_pending_person_imports()
+                except Exception as e:
+                    logger.warning(f"Pending person import failed: {type(e).__name__}")
+
+            # Duplicate detection
+            logger.info("Running batch duplicate detection...")
+            try:
+                await find_duplicates()
+            except Exception as e:
+                logger.warning(f"Duplicate detection failed: {type(e).__name__}")
 
             # Event detection - debounced
             now = time.time()

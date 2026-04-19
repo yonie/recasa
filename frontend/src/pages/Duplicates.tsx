@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
-import { api, type DuplicateGroup, type PhotoSummary } from "../api/client";
+import { api, type DuplicateGroup, type DuplicatePhotoSummary } from "../api/client";
 import { useStore } from "../store/useStore";
 import { thumbnailUrl } from "../api/client";
-import { Loader2, Copy } from "lucide-react";
+import { Loader2, Copy, MapPin, Camera, Users, Calendar } from "lucide-react";
 
 export function Duplicates() {
   const [groups, setGroups] = useState<DuplicateGroup[]>([]);
@@ -24,7 +24,7 @@ export function Duplicates() {
   }, []);
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary, groupPhotos: PhotoSummary[]) => {
+    async (photo: DuplicatePhotoSummary, groupPhotos: DuplicatePhotoSummary[]) => {
       try {
         const detail = await api.getPhoto(photo.file_hash);
         const index = groupPhotos.findIndex((p) => p.file_hash === photo.file_hash);
@@ -78,7 +78,7 @@ export function Duplicates() {
               {group.photos.map((photo) => (
                 <div
                   key={photo.file_hash}
-                  className="flex-shrink-0 w-40 cursor-pointer group"
+                  className="flex-shrink-0 w-56 cursor-pointer group relative"
                   onClick={() => handlePhotoClick(photo, group.photos)}
                 >
                   <div className="aspect-square rounded-lg overflow-hidden bg-gray-100">
@@ -88,8 +88,42 @@ export function Duplicates() {
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                     />
                   </div>
-                  <p className="text-xs text-gray-500 mt-1 truncate">{photo.file_name}</p>
-                  <p className="text-xs text-gray-400">{formatBytes(photo.file_size)}</p>
+                  <div className="mt-1.5 text-xs space-y-0.5">
+                    <p className="text-gray-600 truncate" title={photo.file_path}>{photo.file_path}</p>
+                    <div className="flex items-center gap-3 text-gray-400">
+                      {photo.width && photo.height && (
+                        <span>{photo.width}x{photo.height}</span>
+                      )}
+                      <span>{formatBytes(photo.file_size)}</span>
+                    </div>
+                    {photo.date_taken && (
+                      <p className="text-gray-400 flex items-center gap-1">
+                        <Calendar className="w-3 h-3" />
+                        {new Date(photo.date_taken).toLocaleString(undefined, {
+                          year: "numeric", month: "short", day: "numeric",
+                          hour: "2-digit", minute: "2-digit", second: "2-digit",
+                        })}
+                      </p>
+                    )}
+                    {photo.location && (
+                      <p className="text-gray-400 flex items-center gap-1 truncate">
+                        <MapPin className="w-3 h-3 flex-shrink-0" />
+                        {photo.location}
+                      </p>
+                    )}
+                    {photo.camera && (
+                      <p className="text-gray-400 flex items-center gap-1 truncate">
+                        <Camera className="w-3 h-3 flex-shrink-0" />
+                        {photo.camera}
+                      </p>
+                    )}
+                    {photo.people.length > 0 && (
+                      <p className="text-gray-400 flex items-center gap-1 truncate">
+                        <Users className="w-3 h-3 flex-shrink-0" />
+                        {photo.people.join(", ")}
+                      </p>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

@@ -16,8 +16,9 @@ from backend.app.models import Photo, PhotoHash, DuplicateGroup, DuplicateMember
 
 logger = logging.getLogger(__name__)
 
-# Hamming distance threshold for considering photos as duplicates
-DUPLICATE_THRESHOLD = 8
+# Hamming distance threshold for considering photos as duplicates.
+# 0 = identical, 1-3 = same photo different resolution/compression, 4-6 = similar with edits.
+DUPLICATE_THRESHOLD = 4
 
 
 def _compute_perceptual_hashes(filepath: Path) -> dict:
@@ -64,62 +65,91 @@ async def compute_hashes(file_hash: str) -> bool:
         return True
 
 
-async def find_duplicates() -> list[list[str]]:
-    """Find groups of duplicate photos based on perceptual hash similarity.
+def _find_duplicate_groups(
+    file_hashes: list[str], phash_hexes: list[str], threshold: int
+) -> list[list[str]]:
+    """CPU-bound duplicate detection using numpy-vectorized hamming distance.
 
-    Returns list of groups, where each group is a list of file_hashes.
+    Compares all pairs of perceptual hashes and groups photos within the
+    hamming distance threshold using union-find.
     """
-    async with async_session() as session:
-        result = await session.execute(select(PhotoHash))
-        all_hashes = result.scalars().all()
+    import numpy as np
 
-    if not all_hashes:
+    n = len(file_hashes)
+    if n < 2:
         return []
 
-    # Build groups using union-find approach
-    groups: dict[str, set[str]] = {}
-    parent: dict[str, str] = {}
+    phash_ints = np.array([int(h, 16) for h in phash_hexes], dtype=np.uint64)
 
-    def find(x: str) -> str:
-        while parent.get(x, x) != x:
-            parent[x] = parent.get(parent[x], parent[x])
+    # Union-find with path compression
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
-    def union(a: str, b: str) -> None:
+    def union(a: int, b: int) -> None:
         ra, rb = find(a), find(b)
         if ra != rb:
             parent[ra] = rb
 
-    # Compare all pairs (O(n^2) - could be optimized with LSH for large libraries)
-    for i, h1 in enumerate(all_hashes):
-        if not h1.phash:
-            continue
-        for h2 in all_hashes[i + 1 :]:
-            if not h2.phash:
-                continue
+    # Vectorized popcount for uint64 arrays (Hamming weight via bit manipulation)
+    def _popcount64(arr: np.ndarray) -> np.ndarray:
+        c1 = np.uint64(0x5555555555555555)
+        c2 = np.uint64(0x3333333333333333)
+        c4 = np.uint64(0x0F0F0F0F0F0F0F0F)
+        cm = np.uint64(0x0101010101010101)
+        arr = arr - ((arr >> np.uint64(1)) & c1)
+        arr = (arr & c2) + ((arr >> np.uint64(2)) & c2)
+        arr = (arr + (arr >> np.uint64(4))) & c4
+        return (arr * cm) >> np.uint64(56)
 
-            try:
-                distance = imagehash.hex_to_hash(h1.phash) - imagehash.hex_to_hash(h2.phash)
-                if distance <= DUPLICATE_THRESHOLD:
-                    union(h1.file_hash, h2.file_hash)
-            except Exception:
-                continue
+    # For each photo, vectorized comparison against all subsequent photos
+    for i in range(n - 1):
+        xor = phash_ints[i + 1 :] ^ phash_ints[i]
+        distances = _popcount64(xor)
+        matches = np.where(distances <= threshold)[0]
+        for j_offset in matches:
+            union(i, int(i + 1 + j_offset))
 
-    # Collect groups
-    group_map: dict[str, list[str]] = {}
-    for h in all_hashes:
-        root = find(h.file_hash)
-        if root not in group_map:
-            group_map[root] = []
-        group_map[root].append(h.file_hash)
+    # Collect groups with 2+ members
+    group_map: dict[int, list[str]] = {}
+    for i in range(n):
+        root = find(i)
+        group_map.setdefault(root, []).append(file_hashes[i])
 
-    # Only return groups with 2+ members
-    duplicate_groups = [g for g in group_map.values() if len(g) > 1]
+    return [g for g in group_map.values() if len(g) > 1]
+
+
+async def find_duplicates() -> list[list[str]]:
+    """Find groups of duplicate photos based on perceptual hash similarity.
+
+    Uses numpy-vectorized hamming distance for fast comparison of all pairs.
+    Returns list of groups, where each group is a list of file_hashes.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(PhotoHash).where(PhotoHash.phash.is_not(None))
+        )
+        all_hashes = result.scalars().all()
+
+    if len(all_hashes) < 2:
+        return []
+
+    file_hashes = [h.file_hash for h in all_hashes]
+    phash_hexes = [h.phash for h in all_hashes]
+
+    logger.info("Finding duplicates among %d photos...", len(file_hashes))
+
+    # Run CPU-bound comparison in a thread to avoid blocking the event loop
+    duplicate_groups = await asyncio.to_thread(
+        _find_duplicate_groups, file_hashes, phash_hexes, DUPLICATE_THRESHOLD
+    )
 
     # Store in database
     async with async_session() as session:
-        # Clear existing duplicate groups
         await session.execute(DuplicateMember.__table__.delete())
         await session.execute(DuplicateGroup.__table__.delete())
 

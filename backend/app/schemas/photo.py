@@ -132,9 +132,17 @@ class EventSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DuplicatePhotoSummary(PhotoSummary):
+    """Extended photo summary with extra metadata for duplicate comparison."""
+
+    location: str | None = None
+    camera: str | None = None
+    people: list[str] = []
+
+
 class DuplicateGroupSummary(BaseModel):
     group_id: int
-    photos: list[PhotoSummary] = []
+    photos: list[DuplicatePhotoSummary] = []
 
 
 class ScanStatus(BaseModel):

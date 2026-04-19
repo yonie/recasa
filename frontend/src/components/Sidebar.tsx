@@ -13,6 +13,7 @@ import {
   Map,
   Tag,
   Activity,
+  ArrowDownUp,
   Wrench,
   ChevronDown,
   ChevronRight,
@@ -37,6 +38,7 @@ const navItems = [
 const toolItems = [
   { to: "/duplicates", icon: Copy, label: "Duplicates" },
   { to: "/large-files", icon: HardDrive, label: "Large Files" },
+  { to: "/export-import", icon: ArrowDownUp, label: "Export / Import" },
 ];
 
 export function Sidebar() {

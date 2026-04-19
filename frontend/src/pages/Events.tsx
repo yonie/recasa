@@ -5,6 +5,7 @@ import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { useScrollRestore } from "../hooks/useScrollRestore";
 import { Loader2, CalendarDays, ArrowLeft, MapPin } from "lucide-react";
+import { CollageButton } from "../components/CollagePopover";
 
 // Event detail view (route: /events/:eventId)
 export function EventDetail() {
@@ -88,6 +89,13 @@ export function EventDetail() {
           {event.summary && (
             <p className="text-sm text-gray-500 mt-1">{event.summary}</p>
           )}
+        </div>
+        <div className="ml-auto">
+          <CollageButton
+            url={`/api/events/${event.event_id}/collage`}
+            label={`${event.name} — Collage`}
+            photoCount={photos.length}
+          />
         </div>
       </div>
 

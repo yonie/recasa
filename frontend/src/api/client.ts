@@ -201,9 +201,15 @@ export interface LibraryStats {
   favorites_count: number;
 }
 
+export interface DuplicatePhotoSummary extends PhotoSummary {
+  location: string | null;
+  camera: string | null;
+  people: string[];
+}
+
 export interface DuplicateGroup {
   group_id: number;
-  photos: PhotoSummary[];
+  photos: DuplicatePhotoSummary[];
 }
 
 export interface PersonSummary {
@@ -363,6 +369,9 @@ export const api = {
 
   getSharedPhotos: (personAId: number, personBId: number, params?: Record<string, string | number>) =>
     request<PhotoPage>(`/persons/groups/together/${personAId}/${personBId}/photos${buildQuery(params)}`),
+
+  getSharedPhotosN: (personIds: number[], params?: Record<string, string | number>) =>
+    request<PhotoPage>(`/persons/groups/together-n/photos${buildQuery({ ...params, person_ids: personIds.join(",") })}`),
 
   // Events
   getEvents: (params?: Record<string, string | number>) =>

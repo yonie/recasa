@@ -18,6 +18,7 @@ import { Locations, LocationCountryCities, LocationCityPhotos } from "./pages/Lo
 import { Pipeline } from "./pages/Pipeline";
 import { Tags, TagDetail } from "./pages/Tags";
 import { PhotoPage } from "./pages/PhotoPage";
+import { ExportImport } from "./pages/ExportImport";
 
 import { useScanStatus } from "./hooks/useScanStatus";
 import { useStore } from "./store/useStore";
@@ -69,6 +70,7 @@ function AppContent() {
             <Route path="/tags/:tagId" element={<TagDetail />} />
             <Route path="/duplicates" element={<Duplicates />} />
             <Route path="/large-files" element={<LargeFiles />} />
+            <Route path="/export-import" element={<ExportImport />} />
             <Route path="/search" element={<SearchResults />} />
             <Route path="/pipeline" element={<Pipeline />} />
             <Route path="/photos/:hash" element={<PhotoPage />} />

@@ -5,6 +5,7 @@ import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { useScrollRestore } from "../hooks/useScrollRestore";
 import { Loader2, Users, ArrowLeft, Pencil, Check, X, EyeOff, Eye, ChevronDown } from "lucide-react";
+import { CollageButton } from "../components/CollagePopover";
 
 function personName(p: PersonSummary): string {
   return p.name || `Person ${p.person_id}`;
@@ -150,13 +151,20 @@ export function PersonDetail() {
           </div>
         )}
 
-        <button
-          onClick={handleIgnore}
-          className="ml-auto p-1.5 rounded-lg hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600"
-          title="Ignore this person"
-        >
-          <EyeOff className="w-4 h-4" />
-        </button>
+        <div className="ml-auto flex items-center gap-1">
+          <CollageButton
+            url={`/api/persons/${person.person_id}/collage`}
+            label={`${personName(person)} — Collage`}
+            photoCount={photos.length}
+          />
+          <button
+            onClick={handleIgnore}
+            className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600"
+            title="Ignore this person"
+          >
+            <EyeOff className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
@@ -184,8 +192,7 @@ export function TogetherDetail() {
         const personPromises = ids.map((id) => api.getPerson(id));
         const personsData = await Promise.all(personPromises);
         setPersons(personsData);
-        // For shared photos, use first two person IDs (API supports pairs)
-        const photosData = await api.getSharedPhotos(ids[0]!, ids[1]!, { page_size: 200 });
+        const photosData = await api.getSharedPhotosN(ids, { page_size: 200 });
         setPhotos(photosData.items);
       } catch {
         // ignore
@@ -234,6 +241,15 @@ export function TogetherDetail() {
           <h1 className="text-lg font-semibold">{groupNames(persons)}</h1>
           <span className="text-xs text-gray-400">{photos.length} shared photos</span>
         </div>
+        {persons.length >= 2 && (
+          <div className="ml-auto">
+            <CollageButton
+              url={`/api/persons/groups/together-n/collage?person_ids=${persons.map((p) => p.person_id).join(",")}`}
+              label={`${groupNames(persons)} — Collage`}
+              photoCount={photos.length}
+            />
+          </div>
+        )}
       </div>
       <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
     </div>
@@ -269,10 +285,10 @@ export function People() {
   useEffect(() => { loadAll(); }, [loadAll]);
 
   useEffect(() => {
-    if (!loadingPersons && persons.length > 0) {
+    if (!loadingPersons && !loadingGroups && persons.length > 0) {
       restoreScroll();
     }
-  }, [loadingPersons, persons.length, restoreScroll]);
+  }, [loadingPersons, loadingGroups, persons.length, restoreScroll]);
 
   const loadIgnored = useCallback(async () => {
     if (showIgnored) {
@@ -331,63 +347,76 @@ export function People() {
       </div>
 
       {/* Together section — on top */}
-      {loadingGroups && (
-        <div className="flex items-center gap-2 px-4 py-6 text-gray-400 text-sm">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          Loading together albums...
-        </div>
-      )}
-      {!loadingGroups && groups.length > 0 && (
+      {(loadingGroups || groups.length > 0) && (
         <>
           <div className="px-4 py-3 border-b border-gray-100">
             <h2 className="text-base font-semibold text-gray-700">
               Together
-              <span className="ml-2 text-gray-400 font-normal text-sm">
-                {groups.length} group{groups.length !== 1 ? "s" : ""}
-              </span>
+              {!loadingGroups && (
+                <span className="ml-2 text-gray-400 font-normal text-sm">
+                  {groups.length} group{groups.length !== 1 ? "s" : ""}
+                </span>
+              )}
             </h2>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-            {groups.map((group, i) => {
-              if (group.persons.length < 2) return null;
-              const ids = group.persons.map((p) => p.person_id).join(",");
-              return (
-                <button
-                  key={i}
-                  onClick={() => navigate(`/people/together/${ids}`)}
-                  className="bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow border border-gray-100 text-left group"
-                >
-                  <div className="aspect-video bg-gray-100 relative overflow-hidden">
-                    {group.cover_photo ? (
-                      <img
-                        src={thumbnailUrl(group.cover_photo.file_hash, 600)}
-                        alt=""
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <Users className="w-12 h-12 text-gray-300" />
-                      </div>
-                    )}
-                  </div>
+          {loadingGroups ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="rounded-xl overflow-hidden border border-gray-100">
+                  <div className="aspect-video bg-gray-100 animate-pulse" />
                   <div className="p-3 flex items-center gap-3">
-                    <div className="flex -space-x-2">
-                      {group.persons.map((p) => p.face_thumbnail_url && (
-                        <img key={p.person_id} src={p.face_thumbnail_url} alt="" className="w-8 h-8 rounded-full object-cover ring-2 ring-white" />
-                      ))}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">
-                        {groupNames(group.persons)}
-                      </p>
-                      <p className="text-xs text-gray-400">{group.shared_photo_count} photos together</p>
+                    <div className="w-8 h-8 rounded-full bg-gray-100 animate-pulse" />
+                    <div className="flex-1 space-y-1.5">
+                      <div className="h-3.5 bg-gray-100 rounded animate-pulse w-3/4" />
+                      <div className="h-3 bg-gray-100 rounded animate-pulse w-1/2" />
                     </div>
                   </div>
-                </button>
-              );
-            })}
-          </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+              {groups.map((group, i) => {
+                if (group.persons.length < 2) return null;
+                const ids = group.persons.map((p) => p.person_id).join(",");
+                return (
+                  <button
+                    key={i}
+                    onClick={() => navigate(`/people/together/${ids}`)}
+                    className="bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow border border-gray-100 text-left group"
+                  >
+                    <div className="aspect-video bg-gray-100 relative overflow-hidden">
+                      {group.cover_photo ? (
+                        <img
+                          src={thumbnailUrl(group.cover_photo.file_hash, 600)}
+                          alt=""
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <Users className="w-12 h-12 text-gray-300" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="p-3 flex items-center gap-3">
+                      <div className="flex -space-x-2">
+                        {group.persons.map((p) => p.face_thumbnail_url && (
+                          <img key={p.person_id} src={p.face_thumbnail_url} alt="" className="w-8 h-8 rounded-full object-cover ring-2 ring-white" />
+                        ))}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {groupNames(group.persons)}
+                        </p>
+                        <p className="text-xs text-gray-400">{group.shared_photo_count} photos together</p>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </>
       )}
 

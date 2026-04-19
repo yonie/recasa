@@ -95,7 +95,8 @@ export function PhotoViewer() {
       if (!historyPushed.current) {
         // Save the current URL before changing it
         previousUrl.current = window.location.pathname + window.location.search;
-        window.history.pushState({ viewerOpen: true }, "", `/photos/${detail?.file_hash || ""}`);
+        // Use viewerPhoto (store state, already current) instead of detail (local state, stale until next render)
+        window.history.pushState({ viewerOpen: true }, "", `/photos/${viewerPhoto?.file_hash || ""}`);
         historyPushed.current = true;
       }
       
@@ -125,7 +126,7 @@ export function PhotoViewer() {
       }
       historyPushed.current = false;
     }
-  }, [viewerOpen, handleKeyDown, closeViewer]);
+  }, [viewerOpen, viewerPhoto, handleKeyDown, closeViewer]);
 
   const handleFavorite = useCallback(async () => {
     if (!detail) return;

@@ -181,6 +181,52 @@ async def get_stats(session: AsyncSession = Depends(get_session)):
     )
 
 
+@router.get("/collage")
+async def get_photos_collage(
+    favorite: bool | None = None,
+    year: int | None = None,
+    tag: str | None = None,
+    grid: int = Query(0, ge=0, le=6),
+    seed: int = Query(0),
+    session: AsyncSession = Depends(get_session),
+):
+    """Generate a square collage from filtered photos (favorites, year, tag, etc)."""
+    import asyncio
+    from fastapi.responses import Response
+    from backend.app.models import PhotoHash
+    from backend.app.services.collage import generate_collage
+
+    query = (
+        select(Photo.file_hash, PhotoHash.phash)
+        .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
+    )
+    if favorite is not None:
+        query = query.where(Photo.is_favorite == favorite)
+    if year is not None:
+        from sqlalchemy import extract
+        query = query.where(extract("year", Photo.date_taken) == year)
+    if tag is not None:
+        query = query.join(PhotoTag, PhotoTag.file_hash == Photo.file_hash).join(
+            Tag, Tag.tag_id == PhotoTag.tag_id
+        ).where(Tag.name == tag)
+
+    query = query.order_by(Photo.date_taken.asc().nullslast())
+    result = await session.execute(query)
+    rows = result.all()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="No photos found")
+
+    hashes = [r[0] for r in rows]
+    phashes = [r[1] for r in rows]
+
+    data = await asyncio.to_thread(generate_collage, hashes, phashes, grid, seed=seed)
+    if not data:
+        raise HTTPException(status_code=404, detail="Could not generate collage")
+
+    return Response(content=data, media_type="image/jpeg")
+
+
 @router.get("/{file_hash}", response_model=PhotoDetail)
 async def get_photo(file_hash: str, session: AsyncSession = Depends(get_session)):
     """Get detailed photo information."""
