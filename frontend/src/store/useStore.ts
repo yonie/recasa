@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { PhotoDetail, PhotoSummary, ScanStatus, LibraryStats } from "../api/client";
 
 export type GridSize = "S" | "M" | "L";
+export type GridFit = "square" | "full";
 
 interface AppStore {
   // Viewer
@@ -29,6 +30,10 @@ interface AppStore {
   // Grid size
   gridSize: GridSize;
   setGridSize: (size: GridSize) => void;
+
+  // Grid fit: cropped squares vs full (letterboxed) photos
+  gridFit: GridFit;
+  setGridFit: (fit: GridFit) => void;
 
   // Mobile sidebar
   sidebarOpen: boolean;
@@ -67,6 +72,13 @@ export const useStore = create<AppStore>((set) => ({
   setGridSize: (size) => {
     localStorage.setItem("gridSize", size);
     set({ gridSize: size });
+  },
+
+  // Grid fit (persist in localStorage)
+  gridFit: (localStorage.getItem("gridFit") as GridFit) || "square",
+  setGridFit: (fit) => {
+    localStorage.setItem("gridFit", fit);
+    set({ gridFit: fit });
   },
 
   // Mobile sidebar

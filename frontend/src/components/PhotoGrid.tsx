@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef } from "react";
-import { Star, Play, Printer, Grid2x2, Grid3x3, LayoutGrid } from "lucide-react";
+import { Star, Play, Printer, Grid2x2, Grid3x3, LayoutGrid, Crop, Expand } from "lucide-react";
 import { clsx } from "clsx";
 import type { PhotoSummary } from "../api/client";
 import { api, thumbnailUrl, livePhotoUrl } from "../api/client";
@@ -49,6 +49,37 @@ function GridSizeToggle() {
   );
 }
 
+function GridFitToggle() {
+  const gridFit = useStore((s) => s.gridFit);
+  const setGridFit = useStore((s) => s.setGridFit);
+
+  return (
+    <button
+      onClick={() => setGridFit(gridFit === "square" ? "full" : "square")}
+      className="w-10 h-10 rounded-full bg-white/90 backdrop-blur-sm shadow-lg
+                 border border-gray-200 flex items-center justify-center
+                 hover:bg-gray-100 transition-colors"
+      title={gridFit === "square" ? "Showing cropped squares — click for full photos" : "Showing full photos — click for cropped squares"}
+    >
+      {gridFit === "square" ? (
+        <Crop className="w-5 h-5 text-gray-600" />
+      ) : (
+        <Expand className="w-5 h-5 text-gray-600" />
+      )}
+    </button>
+  );
+}
+
+/** Floating grid display controls (size + square/full fit), shared by all grid pages. */
+export function GridViewControls() {
+  return (
+    <div className="fixed bottom-4 right-4 z-30 flex flex-col gap-2">
+      <GridFitToggle />
+      <GridSizeToggle />
+    </div>
+  );
+}
+
 export function PhotoGrid({
   photos,
   onPhotoClick,
@@ -81,9 +112,7 @@ export function PhotoGrid({
           />
         ))}
       </div>
-      <div className="fixed bottom-4 right-4 z-30">
-        <GridSizeToggle />
-      </div>
+      <GridViewControls />
     </>
   );
 }
@@ -109,6 +138,8 @@ function PhotoGridItem({
   const [isFavorite, setIsFavorite] = useState(photo.is_favorite);
   const [isMarkedForPrint, setIsMarkedForPrint] = useState(photo.marked_for_print);
   const setStats = useStore((s) => s.setStats);
+  const gridFit = useStore((s) => s.gridFit);
+  const fitClass = gridFit === "square" ? "object-cover" : "object-contain";
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const handleFavorite = useCallback(
@@ -171,7 +202,8 @@ function PhotoGridItem({
         alt={photo.file_name}
         loading="lazy"
         className={clsx(
-          "w-full h-full object-cover transition-opacity duration-200",
+          "w-full h-full transition-opacity duration-200",
+          fitClass,
           showVideo && "opacity-0"
         )}
       />
@@ -182,7 +214,8 @@ function PhotoGridItem({
           ref={videoRef}
           src={livePhotoUrl(photo.file_hash)}
           className={clsx(
-            "absolute inset-0 w-full h-full object-cover",
+            "absolute inset-0 w-full h-full",
+            fitClass,
             showVideo ? "opacity-100" : "opacity-0"
           )}
           muted

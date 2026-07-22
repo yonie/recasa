@@ -1,8 +1,15 @@
 import { useEffect, useState, useCallback } from "react";
 import { api, printExportUrl, thumbnailUrl, type PhotoSummary } from "../api/client";
-import { useStore } from "../store/useStore";
+import { useStore, type GridSize } from "../store/useStore";
+import { GridViewControls } from "../components/PhotoGrid";
 import { Loader2, Printer, Download, ListX } from "lucide-react";
 import { clsx } from "clsx";
+
+const CARD_GRID_CLASSES: Record<GridSize, string> = {
+  S: "grid-cols-3 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6",
+  M: "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5",
+  L: "grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-3",
+};
 
 // 200 DPI floor for a 10x15cm print — below this, prints look soft.
 export const PRINT_MIN_LONG_EDGE = 1200;
@@ -68,6 +75,7 @@ export function ToPrint() {
   const [clearing, setClearing] = useState(false);
   const openViewer = useStore((s) => s.openViewer);
   const setStats = useStore((s) => s.setStats);
+  const gridSize = useStore((s) => s.gridSize);
 
   const loadPhotos = useCallback(async () => {
     try {
@@ -197,7 +205,7 @@ export function ToPrint() {
         </div>
       </div>
 
-      <div className="grid gap-4 p-4 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+      <div className={clsx("grid gap-4 p-4", CARD_GRID_CLASSES[gridSize])}>
         {photos.map((photo, index) => (
           <PrintCard
             key={photo.file_hash}
@@ -207,6 +215,7 @@ export function ToPrint() {
           />
         ))}
       </div>
+      <GridViewControls />
     </div>
   );
 }
@@ -218,6 +227,7 @@ interface PrintCardProps {
 }
 
 function PrintCard({ photo, onClick, onRemove }: PrintCardProps) {
+  const gridFit = useStore((s) => s.gridFit);
   const hasResolution = !!photo.width && !!photo.height;
   const quality = hasResolution ? printQuality(photo.width!, photo.height!) : null;
   const megapixels = hasResolution ? (photo.width! * photo.height!) / 1_000_000 : 0;
@@ -229,7 +239,7 @@ function PrintCard({ photo, onClick, onRemove }: PrintCardProps) {
           src={thumbnailUrl(photo.file_hash, 600)}
           alt={photo.file_name}
           loading="lazy"
-          className="w-full h-full object-cover"
+          className={clsx("w-full h-full", gridFit === "square" ? "object-cover" : "object-contain")}
         />
         <button
           onClick={(e) => {
