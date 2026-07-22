@@ -100,17 +100,45 @@ def thumb_exists(file_hash: str) -> bool:
     return thumb_path.exists()
 
 
-def _collect_photo_files(photos_dir: Path, cancel_check=None) -> list[tuple[Path, os.stat_result]]:
-    """Walk the photos directory and stat every supported file.
+# Directory mtime snapshot from the last completed scan. A directory's mtime
+# changes when entries are added/removed/renamed, so an unchanged mtime means
+# no files appeared or vanished inside it — those files can be skipped without
+# a stat call each. Per-file stats dominate sweep cost on Docker bind mounts
+# (~55s vs ~8s for 50k files / 2k dirs). In-memory only: the first sweep after
+# a restart stats everything once, then pruning kicks in.
+_dir_snapshot: dict[str, float] = {}
+
+
+def _collect_photo_files(
+    photos_dir: Path, cancel_check=None, dir_snapshot: dict[str, float] | None = None
+) -> tuple[list[tuple[Path, os.stat_result]], set[str], dict[str, float]]:
+    """Walk the photos directory; stat files only in changed directories.
 
     Runs in a worker thread — must not touch the event loop or the database.
+    When dir_snapshot is None every directory counts as changed (full scan).
+    Note: in-place content edits don't bump the parent dir's mtime, so pruned
+    sweeps miss them — only a full rescan re-checks unchanged directories.
+
+    Returns (files_to_check, seen_relative_paths, new_snapshot).
     """
-    collected: list[tuple[Path, os.stat_result]] = []
+    to_check: list[tuple[Path, os.stat_result]] = []
+    seen: set[str] = set()
+    new_snapshot: dict[str, float] = {}
     for root, dirs, files in os.walk(photos_dir):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
+        try:
+            dir_mtime = os.stat(root).st_mtime
+        except OSError:
+            continue
+        new_snapshot[root] = dir_mtime
+        prev_mtime = dir_snapshot.get(root) if dir_snapshot is not None else None
+        dir_unchanged = prev_mtime is not None and abs(prev_mtime - dir_mtime) < 1.0
         for f in files:
             filepath = Path(root) / f
             if not is_supported_photo(filepath):
+                continue
+            seen.add(str(filepath.relative_to(photos_dir)))
+            if dir_unchanged:
                 continue
             try:
                 file_stat = filepath.stat()
@@ -118,10 +146,10 @@ def _collect_photo_files(photos_dir: Path, cancel_check=None) -> list[tuple[Path
                 continue
             if file_stat.st_size < 1024:
                 continue
-            collected.append((filepath, file_stat))
+            to_check.append((filepath, file_stat))
         if cancel_check and cancel_check():
             break
-    return collected
+    return to_check, seen, new_snapshot
 
 
 async def scan_directory(
@@ -160,13 +188,21 @@ async def scan_directory(
 
     # Walk + stat in a worker thread: on Docker bind mounts each filesystem
     # call is slow, and doing 40k of them on the event loop freezes the API.
-    photo_files = await asyncio.to_thread(_collect_photo_files, photos_dir, cancel_check)
+    # Fast sweeps prune via the dir-mtime snapshot; full rescans check all.
+    global _dir_snapshot
+    dir_snapshot = dict(_dir_snapshot) if fast else None
+    photo_files, seen_paths, new_snapshot = await asyncio.to_thread(
+        _collect_photo_files, photos_dir, cancel_check, dir_snapshot
+    )
     if cancel_check and cancel_check():
         logger.info("Scan cancelled during file collection")
         return stats
 
-    stats["total"] = len(photo_files)
-    logger.info("Found %d photo files", stats["total"])
+    stats["total"] = len(seen_paths)
+    stats["skipped"] += len(seen_paths) - len(photo_files)
+    logger.info(
+        "Found %d photo files, %d in changed directories", len(seen_paths), len(photo_files)
+    )
 
     # One query for all known paths beats per-file lookups at this scale.
     known: dict[str, tuple[int, float]] = {}
@@ -179,8 +215,11 @@ async def scan_directory(
         for rel_path, size, modified in result.all():
             known[rel_path] = (size, modified.timestamp() if modified else 0.0)
 
+    # A directory is only recorded in the snapshot when everything in it was
+    # handled cleanly — a dir with errors (e.g. a file still being copied)
+    # gets re-checked on the next sweep.
     cancelled = False
-    seen_paths: set[str] = set()
+    error_dirs: set[str] = set()
     for i, (filepath, file_stat) in enumerate(photo_files):
         if cancel_check and cancel_check():
             logger.info("Scan cancelled by user")
@@ -188,7 +227,6 @@ async def scan_directory(
             break
 
         rel_path = str(filepath.relative_to(photos_dir))
-        seen_paths.add(rel_path)
 
         entry = known.get(rel_path)
         unchanged = (
@@ -207,6 +245,7 @@ async def scan_directory(
         # Validity (PIL verify) is expensive — only check files we might index.
         if not unchanged and not await asyncio.to_thread(is_valid_image, filepath):
             stats["errors"] += 1
+            error_dirs.add(str(filepath.parent))
             continue
 
         try:
@@ -221,16 +260,20 @@ async def scan_directory(
         except Exception as e:
             logger.warning("Skipping %s: %s", filepath, type(e).__name__)
             stats["errors"] += 1
+            error_dirs.add(str(filepath.parent))
 
-        if progress_callback and ((i + 1) % 200 == 0 or i + 1 == stats["total"]):
+        if progress_callback and ((i + 1) % 200 == 0 or i + 1 == len(photo_files)):
             await progress_callback(
                 processed=i + 1,
-                total=stats["total"],
+                total=len(photo_files),
                 current_file=str(filepath),
             )
 
     if not cancelled:
         await _cleanup_removed_files(seen_paths)
+        _dir_snapshot = {
+            d: mtime for d, mtime in new_snapshot.items() if d not in error_dirs
+        }
 
     logger.info(
         "Scan complete: %d total, %d new, %d updated, %d skipped, %d errors",
