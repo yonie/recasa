@@ -502,26 +502,33 @@ export function Pipeline() {
                     )}
                   </td>
                   <td className="px-3 py-2">
-                    {isBatch || !stage.enabled ? (
-                      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                        <div
-                          className={clsx("h-full rounded-full", !stage.enabled ? "bg-gray-200" : "bg-green-500")}
-                          style={{ width: !stage.enabled ? "0%" : "100%" }}
-                        />
+                    {/* One structure for every row so all bars align exactly */}
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden flex">
+                        {isBatch ? (
+                          <div className="h-full w-full bg-green-500" />
+                        ) : stage.enabled ? (
+                          <>
+                            <div className="h-full bg-green-500" style={{ width: `${donePct}%` }} />
+                            {stage.failed > 0 && (
+                              <div
+                                className="h-full bg-amber-400"
+                                style={{ width: `max(${failedPct}%, 6px)` }}
+                              />
+                            )}
+                          </>
+                        ) : null}
                       </div>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden flex">
-                          <div className="h-full bg-green-500" style={{ width: `${donePct}%` }} />
-                          {stage.failed > 0 && (
-                            <div className="h-full bg-amber-400" style={{ width: `${failedPct}%` }} />
-                          )}
-                        </div>
-                        <span className="text-[10px] tabular-nums text-gray-500 w-8 text-right">
-                          {complete && stage.failed === 0 ? "100%" : `${donePct}%`}
-                        </span>
-                      </div>
-                    )}
+                      <span className="text-[10px] tabular-nums text-gray-500 w-8 text-right">
+                        {isBatch
+                          ? ""
+                          : !stage.enabled
+                          ? "off"
+                          : complete && stage.failed === 0
+                          ? "100%"
+                          : `${donePct}%`}
+                      </span>
+                    </div>
                   </td>
                 </tr>
               );

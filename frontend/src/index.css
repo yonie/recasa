@@ -33,16 +33,27 @@
     padding-right: env(safe-area-inset-right);
   }
 
-  /* Custom scrollbar - desktop only */
+  /* Custom scrollbar - desktop only. Transparent track so no gray column
+     runs down the page; the slim thumb is the only visible part. */
   @media (pointer: fine) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: theme("colors.gray.300") transparent;
+    }
     ::-webkit-scrollbar {
-      @apply w-2;
+      @apply w-2 h-2;
     }
     ::-webkit-scrollbar-track {
-      @apply bg-gray-100;
+      background: transparent;
     }
     ::-webkit-scrollbar-thumb {
-      @apply bg-gray-300 rounded-full hover:bg-gray-400;
+      @apply rounded-full;
+      background-color: theme("colors.gray.300");
+      border: 2px solid transparent;
+      background-clip: content-box;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background-color: theme("colors.gray.400");
     }
   }
 }
