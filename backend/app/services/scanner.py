@@ -100,7 +100,33 @@ def thumb_exists(file_hash: str) -> bool:
     return thumb_path.exists()
 
 
-async def scan_directory(progress_callback=None, cancel_check=None, on_file_discovered=None) -> dict:
+def _collect_photo_files(photos_dir: Path, cancel_check=None) -> list[tuple[Path, os.stat_result]]:
+    """Walk the photos directory and stat every supported file.
+
+    Runs in a worker thread — must not touch the event loop or the database.
+    """
+    collected: list[tuple[Path, os.stat_result]] = []
+    for root, dirs, files in os.walk(photos_dir):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for f in files:
+            filepath = Path(root) / f
+            if not is_supported_photo(filepath):
+                continue
+            try:
+                file_stat = filepath.stat()
+            except OSError:
+                continue
+            if file_stat.st_size < 1024:
+                continue
+            collected.append((filepath, file_stat))
+        if cancel_check and cancel_check():
+            break
+    return collected
+
+
+async def scan_directory(
+    progress_callback=None, cancel_check=None, on_file_discovered=None, fast: bool = False
+) -> dict:
     """Scan the photos directory and index all photos.
 
     For each photo, determine which pipeline stages need processing based on:
@@ -111,6 +137,9 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
         progress_callback: async callback(processed, total, current_file)
         cancel_check: function returning True if scan should be cancelled
         on_file_discovered: async callback(file_hash, entry_stage) when file needs processing
+        fast: only pick up new/changed/removed files; skip unchanged photos
+            entirely instead of re-checking their processing stages. Used by
+            the periodic background sweep.
 
     Returns:
         dict with scan statistics.
@@ -129,32 +158,60 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
         "discovered_files": {},
     }
 
-    # Collect all photo files, skipping hidden directories
-    photo_files: list[Path] = []
-    for root, dirs, files in os.walk(photos_dir):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        for f in files:
-            filepath = Path(root) / f
-            if is_supported_photo(filepath) and is_valid_image(filepath):
-                photo_files.append(filepath)
-        if cancel_check and cancel_check():
-            logger.info("Scan cancelled during file collection")
-            return stats
+    # Walk + stat in a worker thread: on Docker bind mounts each filesystem
+    # call is slow, and doing 40k of them on the event loop freezes the API.
+    photo_files = await asyncio.to_thread(_collect_photo_files, photos_dir, cancel_check)
+    if cancel_check and cancel_check():
+        logger.info("Scan cancelled during file collection")
+        return stats
 
     stats["total"] = len(photo_files)
     logger.info("Found %d photo files", stats["total"])
 
-    # Process files in batches
+    # One query for all known paths beats per-file lookups at this scale.
+    known: dict[str, tuple[int, float]] = {}
+    async with async_session() as session:
+        result = await session.execute(
+            select(PhotoPath.file_path, Photo.file_size, Photo.file_modified).join(
+                Photo, Photo.file_hash == PhotoPath.file_hash
+            )
+        )
+        for rel_path, size, modified in result.all():
+            known[rel_path] = (size, modified.timestamp() if modified else 0.0)
+
     cancelled = False
-    for i, filepath in enumerate(photo_files):
+    seen_paths: set[str] = set()
+    for i, (filepath, file_stat) in enumerate(photo_files):
         if cancel_check and cancel_check():
             logger.info("Scan cancelled by user")
             cancelled = True
             break
 
+        rel_path = str(filepath.relative_to(photos_dir))
+        seen_paths.add(rel_path)
+
+        entry = known.get(rel_path)
+        unchanged = (
+            entry is not None
+            and entry[0] == file_stat.st_size
+            and entry[1]
+            and abs(entry[1] - file_stat.st_mtime) < 1.0
+        )
+
+        # Fast sweeps only look for new/changed/removed files; re-queueing
+        # incomplete stages of unchanged photos is the full rescan's job.
+        if unchanged and fast:
+            stats["skipped"] += 1
+            continue
+
+        # Validity (PIL verify) is expensive — only check files we might index.
+        if not unchanged and not await asyncio.to_thread(is_valid_image, filepath):
+            stats["errors"] += 1
+            continue
+
         try:
             async with async_session() as session:
-                entry_stage = await _index_photo(session, filepath, stats)
+                entry_stage = await _index_photo(session, filepath, stats, file_stat)
                 await session.commit()
 
                 if entry_stage and on_file_discovered:
@@ -165,7 +222,7 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
             logger.warning("Skipping %s: %s", filepath, type(e).__name__)
             stats["errors"] += 1
 
-        if progress_callback:
+        if progress_callback and ((i + 1) % 200 == 0 or i + 1 == stats["total"]):
             await progress_callback(
                 processed=i + 1,
                 total=stats["total"],
@@ -173,7 +230,7 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
             )
 
     if not cancelled:
-        await _cleanup_removed_files()
+        await _cleanup_removed_files(seen_paths)
 
     logger.info(
         "Scan complete: %d total, %d new, %d updated, %d skipped, %d errors",
@@ -186,7 +243,9 @@ async def scan_directory(progress_callback=None, cancel_check=None, on_file_disc
     return stats
 
 
-async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> tuple[str, str] | None:
+async def _index_photo(
+    session: AsyncSession, filepath: Path, stats: dict, file_stat: os.stat_result | None = None
+) -> tuple[str, str] | None:
     """Index a single photo file.
 
     Returns:
@@ -196,7 +255,8 @@ async def _index_photo(session: AsyncSession, filepath: Path, stats: dict) -> tu
     from backend.app.workers.queues import QueueType
 
     relative_path = str(filepath.relative_to(settings.photos_dir))
-    file_stat = filepath.stat()
+    if file_stat is None:
+        file_stat = await asyncio.to_thread(filepath.stat)
     file_size = file_stat.st_size
     file_mtime = file_stat.st_mtime
 
@@ -318,17 +378,30 @@ async def _get_entry_stage_async(photo: Photo, session) -> str | None:
     return None
 
 
-async def _cleanup_removed_files() -> None:
-    """Remove database entries for files that no longer exist on disk."""
+async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> None:
+    """Remove database entries for files that no longer exist on disk.
+
+    When the caller provides the set of paths seen during its walk, only the
+    paths missing from that set are stat-checked — at 40k photos, exists()
+    on every DB path over a Docker bind mount is far too slow.
+    """
     async with async_session() as session:
         result = await session.execute(select(PhotoPath))
         paths = result.scalars().all()
 
-        removed_paths = []
-        for photo_path in paths:
-            full_path = settings.photos_dir / photo_path.file_path
-            if not full_path.exists():
-                removed_paths.append(photo_path)
+        candidates = (
+            [p for p in paths if p.file_path not in seen_paths]
+            if seen_paths is not None
+            else list(paths)
+        )
+
+        def _missing_on_disk(candidate_paths):
+            return [
+                p for p in candidate_paths
+                if not (settings.photos_dir / p.file_path).exists()
+            ]
+
+        removed_paths = await asyncio.to_thread(_missing_on_disk, candidates)
 
         if removed_paths:
             for path in removed_paths:

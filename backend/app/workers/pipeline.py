@@ -33,12 +33,15 @@ STAGE_TO_QUEUE: dict[str, QueueType] = {
 }
 
 
-async def run_initial_scan() -> dict:
-    """Run the initial directory scan and queue photos for processing.
+async def run_initial_scan(fast: bool = False) -> dict:
+    """Run a directory scan and queue photos for processing.
 
     Each photo is queued for the first stage that needs processing based on:
     - Config flags (ENABLE_*)
     - Actual data/file existence
+
+    fast=True only picks up new/changed/removed files (periodic sweep);
+    fast=False also re-checks processing stages of unchanged photos.
     """
     from backend.app.services.scanner import thumb_exists
 
@@ -56,6 +59,7 @@ async def run_initial_scan() -> dict:
         progress_callback=progress_callback,
         cancel_check=lambda: pipeline._stop_requested,
         on_file_discovered=on_file_discovered,
+        fast=fast,
     )
     return stats
 

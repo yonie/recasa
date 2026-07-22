@@ -1,11 +1,16 @@
 """Scan control and status API endpoints."""
 
+import asyncio
+import logging
+
 from fastapi import APIRouter, BackgroundTasks
 
 from backend.app.workers.pipeline import run_initial_scan, resume_incomplete_processing
 from backend.app.workers.queues import pipeline
 from backend.app.database import async_session
 from backend.app.models import Photo, PhotoPath, PhotoHash, Face, Person, Tag, PhotoTag, Event, EventPhoto, Caption, DuplicateGroup, DuplicateMember
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scan", tags=["scan"])
 
@@ -25,18 +30,38 @@ async def get_scan_status():
     }
 
 
-async def _run_scan_background():
+async def _run_scan_background(fast: bool = False):
     """Run scan in background and queue new photos."""
     global _is_scanning, _scan_progress
-    
+
     _is_scanning = True
     _scan_progress = {"current": 0, "total": 0, "current_file": None}
-    
+
     try:
-        await run_initial_scan()
+        await run_initial_scan(fast=fast)
     finally:
         _is_scanning = False
         _scan_progress = {"current": 0, "total": 0, "current_file": None}
+
+
+async def periodic_rescan_loop(interval: int) -> None:
+    """Sweep the photos directory for changes every `interval` seconds.
+
+    This is the reliable fallback for the inotify watcher: file events don't
+    cross Docker bind mounts on Windows/macOS hosts, so without this loop new
+    photos are only picked up on a manual rescan. The scanner skips unchanged
+    files on a size+mtime check, so an empty sweep is cheap. Sleeps *between*
+    sweeps, so a slow sweep can never overlap the next one.
+    """
+    logger.info("Periodic rescan enabled: every %ds", interval)
+    while True:
+        await asyncio.sleep(interval)
+        if _is_scanning:
+            continue
+        try:
+            await _run_scan_background(fast=True)
+        except Exception:
+            logger.exception("Periodic rescan failed; will retry next interval")
 
 
 @router.post("/trigger")

@@ -48,16 +48,26 @@ async def lifespan(app: FastAPI):
     # Resume processing for photos that were interrupted
     await resume_incomplete_processing()
 
-    # Start file watcher for live-detecting new photos
-    # No automatic full rescan -- the app relies on the existing index and
-    # the file watcher for incremental updates.  Users can trigger a full
-    # rescan manually from the Pipeline page.
+    # Start file watcher for live-detecting new photos. inotify events don't
+    # cross Docker bind mounts on Windows/macOS hosts, so a periodic rescan
+    # sweep (WATCH_INTERVAL) backs it up; the scanner's size+mtime check keeps
+    # empty sweeps cheap.
     observer = await start_file_watcher()
+
+    rescan_task = None
+    if settings.watch_interval > 0:
+        import asyncio
+        from backend.app.api.scan import periodic_rescan_loop
+        rescan_task = asyncio.create_task(periodic_rescan_loop(settings.watch_interval))
+    else:
+        logger.info("Periodic rescan disabled (WATCH_INTERVAL=0)")
 
     yield
 
     # Shutdown
     logger.info("Shutting down Recasa")
+    if rescan_task:
+        rescan_task.cancel()
     for worker in workers:
         worker.stop()
     if observer:

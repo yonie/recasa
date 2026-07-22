@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     ENABLE_FACE_DETECTION: bool = False
     ENABLE_CAPTIONING: bool = False
 
+    # Periodic rescan interval in seconds (0 disables). Needed because inotify
+    # events don't cross Docker bind mounts on Windows/macOS hosts, so the
+    # native file watcher never fires there. Sweeps stat every file, which is
+    # slow on bind mounts — don't set this aggressively low on large libraries.
+    watch_interval: int = 300
+
     # Maximum number of photos to process concurrently (limits memory usage)
     # Each concurrent photo uses memory for image loading, thumbnails, face detection, etc.
     # Recommended: 2-4 for systems with limited RAM, 4-8 for systems with more RAM
