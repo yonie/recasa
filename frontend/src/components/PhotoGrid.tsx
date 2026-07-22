@@ -1,4 +1,4 @@
-import { useCallback, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { Star, Play, Printer, Grid2x2, Grid3x3, LayoutGrid, Crop, Expand } from "lucide-react";
 import { clsx } from "clsx";
 import type { PhotoSummary } from "../api/client";
@@ -22,6 +22,12 @@ interface PhotoGridProps {
   showPrintMark?: boolean;
 }
 
+/** Touch devices never hover, so live-photo <video> elements would be dead
+ *  weight there — iOS Safari slows to a crawl with many media elements. */
+const HOVER_CAPABLE =
+  typeof window !== "undefined" &&
+  window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+
 const GRID_CYCLE: GridSize[] = ["S", "M", "L"];
 const GRID_ICON = { S: LayoutGrid, M: Grid3x3, L: Grid2x2 } as const;
 
@@ -39,7 +45,7 @@ function GridSizeToggle() {
   return (
     <button
       onClick={cycle}
-      className="w-10 h-10 rounded-full bg-white/90 backdrop-blur-sm shadow-lg
+      className="w-10 h-10 rounded-full bg-white/95 shadow-lg
                  border border-gray-200 flex items-center justify-center
                  hover:bg-gray-100 transition-colors"
       title={`Grid size: ${gridSize}`}
@@ -56,7 +62,7 @@ function GridFitToggle() {
   return (
     <button
       onClick={() => setGridFit(gridFit === "square" ? "full" : "square")}
-      className="w-10 h-10 rounded-full bg-white/90 backdrop-blur-sm shadow-lg
+      className="w-10 h-10 rounded-full bg-white/95 shadow-lg
                  border border-gray-200 flex items-center justify-center
                  hover:bg-gray-100 transition-colors"
       title={gridFit === "square" ? "Showing cropped squares — click for full photos" : "Showing full photos — click for cropped squares"}
@@ -99,7 +105,7 @@ export function PhotoGrid({
 
   return (
     <>
-      <div className={clsx("grid gap-1.5 p-4", GRID_CLASSES[gridSize])}>
+      <div className={clsx("photo-grid grid gap-1.5 p-4", GRID_CLASSES[gridSize])}>
         {photos.map((photo, index) => (
           <PhotoGridItem
             key={photo.file_hash}
@@ -172,23 +178,34 @@ function PhotoGridItem({
   );
 
 
+  const [everHovered, setEverHovered] = useState(false);
+
   const handleMouseEnter = useCallback(() => {
     setIsHovering(true);
-    if (photo.has_live_photo && videoRef.current) {
-      videoRef.current.play().catch(() => {});
-    }
-  }, [photo.has_live_photo]);
+    setEverHovered(true);
+  }, []);
 
   const handleMouseLeave = useCallback(() => {
     setIsHovering(false);
-    if (videoRef.current) {
-      videoRef.current.pause();
-      videoRef.current.currentTime = 0;
-    }
   }, []);
 
   const [videoFailed, setVideoFailed] = useState(false);
   const showVideo = isHovering && photo.has_live_photo && !videoFailed;
+  // Mount the video lazily on first hover; keep it mounted afterwards so
+  // re-hovering doesn't re-fetch.
+  const mountVideo =
+    HOVER_CAPABLE && everHovered && photo.has_live_photo && !videoFailed;
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (showVideo) {
+      video.play().catch(() => {});
+    } else {
+      video.pause();
+      video.currentTime = 0;
+    }
+  }, [showVideo]);
 
   return (
     <div
@@ -201,15 +218,17 @@ function PhotoGridItem({
         src={thumbnailUrl(photo.file_hash, thumbSize)}
         alt={photo.file_name}
         loading="lazy"
+        decoding="async"
         className={clsx(
-          "w-full h-full transition-opacity duration-200",
+          "w-full h-full",
+          HOVER_CAPABLE && "transition-opacity duration-200",
           fitClass,
           showVideo && "opacity-0"
         )}
       />
 
-      {/* Live Photo video overlay */}
-      {photo.has_live_photo && (
+      {/* Live Photo video overlay (mounted on first hover; never on touch) */}
+      {mountVideo && (
         <video
           ref={videoRef}
           src={livePhotoUrl(photo.file_hash)}
@@ -233,7 +252,10 @@ function PhotoGridItem({
         </div>
       )}
 
-      {/* Hover overlay */}
+      {/* Hover overlay — desktop only. On touch it would sit on every tile
+          permanently, and painting a gradient + icons + text per tile is the
+          single biggest scroll cost on iOS (actions live in the viewer). */}
+      {HOVER_CAPABLE && (
       <div
         className={clsx(
           "hover-overlay absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent",
@@ -279,6 +301,7 @@ function PhotoGridItem({
           <p className="text-white text-xs truncate">{photo.file_name}</p>
         </div>
       </div>
+      )}
     </div>
   );
 }

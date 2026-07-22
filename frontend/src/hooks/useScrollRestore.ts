@@ -25,17 +25,30 @@ export function useScrollRestore(key: string) {
     }
   }, [storageKey]);
 
-  // Save scroll position on scroll
+  // Save scroll position, throttled — a synchronous sessionStorage write on
+  // every scroll event janks scrolling on iOS. Flush on unmount so the final
+  // position is captured when navigating away.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
 
+    let timeout: number | null = null;
+    const save = () => sessionStorage.setItem(storageKey, String(el.scrollTop));
+
     const handleScroll = () => {
-      sessionStorage.setItem(storageKey, String(el.scrollTop));
+      if (timeout !== null) return;
+      timeout = window.setTimeout(() => {
+        timeout = null;
+        save();
+      }, 250);
     };
 
     el.addEventListener("scroll", handleScroll, { passive: true });
-    return () => el.removeEventListener("scroll", handleScroll);
+    return () => {
+      el.removeEventListener("scroll", handleScroll);
+      if (timeout !== null) window.clearTimeout(timeout);
+      save();
+    };
   }, [storageKey]);
 
   return { scrollRef, restoreScroll };

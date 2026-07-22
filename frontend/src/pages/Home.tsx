@@ -66,7 +66,7 @@ export function Home() {
     <div className="overflow-y-auto h-full">
       {groups.map((group) => (
         <div key={group.date}>
-          <div className="sticky top-0 bg-white/90 backdrop-blur-sm z-10 px-4 py-2 border-b border-gray-100">
+          <div className="sticky top-0 bg-white/95 z-10 px-4 py-2 border-b border-gray-100">
             <h2 className="text-sm font-semibold text-gray-700">
               {formatGroupDate(group.date)}
               <span className="ml-2 text-gray-400 font-normal">

@@ -59,33 +59,34 @@
 }
 
 @layer components {
-  .photo-grid-item {
-    @apply relative overflow-hidden rounded-lg cursor-pointer
-           transition-transform duration-200;
+  /* Skip layout/paint for off-screen photo groups. Applied per-grid (one per
+     month group), NOT per-tile: WebKit re-evaluates every content-visibility
+     region on each scroll frame, so thousands of per-tile regions cost more
+     fps than they save. The `auto` keyword remembers the real rendered size,
+     so the 2000px estimate only applies before first render. */
+  .photo-grid {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 2000px;
   }
 
-  /* Desktop: scale on hover */
+  .photo-grid-item {
+    @apply relative overflow-hidden rounded-lg cursor-pointer;
+  }
+
+  /* Desktop: scale on hover. Touch devices get no per-tile transitions or
+     overlay — every extra paint layer per tile costs scroll fps on iOS. */
   @media (pointer: fine) {
+    .photo-grid-item {
+      @apply transition-transform duration-200;
+    }
     .photo-grid-item:hover {
       @apply scale-[1.02] shadow-lg;
     }
-  }
-
-  .photo-grid-item .hover-overlay {
-    @apply opacity-0 transition-opacity duration-200;
-  }
-
-  /* Desktop: show overlay on hover */
-  @media (pointer: fine) {
+    .photo-grid-item .hover-overlay {
+      @apply opacity-0 transition-opacity duration-200;
+    }
     .photo-grid-item:hover .hover-overlay {
       @apply opacity-100;
-    }
-  }
-
-  /* Mobile: always show overlay */
-  @media (pointer: coarse) {
-    .photo-grid-item .hover-overlay {
-      @apply opacity-100 bg-gradient-to-t from-black/30 to-transparent;
     }
   }
 
