@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Recasa",
     description="Intelligent Local Photo Explorer",
-    version="0.2.0",
+    version="1.6.0",
     lifespan=lifespan,
 )
 
@@ -108,4 +108,4 @@ app.include_router(user_data.router)
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "app": "recasa", "version": "0.2.0"}
+    return {"status": "ok", "app": "recasa", "version": "1.6.0"}

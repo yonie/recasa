@@ -39,12 +39,15 @@ Open http://localhost:8080. Recasa will scan your photos and index them. Process
 - **Captions** -- natural language descriptions per photo (requires Ollama)
 - **Duplicates** -- perceptual hash grouping (pHash/aHash/dHash)
 - **Favorites** -- star photos from the grid or viewer
+- **To Print** -- collect photos for printing, check print quality (DPI) per photo, download as a print-ready zip with HEIC converted to JPEG
 - **Folders** -- browse by original directory structure
 - **Years** -- quick access to any year
 - **Live Photos** -- hover-to-play for Apple Live Photos and Google Motion Photos
 - **EXIF** -- camera, lens, exposure, GPS metadata
 - **Reverse geocoding** -- GPS coordinates to city/country names, offline with no API keys
-- **File watching** -- new photos are detected automatically
+- **Automatic pickup** -- new, changed, and removed photos are detected within minutes, including on Docker Desktop where filesystem events don't reach the container
+- **Pipeline dashboard** -- processing status at a glance, with unreadable files tracked and listed instead of retried forever
+- **Grid views** -- three thumbnail sizes, cropped squares or full photos
 
 Photos are never uploaded. They are mounted read-only into the container.
 
@@ -64,6 +67,8 @@ Photos are never uploaded. They are mounted read-only into the container.
 | *Folders* | *Favorites* |
 | ![Photo collage generator with grid options](docs/screenshots/collage.jpg) | ![Export and import user data](docs/screenshots/export-import.jpg) |
 | *Collage generator* | *Export / Import* |
+| ![To Print list with print quality details](docs/screenshots/to-print.jpg) | ![Pipeline processing dashboard](docs/screenshots/pipeline.jpg) |
+| *To Print* | *Pipeline* |
 
 ## Configuration
 
@@ -74,7 +79,7 @@ All settings go in `.env`:
 | `PHOTOS_PATH` | *(required)* | Path to your photo directory on the host |
 | `RECASA_PORT` | `8080` | Port for the web UI |
 | `OLLAMA_URL` | `http://ollama:11434` | URL for the Ollama API (optional) |
-| `WATCH_INTERVAL` | `30` | How often to check for new files (seconds) |
+| `WATCH_INTERVAL` | `300` | How often to check for new files (seconds, `0` disables) |
 | `LOG_LEVEL` | `info` | Logging level (`debug`, `info`, `warning`, `error`) |
 
 ### Processing stages
