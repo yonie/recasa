@@ -1,5 +1,5 @@
 import { useCallback, useState, useRef } from "react";
-import { Star, Play, Grid2x2, Grid3x3, LayoutGrid } from "lucide-react";
+import { Star, Play, Printer, Grid2x2, Grid3x3, LayoutGrid } from "lucide-react";
 import { clsx } from "clsx";
 import type { PhotoSummary } from "../api/client";
 import { api, thumbnailUrl, livePhotoUrl } from "../api/client";
@@ -17,6 +17,9 @@ interface PhotoGridProps {
   photos: PhotoSummary[];
   onPhotoClick: (photo: PhotoSummary, index: number) => void;
   onFavoriteToggle?: (photo: PhotoSummary) => void;
+  onPrintToggle?: (photo: PhotoSummary) => void;
+  /** Persistent printer mark on marked thumbnails (off on the To Print page itself). */
+  showPrintMark?: boolean;
 }
 
 const GRID_CYCLE: GridSize[] = ["S", "M", "L"];
@@ -46,7 +49,13 @@ function GridSizeToggle() {
   );
 }
 
-export function PhotoGrid({ photos, onPhotoClick, onFavoriteToggle }: PhotoGridProps) {
+export function PhotoGrid({
+  photos,
+  onPhotoClick,
+  onFavoriteToggle,
+  onPrintToggle,
+  showPrintMark = true,
+}: PhotoGridProps) {
   const gridSize = useStore((s) => s.gridSize);
 
   if (photos.length === 0) {
@@ -66,6 +75,8 @@ export function PhotoGrid({ photos, onPhotoClick, onFavoriteToggle }: PhotoGridP
             photo={photo}
             onClick={() => onPhotoClick(photo, index)}
             onFavoriteToggle={onFavoriteToggle}
+            onPrintToggle={onPrintToggle}
+            showPrintMark={showPrintMark}
             thumbSize={THUMB_SIZE[gridSize]}
           />
         ))}
@@ -81,12 +92,23 @@ interface PhotoGridItemProps {
   photo: PhotoSummary;
   onClick: () => void;
   onFavoriteToggle?: (photo: PhotoSummary) => void;
+  onPrintToggle?: (photo: PhotoSummary) => void;
+  showPrintMark: boolean;
   thumbSize: number;
 }
 
-function PhotoGridItem({ photo, onClick, onFavoriteToggle, thumbSize }: PhotoGridItemProps) {
+function PhotoGridItem({
+  photo,
+  onClick,
+  onFavoriteToggle,
+  onPrintToggle,
+  showPrintMark,
+  thumbSize,
+}: PhotoGridItemProps) {
   const [isHovering, setIsHovering] = useState(false);
   const [isFavorite, setIsFavorite] = useState(photo.is_favorite);
+  const [isMarkedForPrint, setIsMarkedForPrint] = useState(photo.marked_for_print);
+  const setStats = useStore((s) => s.setStats);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const handleFavorite = useCallback(
@@ -102,6 +124,22 @@ function PhotoGridItem({ photo, onClick, onFavoriteToggle, thumbSize }: PhotoGri
     },
     [photo, onFavoriteToggle]
   );
+
+  const handlePrint = useCallback(
+    async (e: React.MouseEvent) => {
+      e.stopPropagation();
+      try {
+        const result = await api.togglePrint(photo.file_hash);
+        setIsMarkedForPrint(result.marked_for_print);
+        onPrintToggle?.(photo);
+        api.getStats().then(setStats).catch(() => {});
+      } catch {
+        // ignore
+      }
+    },
+    [photo, onPrintToggle, setStats]
+  );
+
 
   const handleMouseEnter = useCallback(() => {
     setIsHovering(true);
@@ -155,6 +193,13 @@ function PhotoGridItem({ photo, onClick, onFavoriteToggle, thumbSize }: PhotoGri
         />
       )}
 
+      {/* Persistent printer mark (visible without hover) */}
+      {showPrintMark && isMarkedForPrint && !isHovering && (
+        <div className="absolute top-2 left-2 p-1 rounded-full bg-black/40">
+          <Printer className="w-3.5 h-3.5 text-white" />
+        </div>
+      )}
+
       {/* Hover overlay */}
       <div
         className={clsx(
@@ -171,6 +216,20 @@ function PhotoGridItem({ photo, onClick, onFavoriteToggle, thumbSize }: PhotoGri
             className={clsx(
               "w-5 h-5",
               isFavorite ? "fill-yellow-400 text-yellow-400" : "text-white"
+            )}
+          />
+        </button>
+
+        {/* Print toggle */}
+        <button
+          onClick={handlePrint}
+          className="absolute top-2 right-9 p-1 rounded-full hover:bg-white/20 transition-colors"
+          title={isMarkedForPrint ? "Remove from To Print" : "Add to To Print"}
+        >
+          <Printer
+            className={clsx(
+              "w-5 h-5",
+              isMarkedForPrint ? "fill-sky-400 text-sky-400" : "text-white"
             )}
           />
         </button>

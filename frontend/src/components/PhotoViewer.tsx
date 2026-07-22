@@ -2,6 +2,7 @@ import { useEffect, useCallback, useState, useRef } from "react";
 import {
   X,
   Star,
+  Printer,
   MapPin,
   Camera,
   Clock,
@@ -32,7 +33,9 @@ export function PhotoViewer() {
   const [detail, setDetail] = useState<PhotoDetail | null>(null);
   const [showInfo, setShowInfo] = useState(false);
   const [isFavorite, setIsFavorite] = useState(false);
+  const [isMarkedForPrint, setIsMarkedForPrint] = useState(false);
   const [loading, setLoading] = useState(false);
+  const setStats = useStore((s) => s.setStats);
 
   const touchStartX = useRef(0);
   const touchEndX = useRef(0);
@@ -41,6 +44,7 @@ export function PhotoViewer() {
     if (viewerPhoto) {
       setDetail(viewerPhoto);
       setIsFavorite(viewerPhoto.is_favorite);
+      setIsMarkedForPrint(viewerPhoto.marked_for_print);
     }
   }, [viewerPhoto]);
 
@@ -80,6 +84,10 @@ export function PhotoViewer() {
       if (e.key === "f" || e.key === "s") {
         // Star/favorite toggle
         if (detail) handleFavorite();
+      }
+      if (e.key === "p") {
+        // To Print toggle
+        if (detail) handlePrint();
       }
     },
     [closeViewer, canGoPrev, canGoNext, viewerIndex, navigateTo, detail]
@@ -137,6 +145,17 @@ export function PhotoViewer() {
       // ignore
     }
   }, [detail]);
+
+  const handlePrint = useCallback(async () => {
+    if (!detail) return;
+    try {
+      const result = await api.togglePrint(detail.file_hash);
+      setIsMarkedForPrint(result.marked_for_print);
+      api.getStats().then(setStats).catch(() => {});
+    } catch {
+      // ignore
+    }
+  }, [detail, setStats]);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     touchStartX.current = e.touches[0]?.clientX ?? 0;
@@ -209,6 +228,21 @@ export function PhotoViewer() {
                 className={clsx(
                   "w-5 h-5",
                   isFavorite && "fill-yellow-400 text-yellow-400"
+                )}
+              />
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handlePrint();
+              }}
+              className="p-2 rounded-full bg-black/40 active:bg-black/60 text-white transition-colors"
+              title="To Print (P)"
+            >
+              <Printer
+                className={clsx(
+                  "w-5 h-5",
+                  isMarkedForPrint && "fill-sky-400 text-sky-400"
                 )}
               />
             </button>
@@ -410,6 +444,8 @@ export function PhotoViewer() {
                 <span>Toggle info</span>
                 <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">F</span>
                 <span>Favorite</span>
+                <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">P</span>
+                <span>To Print</span>
                 <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">&larr; &rarr;</span>
                 <span>Navigate</span>
               </div>

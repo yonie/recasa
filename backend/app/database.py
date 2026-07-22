@@ -49,5 +49,23 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate_photo_columns(conn)
 
     logger.info("Database initialized at %s", settings.database_url)
+
+
+async def _migrate_photo_columns(conn) -> None:
+    """Add columns to the photos table that create_all won't add to existing DBs."""
+    from sqlalchemy import text
+
+    result = await conn.execute(text("PRAGMA table_info(photos)"))
+    existing = {row[1] for row in result}
+
+    new_columns = {
+        "marked_for_print": "BOOLEAN DEFAULT 0 NOT NULL",
+        "exported_at": "DATETIME",
+    }
+    for name, ddl in new_columns.items():
+        if name not in existing:
+            await conn.execute(text(f"ALTER TABLE photos ADD COLUMN {name} {ddl}"))
+            logger.info("Added column photos.%s", name)

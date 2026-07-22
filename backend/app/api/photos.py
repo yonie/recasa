@@ -39,6 +39,7 @@ def _photo_to_summary(photo: Photo) -> PhotoSummary:
         height=photo.height,
         date_taken=photo.date_taken,
         is_favorite=photo.is_favorite,
+        marked_for_print=photo.marked_for_print,
         thumbnail_url=f"/api/photos/{photo.file_hash}/thumbnail/600",
         has_live_photo=bool(photo.live_photo_video or photo.motion_photo),
     )
@@ -51,6 +52,7 @@ async def list_photos(
     sort: str = Query("date_taken", pattern="^(date_taken|file_name|file_size|indexed_at)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
     favorite: bool | None = None,
+    marked_for_print: bool | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     country: str | None = None,
@@ -64,6 +66,8 @@ async def list_photos(
     # Apply filters
     if favorite is not None:
         query = query.where(Photo.is_favorite == favorite)
+    if marked_for_print is not None:
+        query = query.where(Photo.marked_for_print == marked_for_print)
     if date_from:
         query = query.where(Photo.date_taken >= date_from)
     if date_to:
@@ -148,6 +152,11 @@ async def get_stats(session: AsyncSession = Depends(get_session)):
             select(func.count(Photo.file_hash)).where(Photo.is_favorite == True)  # noqa: E712
         )
     ).scalar() or 0
+    to_print = (
+        await session.execute(
+            select(func.count(Photo.file_hash)).where(Photo.marked_for_print == True)  # noqa: E712
+        )
+    ).scalar() or 0
 
     oldest = (
         await session.execute(
@@ -178,6 +187,7 @@ async def get_stats(session: AsyncSession = Depends(get_session)):
         newest_photo=newest,
         locations_count=locations,
         favorites_count=favorites,
+        to_print_count=to_print,
     )
 
 
@@ -225,6 +235,54 @@ async def get_photos_collage(
         raise HTTPException(status_code=404, detail="Could not generate collage")
 
     return Response(content=data, media_type="image/jpeg")
+
+
+@router.get("/print/export")
+async def export_print_zip(session: AsyncSession = Depends(get_session)):
+    """Stream all photos marked for print as a flat zip (HEIC converted to JPEG)."""
+    from fastapi.responses import StreamingResponse
+    from backend.app.services.print_export import build_print_zip
+
+    result = await session.execute(
+        select(Photo)
+        .where(Photo.marked_for_print == True)  # noqa: E712
+        .order_by(Photo.date_taken.asc().nullslast())
+    )
+    photos = result.scalars().all()
+    if not photos:
+        raise HTTPException(status_code=404, detail="No photos marked for print")
+
+    entries = [
+        (settings.photos_dir / p.file_path, p.file_name, p.mime_type, p.date_taken)
+        for p in photos
+    ]
+
+    # Downloading is the closest signal we have to "this went to a printer".
+    now = datetime.now()
+    for p in photos:
+        p.exported_at = now
+    await session.commit()
+
+    filename = f"to-print-{now:%Y-%m-%d}.zip"
+    return StreamingResponse(
+        build_print_zip(entries),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/print/clear")
+async def clear_print_list(session: AsyncSession = Depends(get_session)):
+    """Remove all photos from the print list."""
+    from sqlalchemy import update
+
+    result = await session.execute(
+        update(Photo)
+        .where(Photo.marked_for_print == True)  # noqa: E712
+        .values(marked_for_print=False)
+    )
+    await session.commit()
+    return {"removed": result.rowcount}
 
 
 @router.get("/{file_hash}", response_model=PhotoDetail)
@@ -309,6 +367,7 @@ async def get_photo(file_hash: str, session: AsyncSession = Depends(get_session)
         height=photo.height,
         date_taken=photo.date_taken,
         is_favorite=photo.is_favorite,
+        marked_for_print=photo.marked_for_print,
         file_modified=photo.file_modified,
         location=location,
         exif=exif,
@@ -373,3 +432,16 @@ async def toggle_favorite(file_hash: str, session: AsyncSession = Depends(get_se
     await session.commit()
 
     return {"file_hash": file_hash, "is_favorite": photo.is_favorite}
+
+
+@router.post("/{file_hash}/print")
+async def toggle_print(file_hash: str, session: AsyncSession = Depends(get_session)):
+    """Toggle a photo's marked-for-print status."""
+    photo = await session.get(Photo, file_hash)
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    photo.marked_for_print = not photo.marked_for_print
+    await session.commit()
+
+    return {"file_hash": file_hash, "marked_for_print": photo.marked_for_print}

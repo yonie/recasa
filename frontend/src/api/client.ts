@@ -33,6 +33,7 @@ export interface PhotoSummary {
   height: number | null;
   date_taken: string | null;
   is_favorite: boolean;
+  marked_for_print: boolean;
   thumbnail_url: string | null;
   has_live_photo: boolean;
   caption: string | null;
@@ -199,6 +200,7 @@ export interface LibraryStats {
   newest_photo: string | null;
   locations_count: number;
   favorites_count: number;
+  to_print_count: number;
 }
 
 export interface DuplicatePhotoSummary extends PhotoSummary {
@@ -297,6 +299,14 @@ export const api = {
     request<{ file_hash: string; is_favorite: boolean }>(`/photos/${hash}/favorite`, {
       method: "POST",
     }),
+
+  togglePrint: (hash: string) =>
+    request<{ file_hash: string; marked_for_print: boolean }>(`/photos/${hash}/print`, {
+      method: "POST",
+    }),
+
+  clearPrintList: () =>
+    request<{ removed: number }>("/photos/print/clear", { method: "POST" }),
 
   getStats: () => request<LibraryStats>("/photos/stats"),
 
@@ -417,6 +427,10 @@ export function originalUrl(hash: string): string {
 
 export function livePhotoUrl(hash: string): string {
   return `${BASE_URL}/photos/${hash}/live`;
+}
+
+export function printExportUrl(): string {
+  return `${BASE_URL}/photos/print/export`;
 }
 
 export function personThumbnailUrl(personId: number): string {

@@ -12,6 +12,7 @@ import {
   CalendarDays,
   Map,
   Tag,
+  Printer,
   Activity,
   ArrowDownUp,
   Wrench,
@@ -29,6 +30,7 @@ const navItems = [
   { to: "/folders", icon: FolderTree, label: "Folders" },
   { to: "/years", icon: Calendar, label: "Years" },
   { to: "/favorites", icon: Star, label: "Favorites" },
+  { to: "/to-print", icon: Printer, label: "To Print" },
   { to: "/people", icon: Users, label: "People" },
   { to: "/events", icon: CalendarDays, label: "Events" },
   { to: "/locations", icon: Map, label: "Locations" },
@@ -120,6 +122,11 @@ export function Sidebar() {
               >
                 <item.icon className="w-5 h-5 flex-shrink-0" />
                 <span>{item.label}</span>
+                {item.to === "/to-print" && (stats?.to_print_count ?? 0) > 0 && (
+                  <span className="ml-auto text-xs font-medium bg-primary-100 text-primary-700 px-2 py-0.5 rounded-full">
+                    {stats?.to_print_count}
+                  </span>
+                )}
               </NavLink>
             ))}
 

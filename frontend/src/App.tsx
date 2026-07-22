@@ -9,6 +9,7 @@ import { Home } from "./pages/Home";
 import { Folders } from "./pages/Folders";
 import { Years } from "./pages/Years";
 import { Favorites } from "./pages/Favorites";
+import { ToPrint } from "./pages/ToPrint";
 import { Duplicates } from "./pages/Duplicates";
 import { LargeFiles } from "./pages/LargeFiles";
 import { SearchResults } from "./pages/SearchResults";
@@ -58,6 +59,7 @@ function AppContent() {
             <Route path="/folders" element={<Folders />} />
             <Route path="/years" element={<Years />} />
             <Route path="/favorites" element={<Favorites />} />
+            <Route path="/to-print" element={<ToPrint />} />
             <Route path="/people" element={<People />} />
             <Route path="/people/together/:personIds" element={<TogetherDetail />} />
             <Route path="/people/:personId" element={<PersonDetail />} />

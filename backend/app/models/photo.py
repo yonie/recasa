@@ -46,6 +46,8 @@ class Photo(Base):
 
     # User data
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
+    marked_for_print: Mapped[bool] = mapped_column(Boolean, default=False)
+    exported_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # Timestamps
     indexed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

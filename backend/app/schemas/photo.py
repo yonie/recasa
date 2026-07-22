@@ -13,6 +13,7 @@ class PhotoBase(BaseModel):
     height: int | None = None
     date_taken: datetime | None = None
     is_favorite: bool = False
+    marked_for_print: bool = False
 
 
 class PhotoSummary(PhotoBase):
@@ -169,3 +170,4 @@ class LibraryStats(BaseModel):
     newest_photo: datetime | None = None
     locations_count: int = 0
     favorites_count: int = 0
+    to_print_count: int = 0
