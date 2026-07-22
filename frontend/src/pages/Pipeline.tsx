@@ -109,21 +109,17 @@ export function Pipeline() {
   const [isTriggering, setIsTriggering] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [showFailures, setShowFailures] = useState(false);
-  const [logFilter, setLogFilter] = useState<"problems" | "all">("problems");
-  const [logs, setLogs] = useState<Array<{ timestamp: string; level: string; message: string }>>([]);
 
   useEffect(() => {
     async function loadStats() {
       try {
-        const [pipelineData, processingData, logsData, failuresData] = await Promise.all([
+        const [pipelineData, processingData, failuresData] = await Promise.all([
           api.getPipelineStatus(),
           api.getProcessingStats(),
-          api.getPipelineLogs(),
           api.getPipelineFailures(),
         ]);
         setStats(pipelineData);
         setProcessingStats(processingData);
-        setLogs(logsData);
         setFailures(failuresData);
       } catch {
         // ignore
@@ -255,11 +251,6 @@ export function Pipeline() {
   })();
 
   const unreadableCount = new Set(failures.map((f) => f.file_hash)).size;
-
-  const filteredLogs = logs
-    .filter((log) => (logFilter === "problems" ? log.level !== "INFO" : true))
-    .slice(-100)
-    .reverse();
 
   return (
     <div className="p-6 max-w-[960px] mx-auto overflow-y-auto h-full">
@@ -535,67 +526,6 @@ export function Pipeline() {
             })}
           </tbody>
         </table>
-      </div>
-
-      {/* Activity feed */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-8">
-        <div className="px-3 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
-          <Activity className="w-4 h-4 text-gray-500" />
-          <span className="text-sm font-medium text-gray-700">Activity</span>
-          <div className="ml-auto flex rounded-lg border border-gray-200 overflow-hidden text-xs">
-            <button
-              onClick={() => setLogFilter("problems")}
-              className={clsx("px-2.5 py-1 transition-colors", logFilter === "problems" ? "bg-gray-200 text-gray-800 font-medium" : "bg-white text-gray-500 hover:bg-gray-50")}
-            >
-              Problems
-            </button>
-            <button
-              onClick={() => setLogFilter("all")}
-              className={clsx("px-2.5 py-1 transition-colors", logFilter === "all" ? "bg-gray-200 text-gray-800 font-medium" : "bg-white text-gray-500 hover:bg-gray-50")}
-            >
-              All
-            </button>
-          </div>
-        </div>
-        <div className="max-h-80 overflow-y-auto text-xs">
-          {filteredLogs.length === 0 ? (
-            <div className="px-3 py-6 text-center text-gray-400">
-              {logFilter === "problems" ? "No problems logged." : "No recent activity."}
-            </div>
-          ) : (
-            filteredLogs.map((log, i) => {
-              const isSkip = log.level === "WARNING";
-              const isError = log.level === "ERROR";
-              return (
-                <div
-                  key={i}
-                  className={clsx(
-                    "px-3 py-1.5 border-b border-gray-50 last:border-0 flex items-baseline gap-2",
-                    isSkip && "border-l-2 border-l-amber-400 bg-amber-50/40",
-                    isError && "border-l-2 border-l-red-400 bg-red-50/40"
-                  )}
-                >
-                  <span className="text-gray-400 whitespace-nowrap tabular-nums">
-                    {formatWhen(log.timestamp)}
-                  </span>
-                  {isSkip && (
-                    <span className="shrink-0 text-[10px] font-medium text-amber-700 bg-amber-100 px-1.5 rounded-full">
-                      Skipped
-                    </span>
-                  )}
-                  {isError && (
-                    <span className="shrink-0 text-[10px] font-medium text-red-700 bg-red-100 px-1.5 rounded-full">
-                      Error
-                    </span>
-                  )}
-                  <span className={clsx("break-all", isError ? "text-red-700" : isSkip ? "text-amber-800" : "text-gray-600")}>
-                    {log.message}
-                  </span>
-                </div>
-              );
-            })
-          )}
-        </div>
       </div>
 
       {/* Danger zone */}
