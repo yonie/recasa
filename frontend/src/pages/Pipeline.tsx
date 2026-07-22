@@ -105,7 +105,7 @@ export function Pipeline() {
   const [stats, setStats] = useState<PipelineStats | null>(null);
   const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null);
   const [failures, setFailures] = useState<StageFailureItem[]>([]);
-  const [connected, setConnected] = useState(true);
+  const [wsState, setWsState] = useState<"connecting" | "connected" | "lost">("connecting");
   const [isTriggering, setIsTriggering] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [showFailures, setShowFailures] = useState(false);
@@ -135,20 +135,45 @@ export function Pipeline() {
   }, []);
 
   useEffect(() => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${window.location.host}/api/pipeline/ws`);
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        setStats(data);
-        if (data.state === "idle") setIsStopping(false);
-      } catch {
-        // ignore
-      }
+    // Live updates over websocket, with automatic reconnect. A connection
+    // that hasn't opened yet is "connecting" (not an error state) — "lost"
+    // only after a previously-open connection drops. REST polling keeps the
+    // page's data fresh either way.
+    let ws: WebSocket | null = null;
+    let retryTimer: number | undefined;
+    let everConnected = false;
+    let disposed = false;
+
+    const connect = () => {
+      if (disposed) return;
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${protocol}//${window.location.host}/api/pipeline/ws`);
+      ws.onopen = () => {
+        everConnected = true;
+        setWsState("connected");
+      };
+      ws.onclose = () => {
+        if (disposed) return;
+        setWsState(everConnected ? "lost" : "connecting");
+        retryTimer = window.setTimeout(connect, 3000);
+      };
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          setStats(data);
+          if (data.state === "idle") setIsStopping(false);
+        } catch {
+          // ignore
+        }
+      };
     };
-    return () => ws.close();
+
+    connect();
+    return () => {
+      disposed = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      ws?.close();
+    };
   }, []);
 
   const handleRescan = async () => {
@@ -204,7 +229,7 @@ export function Pipeline() {
     }
   };
 
-  if (!stats) {
+  if (!stats || !processingStats) {
     return (
       <div className="flex items-center justify-center h-64">
         <Activity className="w-8 h-8 animate-spin text-primary-500" />
@@ -238,16 +263,16 @@ export function Pipeline() {
 
   return (
     <div className="p-6 max-w-[960px] mx-auto overflow-y-auto h-full">
-      {/* Status hero */}
-      {!connected ? (
-        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-5 py-4 flex items-center gap-3">
-          <AlertTriangle className="w-5 h-5 text-red-500" />
-          <div>
-            <div className="font-semibold text-red-700">Disconnected — reconnecting…</div>
-            <div className="text-sm text-red-500">Live status is unavailable.</div>
-          </div>
+      {/* Live-updates notice: only when a previously-open connection dropped */}
+      {wsState === "lost" && (
+        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 flex items-center gap-2 text-sm text-amber-700">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          Live updates interrupted — reconnecting automatically. Shown status may lag a few seconds.
         </div>
-      ) : (
+      )}
+
+      {/* Status hero */}
+      {(
         <div className="mb-6 rounded-xl border border-gray-200 bg-white px-5 py-4 flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3.5 min-w-0">
             {stats.state === "scanning" ? (
