@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import settings
 from backend.app.database import async_session
+from backend.app.exceptions import PermanentStageError
 from backend.app.models import Photo, PhotoHash, DuplicateGroup, DuplicateMember
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,11 @@ DUPLICATE_THRESHOLD = 4
 
 
 def _compute_perceptual_hashes(filepath: Path) -> dict:
-    """Compute perceptual hashes for a photo."""
+    """Compute perceptual hashes for a photo.
+
+    Raises PermanentStageError for unreadable/corrupted files so the worker
+    records the failure instead of re-queueing the photo forever.
+    """
     try:
         with Image.open(filepath) as img:
             if img.mode not in ("RGB", "L"):
@@ -35,7 +40,7 @@ def _compute_perceptual_hashes(filepath: Path) -> dict:
             }
     except Exception as e:
         logger.warning("Skipping hash for %s: %s", filepath, type(e).__name__)
-        return {}
+        raise PermanentStageError(f"cannot read image ({type(e).__name__})") from e
 
 
 async def compute_hashes(file_hash: str) -> bool:
@@ -52,11 +57,11 @@ async def compute_hashes(file_hash: str) -> bool:
 
         filepath = settings.photos_dir / photo.file_path
         if not filepath.exists():
-            return False
+            raise PermanentStageError("file not found on disk")
 
         hashes = await asyncio.to_thread(_compute_perceptual_hashes, filepath)
         if not hashes:
-            return False
+            raise PermanentStageError("no hashes could be computed")
 
         session.add(PhotoHash(file_hash=file_hash, **hashes))
         await session.commit()

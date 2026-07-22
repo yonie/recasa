@@ -386,7 +386,10 @@ async def get_thumbnail(file_hash: str, size: int = 600):
     """Serve a photo thumbnail, generating on-demand if needed."""
     thumb_path = get_thumbnail_path(file_hash, size)
     if not thumb_path:
-        await generate_thumbnails(file_hash)
+        try:
+            await generate_thumbnails(file_hash)
+        except Exception:
+            raise HTTPException(status_code=404, detail="Thumbnail not found")
         thumb_path = get_thumbnail_path(file_hash, size)
         if not thumb_path:
             raise HTTPException(status_code=404, detail="Thumbnail not found")

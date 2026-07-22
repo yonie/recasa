@@ -1,5 +1,5 @@
 from backend.app.models.base import Base
-from backend.app.models.photo import Photo, PhotoPath, PhotoHash
+from backend.app.models.photo import Photo, PhotoPath, PhotoHash, StageFailure
 from backend.app.models.face import Face, Person
 from backend.app.models.caption import Caption
 from backend.app.models.tag import Tag, PhotoTag
@@ -12,6 +12,7 @@ __all__ = [
     "Photo",
     "PhotoPath",
     "PhotoHash",
+    "StageFailure",
     "Face",
     "Person",
     "Caption",

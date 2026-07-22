@@ -8,6 +8,7 @@ from PIL import Image
 
 from backend.app.config import settings
 from backend.app.database import async_session
+from backend.app.exceptions import PermanentStageError
 from backend.app.models import Photo
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ def _generate_thumbnail(filepath: Path, file_hash: str, sizes: list[int]) -> lis
 
     except Exception as e:
         logger.warning("Skipping corrupted image %s: %s", filepath, type(e).__name__)
+        raise PermanentStageError(f"cannot read image ({type(e).__name__})") from e
 
     return created
 

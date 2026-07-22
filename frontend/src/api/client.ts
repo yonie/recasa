@@ -134,23 +134,52 @@ export interface QueueStats {
   current_file_path: string | null;
 }
 
+export interface StageStats {
+  status: string;
+  queued: number;
+  completed: number;
+  total: number;
+  enabled: boolean;
+  failed: number;
+  faces_found?: number;
+  captions_generated?: number;
+  count?: number;
+}
+
 export interface ProcessingStats {
   total_photos: number;
   stages: {
-    discovery: { status: string; queued: number; completed: number; total: number; enabled: boolean };
-    exif: { status: string; queued: number; completed: number; total: number; enabled: boolean };
-    geocoding: { status: string; queued: number; completed: number; total: number; enabled: boolean };
-    thumbnails: { status: string; queued: number; completed: number; total: number; enabled: boolean };
-    motion_photos: { status: string; queued: number; completed: number; total: number; enabled: boolean };
-    hashing: { status: string; queued: number; completed: number; total: number; enabled: boolean };
-    faces: { status: string; queued: number; completed: number; total: number; enabled: boolean; faces_found?: number };
-    captioning: { status: string; queued: number; completed: number; total: number; enabled: boolean };
-    events: { status: string; queued: number; completed: number; total: number; enabled: boolean; count?: number };
+    discovery: StageStats;
+    exif: StageStats;
+    geocoding: StageStats;
+    thumbnails: StageStats;
+    motion_photos: StageStats;
+    hashing: StageStats;
+    faces: StageStats;
+    captioning: StageStats;
+    events: StageStats;
   };
+}
+
+export interface StageFailureItem {
+  file_hash: string;
+  file_path: string;
+  file_name: string;
+  stage: string;
+  error: string | null;
+  failed_at: string | null;
+}
+
+export interface WatcherStatus {
+  inotify_active: boolean;
+  sweep_interval: number;
+  last_scan_at: string | null;
+  last_scan_stats: { total: number; new: number; updated: number; errors: number } | null;
 }
 
 export interface PipelineStats {
   state: "idle" | "scanning" | "processing" | "done";
+  watcher?: WatcherStatus;
   scan_progress: {
     is_scanning: boolean;
     total_files: number;
@@ -335,6 +364,8 @@ export const api = {
   getQueueStatus: () => request<Record<string, QueueStats>>("/pipeline/queues"),
   getPipelineFlow: () => request<{ stages: { id: string; name: string; next: string[] }[] }>("/pipeline/flow"),
   getPipelineLogs: () => request<Array<{ timestamp: string; level: string; message: string }>>("/pipeline/logs"),
+  getPipelineFailures: () => request<StageFailureItem[]>("/pipeline/failures"),
+  resumeProcessing: () => request<{ status: string; queued: number }>("/scan/resume", { method: "POST" }),
 
   // Duplicates
   getDuplicates: (params?: Record<string, string | number>) =>

@@ -69,6 +69,9 @@ class Photo(Base):
     caption: Mapped["Caption | None"] = relationship(  # noqa: F821
         back_populates="photo", cascade="all, delete", uselist=False
     )
+    stage_failures: Mapped[list["StageFailure"]] = relationship(
+        back_populates="photo", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("idx_photos_location", "location_country", "location_city"),
@@ -87,6 +90,26 @@ class PhotoPath(Base):
     file_path: Mapped[str] = mapped_column(Text, primary_key=True)
 
     photo: Mapped["Photo"] = relationship(back_populates="paths")
+
+
+class StageFailure(Base):
+    """A pipeline stage that failed permanently for a photo.
+
+    Photos with a recorded failure are not re-queued for that stage by scans
+    or startup resume — a stage rebuild, a successful run, or removal of the
+    photo clears the record. Keyed by queue name (QueueType.value).
+    """
+
+    __tablename__ = "stage_failures"
+
+    file_hash: Mapped[str] = mapped_column(
+        String(64), ForeignKey("photos.file_hash"), primary_key=True
+    )
+    stage: Mapped[str] = mapped_column(String(20), primary_key=True)
+    error: Mapped[str | None] = mapped_column(Text)
+    failed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    photo: Mapped["Photo"] = relationship(back_populates="stage_failures")
 
 
 class PhotoHash(Base):

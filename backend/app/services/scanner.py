@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import settings
 from backend.app.database import async_session
-from backend.app.models import Photo, PhotoPath, PhotoHash, Face, Caption
+from backend.app.models import Photo, PhotoPath, PhotoHash, Face, Caption, StageFailure
 
 logger = logging.getLogger(__name__)
 
@@ -381,29 +381,39 @@ async def _index_photo(
 
 
 async def _get_entry_stage_async(photo: Photo, session) -> str | None:
-    """Determine which pipeline stage a photo should enter (async version)."""
+    """Determine which pipeline stage a photo should enter (async version).
+
+    Stages with a recorded permanent failure are skipped — without this,
+    photos that can never complete a stage get re-queued on every scan.
+    """
+    failed_result = await session.execute(
+        select(StageFailure.stage).where(StageFailure.file_hash == photo.file_hash)
+    )
+    failed = {row[0] for row in failed_result}
+
     # EXIF is always enabled (core functionality)
-    if photo.camera_make is None and photo.date_taken is None:
+    if "exif" not in failed and photo.camera_make is None and photo.date_taken is None:
         return "exif"
 
     # Geocoding
-    if settings.ENABLE_GEOCODING:
+    if settings.ENABLE_GEOCODING and "geocoding" not in failed:
         if photo.location_city is None and photo.gps_latitude is not None:
             return "geocoding"
 
     # Thumbnails always enabled (core functionality)
-    if not thumb_exists(photo.file_hash):
+    if "thumbnails" not in failed and not thumb_exists(photo.file_hash):
         return "thumbnails"
 
-    # Hashing always enabled (core functionality) 
-    result = await session.execute(
-        select(PhotoHash).where(PhotoHash.file_hash == photo.file_hash)
-    )
-    if result.scalar_one_or_none() is None:
-        return "hashing"
+    # Hashing always enabled (core functionality)
+    if "hashing" not in failed:
+        result = await session.execute(
+            select(PhotoHash).where(PhotoHash.file_hash == photo.file_hash)
+        )
+        if result.scalar_one_or_none() is None:
+            return "hashing"
 
     # Faces
-    if settings.ENABLE_FACE_DETECTION:
+    if settings.ENABLE_FACE_DETECTION and "faces" not in failed:
         result = await session.execute(
             select(func.count(Face.file_hash)).where(Face.file_hash == photo.file_hash)
         )
@@ -411,7 +421,7 @@ async def _get_entry_stage_async(photo: Photo, session) -> str | None:
             return "faces"
 
     # Captioning
-    if settings.ENABLE_CAPTIONING:
+    if settings.ENABLE_CAPTIONING and "captioning" not in failed:
         result = await session.execute(
             select(Caption).where(Caption.file_hash == photo.file_hash)
         )

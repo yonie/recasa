@@ -18,7 +18,7 @@ from backend.app.config import settings
 from backend.app.services.scanner import scan_directory, index_single_file, is_supported_photo, thumb_exists
 from backend.app.workers.queues import pipeline, QueueType
 from backend.app.database import async_session
-from backend.app.models import Photo, PhotoHash, Face, Caption
+from backend.app.models import Photo, PhotoHash, Face, Caption, StageFailure
 from sqlalchemy import select, func
 
 logger = logging.getLogger(__name__)
@@ -138,6 +138,17 @@ async def resume_incomplete_processing() -> int:
             needs[QueueType.CAPTIONING] = {row[0] for row in result.fetchall()}
             logger.info(f"Found {len(needs[QueueType.CAPTIONING])} photos needing captioning")
 
+    # Photos with a recorded permanent failure for a stage must not be
+    # re-queued for it — they would fail again on every restart.
+    failures: dict[str, set[str]] = {}
+    async with async_session() as session:
+        result = await session.execute(select(StageFailure.stage, StageFailure.file_hash))
+        for stage_name, file_hash in result.all():
+            failures.setdefault(stage_name, set()).add(file_hash)
+    if failures:
+        total_failed = sum(len(s) for s in failures.values())
+        logger.info(f"Skipping {total_failed} photo/stage pairs with recorded failures")
+
     # Deduplicate: queue each photo at its earliest incomplete stage only.
     # Pipeline routing carries it through subsequent stages.
     stage_order = [QueueType.EXIF, QueueType.GEOCODING, QueueType.THUMBNAILS,
@@ -148,7 +159,7 @@ async def resume_incomplete_processing() -> int:
     for stage in stage_order:
         if stage not in needs:
             continue
-        to_queue = needs[stage] - already_queued
+        to_queue = needs[stage] - already_queued - failures.get(stage.value, set())
         for file_hash in to_queue:
             await pipeline.add_file_at(file_hash, stage)
             queued_count += 1
@@ -194,11 +205,19 @@ class FileEventHandler(FileSystemEventHandler):
                 logger.info(f"Indexed new file: {filepath} ({file_hash})")
 
 
+# True once the inotify observer is running. Note: inotify events don't cross
+# Docker bind mounts on Windows/macOS hosts — there the periodic sweep is what
+# actually detects changes.
+watcher_active = False
+
+
 async def start_file_watcher():
     """Start watching the photos directory for new files."""
+    global watcher_active
     handler = FileEventHandler(asyncio.get_running_loop())
     observer = Observer()
     observer.schedule(handler, str(settings.photos_dir), recursive=True)
     observer.start()
+    watcher_active = True
     logger.info(f"File watcher started for {settings.photos_dir}")
     return observer

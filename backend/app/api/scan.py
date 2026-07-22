@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks
 from backend.app.workers.pipeline import run_initial_scan, resume_incomplete_processing
 from backend.app.workers.queues import pipeline
 from backend.app.database import async_session
-from backend.app.models import Photo, PhotoPath, PhotoHash, Face, Person, Tag, PhotoTag, Event, EventPhoto, Caption, DuplicateGroup, DuplicateMember
+from backend.app.models import Photo, PhotoPath, PhotoHash, Face, Person, Tag, PhotoTag, Event, EventPhoto, Caption, DuplicateGroup, DuplicateMember, StageFailure
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,8 @@ router = APIRouter(prefix="/api/scan", tags=["scan"])
 # Scan state
 _is_scanning = False
 _scan_progress = {"current": 0, "total": 0, "current_file": None}
+_last_scan_at: str | None = None  # ISO timestamp of last completed scan/sweep
+_last_scan_stats: dict | None = None
 
 
 @router.get("/status")
@@ -32,13 +34,19 @@ async def get_scan_status():
 
 async def _run_scan_background(fast: bool = False):
     """Run scan in background and queue new photos."""
-    global _is_scanning, _scan_progress
+    global _is_scanning, _scan_progress, _last_scan_at, _last_scan_stats
 
     _is_scanning = True
     _scan_progress = {"current": 0, "total": 0, "current_file": None}
 
     try:
-        await run_initial_scan(fast=fast)
+        stats = await run_initial_scan(fast=fast)
+        from datetime import datetime, timezone
+
+        _last_scan_at = datetime.now(timezone.utc).isoformat()
+        _last_scan_stats = {
+            k: v for k, v in stats.items() if k in ("total", "new", "updated", "errors")
+        }
     finally:
         _is_scanning = False
         _scan_progress = {"current": 0, "total": 0, "current_file": None}
@@ -103,6 +111,7 @@ async def clear_index():
         await session.execute(Person.__table__.delete())
         await session.execute(Caption.__table__.delete())
         await session.execute(PhotoHash.__table__.delete())
+        await session.execute(StageFailure.__table__.delete())
         await session.execute(PhotoPath.__table__.delete())
         await session.execute(Photo.__table__.delete())
         await session.commit()
@@ -141,6 +150,10 @@ async def clear_stage(stage: str):
         else:
             return {"status": "unsupported_stage", "stage": stage}
 
+        # A rebuild is also the retry path for permanently-failed photos.
+        await session.execute(
+            StageFailure.__table__.delete().where(StageFailure.stage == stage)
+        )
         await session.commit()
 
     return {"status": "stage_cleared", "stage": stage}

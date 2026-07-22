@@ -6,7 +6,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.database import get_session
-from backend.app.models import Photo, PhotoHash, Face, Caption, Event
+from backend.app.models import Photo, PhotoHash, Face, Caption, Event, StageFailure
 from backend.app.workers.queues import pipeline
 from backend.app.workers.worker import pipeline_logs
 from backend.app.config import settings
@@ -17,22 +17,56 @@ router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 @router.get("/status")
 async def get_pipeline_status():
     """Get current pipeline status."""
+    from backend.app.api import scan as scan_api
+    from backend.app.workers import pipeline as pipeline_workers
+
     queue_info = pipeline.get_queue_info()
     queue_sizes = pipeline.get_queue_sizes()
     has_work = any(size > 0 for size in queue_sizes.values())
     is_processing = pipeline.is_running and has_work
-    
+
+    state = "processing" if is_processing else "idle"
+    if scan_api._is_scanning:
+        state = "scanning"
+
     return {
         "running": pipeline.is_running,
         "stop_requested": pipeline._stop_requested,
-        "state": "processing" if is_processing else "idle",
+        "state": state,
         "scan_progress": None,
         "processing_progress": None,
         "completion_summary": None,
         "error_log": pipeline.error_log[-20:],
         "error_count": len(pipeline.error_log),
         "queues": queue_info,
+        "watcher": {
+            "inotify_active": pipeline_workers.watcher_active,
+            "sweep_interval": settings.watch_interval,
+            "last_scan_at": scan_api._last_scan_at,
+            "last_scan_stats": scan_api._last_scan_stats,
+        },
     }
+
+
+@router.get("/failures")
+async def get_stage_failures(session: AsyncSession = Depends(get_session)):
+    """List photos with a permanently-failed pipeline stage."""
+    result = await session.execute(
+        select(StageFailure, Photo.file_path, Photo.file_name)
+        .join(Photo, Photo.file_hash == StageFailure.file_hash)
+        .order_by(StageFailure.failed_at.desc())
+    )
+    return [
+        {
+            "file_hash": failure.file_hash,
+            "file_path": file_path,
+            "file_name": file_name,
+            "stage": failure.stage,
+            "error": failure.error,
+            "failed_at": failure.failed_at.isoformat() if failure.failed_at else None,
+        }
+        for failure, file_path, file_name in result.all()
+    ]
 
 
 @router.get("/processing-stats")
@@ -47,6 +81,11 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
     total_photos = total.scalar() or 0
 
     queue_sizes = pipeline.get_queue_sizes()
+
+    failures_result = await session.execute(
+        select(StageFailure.stage, func.count()).group_by(StageFailure.stage)
+    )
+    failed_by_stage: dict[str, int] = {stage: count for stage, count in failures_result.all()}
 
     def get_stage_status(enabled: bool, queued: int, completed: int, total: int) -> str:
         if not enabled:
@@ -111,7 +150,7 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
     # Events: batch-processed
     event_count = (await session.execute(select(func.count(Event.event_id)))).scalar() or 0
 
-    return {
+    payload = {
         "total_photos": total_photos,
         "stages": {
             "discovery": {
@@ -182,6 +221,11 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
             },
         },
     }
+
+    for stage_key, stage_data in payload["stages"].items():
+        stage_data["failed"] = failed_by_stage.get(stage_key, 0)
+
+    return payload
 
 
 @router.get("/logs")

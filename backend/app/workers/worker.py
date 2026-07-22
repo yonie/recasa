@@ -18,7 +18,8 @@ from sqlalchemy import select, func
 
 from backend.app.config import settings
 from backend.app.database import async_session
-from backend.app.models import Photo, PhotoHash, Face, Caption
+from backend.app.exceptions import PermanentStageError
+from backend.app.models import Photo, PhotoHash, Face, Caption, StageFailure
 from backend.app.services.exif import extract_exif
 from backend.app.services.thumbnail import generate_thumbnails
 from backend.app.services.hasher import compute_hashes, find_duplicates
@@ -203,6 +204,36 @@ class Worker:
             error=error,
         )
 
+    async def _record_failure(self, file_hash: str, error: str):
+        """Persist a stage failure so scans stop re-queueing this photo forever."""
+        try:
+            async with async_session() as session:
+                await session.merge(
+                    StageFailure(
+                        file_hash=file_hash,
+                        stage=self.queue_type.value,
+                        error=error,
+                        failed_at=datetime.now(),
+                    )
+                )
+                await session.commit()
+        except Exception as e:
+            logger.warning(f"Could not record stage failure: {type(e).__name__}")
+
+    async def _clear_failure(self, file_hash: str):
+        """Remove any recorded failure for this photo+stage after a success."""
+        try:
+            async with async_session() as session:
+                await session.execute(
+                    StageFailure.__table__.delete().where(
+                        StageFailure.file_hash == file_hash,
+                        StageFailure.stage == self.queue_type.value,
+                    )
+                )
+                await session.commit()
+        except Exception as e:
+            logger.warning(f"Could not clear stage failure: {type(e).__name__}")
+
     async def process_item(self, file_hash: str) -> bool:
         """Process a single item through the configured stage."""
         # Events queue is handled by EventDetectionWorker, not here
@@ -250,7 +281,14 @@ class Worker:
         try:
             result = await config.service_fn(file_hash)
             logger.info(f"[{config.name}] Done: {photo.file_path}")
+            await self._clear_failure(file_hash)
+        except PermanentStageError as e:
+            logger.warning(f"[{config.name}] Unreadable: {photo.file_path} - {e}")
+            self._log_error(file_hash, str(filepath), str(e)[:100])
+            await self._record_failure(file_hash, str(e)[:200])
         except Exception as e:
+            # Transient (service/network) errors are not persisted — the photo
+            # will be retried by a later scan.
             logger.warning(f"[{config.name}] Failed: {photo.file_path} - {type(e).__name__}")
             self._log_error(file_hash, str(filepath), str(e)[:100])
 

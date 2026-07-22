@@ -1,9 +1,14 @@
-import { useEffect, useState, useRef } from "react";
-import { api, type PipelineStats, type ProcessingStats } from "../api/client";
+import { useEffect, useState } from "react";
+import {
+  api,
+  type PipelineStats,
+  type ProcessingStats,
+  type StageStats,
+  type StageFailureItem,
+} from "../api/client";
 import {
   Activity,
   RotateCcw,
-  Trash2,
   FileImage,
   MapPin,
   Hash,
@@ -12,14 +17,15 @@ import {
   Calendar,
   Play,
   Image,
-  CheckCircle2,
-  AlertCircle,
-  Clock,
-  Check,
+  AlertTriangle,
   Loader2,
   Square,
   FolderOpen,
+  Eye,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
+import { clsx } from "clsx";
 
 const QUEUE_ORDER = [
   "discovery",
@@ -31,7 +37,7 @@ const QUEUE_ORDER = [
   "faces",
   "captioning",
   "events",
-];
+] as const;
 
 const QUEUE_LABELS: Record<string, string> = {
   discovery: "File Discovery",
@@ -57,102 +63,76 @@ const QUEUE_ICONS: Record<string, React.ComponentType<{ className?: string }>> =
   events: Calendar,
 };
 
-const STAGE_COLORS: Record<string, { bg: string; bar: string; text: string; light: string }> = {
-  discovery: { bg: "bg-purple-50", bar: "bg-purple-500", text: "text-purple-700", light: "bg-purple-100" },
-  exif: { bg: "bg-blue-50", bar: "bg-blue-500", text: "text-blue-700", light: "bg-blue-100" },
-  geocoding: { bg: "bg-cyan-50", bar: "bg-cyan-500", text: "text-cyan-700", light: "bg-cyan-100" },
-  thumbnails: { bg: "bg-teal-50", bar: "bg-teal-500", text: "text-teal-700", light: "bg-teal-100" },
-  motion_photos: { bg: "bg-emerald-50", bar: "bg-emerald-500", text: "text-emerald-700", light: "bg-emerald-100" },
-  hashing: { bg: "bg-amber-50", bar: "bg-amber-500", text: "text-amber-700", light: "bg-amber-100" },
-  faces: { bg: "bg-rose-50", bar: "bg-rose-500", text: "text-rose-700", light: "bg-rose-100" },
-  captioning: { bg: "bg-pink-50", bar: "bg-pink-500", text: "text-pink-700", light: "bg-pink-100" },
-  events: { bg: "bg-indigo-50", bar: "bg-indigo-500", text: "text-indigo-700", light: "bg-indigo-100" },
-};
-
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  if (seconds < 3600) {
-    const m = Math.floor(seconds / 60);
-    const s = Math.round(seconds % 60);
-    return `${m}m ${s}s`;
-  }
-  const h = Math.floor(seconds / 3600);
-  const m = Math.round((seconds % 3600) / 60);
-  return `${h}h ${m}m`;
-}
+// Stages that can be wiped and rebuilt from the danger zone
+const REBUILDABLE: { stage: string; label: string; warning: string }[] = [
+  { stage: "geocoding", label: "Rebuild geocoding", warning: "location names" },
+  { stage: "hashing", label: "Rebuild hashes & duplicates", warning: "duplicate detection data" },
+  { stage: "faces", label: "Rebuild faces", warning: "all detected faces and named people" },
+  { stage: "captioning", label: "Rebuild captions", warning: "all AI captions" },
+  { stage: "events", label: "Rebuild events", warning: "all detected events" },
+];
 
 function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
-function StageBadge({ status, queued, enabled }: { status: string; queued: number; enabled?: boolean }) {
-  if (!enabled) {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">
-        Disabled
-      </span>
-    );
-  }
-  if (status === "processing") {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full">
-        <Activity className="w-2.5 h-2.5 animate-pulse" />
-        Active
-      </span>
-    );
-  }
-  if (status === "pending" || queued > 0) {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">
-        <Clock className="w-2.5 h-2.5" />
-        Queued
-      </span>
-    );
-  }
-  if (status === "done") {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-green-600 bg-green-50 px-1.5 py-0.5 rounded-full">
-        <CheckCircle2 className="w-2.5 h-2.5" />
-        Done
-      </span>
-    );
-  }
-  return <span className="text-[10px] text-gray-300">-</span>;
+/** Backend timestamps are UTC but serialized without a timezone marker. */
+function parseUtc(timestamp: string): Date {
+  const hasZone = /Z$|[+-]\d\d:?\d\d$/.test(timestamp);
+  return new Date(hasZone ? timestamp : `${timestamp}Z`);
+}
+
+function formatWhen(timestamp: string): string {
+  const d = parseUtc(timestamp);
+  const now = new Date();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === now.toDateString()) return `Today ${time}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
+  return `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+}
+
+function formatAgo(timestamp: string): string {
+  const seconds = Math.max(0, (Date.now() - parseUtc(timestamp).getTime()) / 1000);
+  if (seconds < 90) return "just now";
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`;
+  return formatWhen(timestamp);
 }
 
 export function Pipeline() {
   const [stats, setStats] = useState<PipelineStats | null>(null);
   const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null);
-  const [connected, setConnected] = useState(false);
+  const [failures, setFailures] = useState<StageFailureItem[]>([]);
+  const [connected, setConnected] = useState(true);
   const [isTriggering, setIsTriggering] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [showFailures, setShowFailures] = useState(false);
+  const [logFilter, setLogFilter] = useState<"problems" | "all">("problems");
   const [logs, setLogs] = useState<Array<{ timestamp: string; level: string; message: string }>>([]);
-  const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function loadStats() {
       try {
-        const [pipelineData, processingData, logsData] = await Promise.all([
+        const [pipelineData, processingData, logsData, failuresData] = await Promise.all([
           api.getPipelineStatus(),
           api.getProcessingStats(),
           api.getPipelineLogs(),
+          api.getPipelineFailures(),
         ]);
         setStats(pipelineData);
         setProcessingStats(processingData);
         setLogs(logsData);
+        setFailures(failuresData);
       } catch {
         // ignore
       }
     }
     loadStats();
-    const interval = setInterval(loadStats, 2000);
+    const interval = setInterval(loadStats, 3000);
     return () => clearInterval(interval);
   }, []);
-
-  // Auto-scroll logs to bottom when new logs arrive
-  useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs]);
 
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -163,10 +143,7 @@ export function Pipeline() {
       try {
         const data = JSON.parse(event.data);
         setStats(data);
-        // Reset stopping state when pipeline becomes idle
-        if (data.state === "idle") {
-          setIsStopping(false);
-        }
+        if (data.state === "idle") setIsStopping(false);
       } catch {
         // ignore
       }
@@ -195,27 +172,27 @@ export function Pipeline() {
     }
   };
 
-  const CLEARABLE_STAGES = new Set(["geocoding", "hashing", "faces", "captioning", "events"]);
-
-  const handleClearStage = async (stage: string) => {
-    const label = QUEUE_LABELS[stage] || stage;
-    if (!confirm(`Clear all ${label} data and re-process?`)) return;
+  const handleRebuildStage = async (stage: string, warning: string) => {
+    if (!confirm(`This deletes ${warning} for ALL photos and rebuilds from scratch. Continue?`)) {
+      return;
+    }
     try {
       await api.clearStage(stage);
-      // Refresh stats immediately so UI reflects the change
-      const [pipelineData, processingData] = await Promise.all([
-        api.getPipelineStatus(),
-        api.getProcessingStats(),
-      ]);
-      setStats(pipelineData);
-      setProcessingStats(processingData);
+      await api.resumeProcessing();
     } catch {
       // ignore
     }
   };
 
   const handleClearIndex = async () => {
-    if (!confirm("This will delete all indexed data. Continue?")) return;
+    if (
+      !confirm(
+        "This deletes the ENTIRE index: all photos, faces, people, tags, events and duplicates. " +
+          "Your photo files are not touched, but everything must be re-indexed from scratch. Continue?"
+      )
+    ) {
+      return;
+    }
     if (isTriggering) return;
     setIsTriggering(true);
     try {
@@ -236,101 +213,107 @@ export function Pipeline() {
   }
 
   const isActive = stats.state === "scanning" || stats.state === "processing";
-
   const totalPhotos = processingStats?.total_photos || 0;
+  const watcher = stats.watcher;
 
-  // Calculate photos needing any processing stage
-  const photosNeedingWork = (() => {
+  // Photos still waiting on some enabled stage, not counting terminal failures
+  const pendingCount = (() => {
     if (!processingStats) return 0;
-    let maxNeeded = 0;
+    let max = 0;
     for (const data of Object.values(processingStats.stages)) {
-      if (data.enabled && data.total > 0) {
-        const needed = data.total - data.completed;
-        if (needed > maxNeeded) maxNeeded = needed;
+      if (data.enabled && data.total > 1) {
+        const needed = Math.max(0, data.total - data.completed - data.failed);
+        if (needed > max) max = needed;
       }
     }
-    return maxNeeded;
+    return max;
   })();
 
-  // Map queue types to processing stats keys
-  const getStageStats = (queueType: string): { 
-    status: string; 
-    queued: number; 
-    completed: number; 
-    total: number; 
-    enabled: boolean;
-    count?: number;
-    faces_found?: number;
-  } => {
-    if (!processingStats) return { status: "pending", queued: 0, completed: 0, total: 0, enabled: true };
-    const key = queueType as keyof typeof processingStats.stages;
-    return processingStats.stages[key] || { status: "pending", queued: 0, completed: 0, total: 0, enabled: true };
-  };
+  const unreadableCount = new Set(failures.map((f) => f.file_hash)).size;
+
+  const filteredLogs = logs
+    .filter((log) => (logFilter === "problems" ? log.level !== "INFO" : true))
+    .slice(-100)
+    .reverse();
 
   return (
-    <div className="p-6 max-w-[960px] mx-auto">
-      {/* Status Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Pipeline</h1>
-          <div className="text-sm text-gray-500 mt-0.5">
-            {stats.state === "scanning" && stats.scan_progress && (
-              <span className="flex items-center gap-2 text-blue-600">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                {stats.scan_progress.discovery_phase === "collecting_files" ? (
-                  <>Collecting files ({formatNumber(stats.scan_progress.discovery_files_collected)} found)</>
-                ) : (
-                  <>Scanning {formatNumber(stats.scan_progress.scanned_files)} / {formatNumber(stats.scan_progress.total_files)} files</>
-                )}
-              </span>
-            )}
-            {stats.state === "processing" && stats.processing_progress && (
-              <span className="flex items-center gap-2">
-                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                Processing {formatNumber(stats.processing_progress.files_processing)} photos ({formatDuration(stats.processing_progress.elapsed_seconds)})
-              </span>
-            )}
-            {stats.state === "done" && stats.completion_summary && (
-              <span className="flex items-center gap-2 text-green-600">
-                <Check className="w-3.5 h-3.5" />
-                {stats.completion_summary.scan_stats ? (
-                  <>
-                    Scanned {formatNumber(stats.completion_summary.scan_stats.total || 0)} files:
-                    {" "}{stats.completion_summary.scan_stats.new || 0} new,
-                    {" "}{stats.completion_summary.scan_stats.updated || 0} updated,
-                    {" "}{stats.completion_summary.scan_stats.skipped || 0} unchanged
-                    {" "} ({formatDuration(stats.completion_summary.elapsed_seconds)})
-                  </>
-                ) : (
-                  <>Completed in {formatDuration(stats.completion_summary.elapsed_seconds)}</>
-                )}
-              </span>
-            )}
-            {stats.state === "idle" && (
-              <span className="flex items-center gap-2 text-gray-400">
-                <span className="w-2 h-2 bg-gray-300 rounded-full" />
-                Ready
-              </span>
-            )}
+    <div className="p-6 max-w-[960px] mx-auto overflow-y-auto h-full">
+      {/* Status hero */}
+      {!connected ? (
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-5 py-4 flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 text-red-500" />
+          <div>
+            <div className="font-semibold text-red-700">Disconnected — reconnecting…</div>
+            <div className="text-sm text-red-500">Live status is unavailable.</div>
           </div>
         </div>
+      ) : (
+        <div className="mb-6 rounded-xl border border-gray-200 bg-white px-5 py-4 flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3.5 min-w-0">
+            {stats.state === "scanning" ? (
+              <Loader2 className="w-8 h-8 text-blue-500 animate-spin shrink-0" />
+            ) : isActive ? (
+              <span className="relative flex w-8 h-8 items-center justify-center shrink-0">
+                <span className="absolute w-4 h-4 rounded-full bg-blue-400 opacity-60 animate-ping" />
+                <span className="relative w-3 h-3 rounded-full bg-blue-500" />
+              </span>
+            ) : (
+              <span className="relative flex w-8 h-8 items-center justify-center shrink-0">
+                <span className="absolute w-4 h-4 rounded-full bg-green-400 opacity-40 animate-[ping_4s_ease-in-out_infinite]" />
+                <span className="relative w-3 h-3 rounded-full bg-green-500" />
+              </span>
+            )}
+            <div className="min-w-0">
+              <div className="font-semibold text-gray-900">
+                {stats.state === "scanning"
+                  ? "Checking for new photos…"
+                  : isActive
+                  ? "Processing photos"
+                  : watcher && (watcher.sweep_interval > 0 || watcher.inotify_active)
+                  ? "Watching for new photos"
+                  : "Automatic detection is off"}
+              </div>
+              <div className="text-sm text-gray-500 truncate">
+                {isActive && stats.state !== "scanning" ? (
+                  "Working through the processing queues — the app stays usable meanwhile."
+                ) : stats.state === "scanning" ? (
+                  "Sweeping the library for added, changed or removed files."
+                ) : watcher && watcher.sweep_interval > 0 ? (
+                  <>
+                    New photos are picked up automatically (checked every{" "}
+                    {Math.round(watcher.sweep_interval / 60)} min).
+                    {watcher.last_scan_at && (
+                      <>
+                        {" "}Last check: {formatAgo(watcher.last_scan_at)}
+                        {watcher.last_scan_stats &&
+                          (watcher.last_scan_stats.new > 0 ? (
+                            <> — {watcher.last_scan_stats.new} new photos</>
+                          ) : (
+                            <> — nothing new</>
+                          ))}
+                      </>
+                    )}
+                  </>
+                ) : (
+                  "Set WATCH_INTERVAL to enable periodic checks, or use Rescan library."
+                )}
+              </div>
+            </div>
+          </div>
 
-        <div className="flex items-center gap-3 text-sm">
           {isActive ? (
             <button
               onClick={handleStop}
               disabled={isStopping}
-              className="flex items-center gap-2 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 disabled:opacity-50 rounded-lg transition-colors min-w-[100px] justify-center"
+              className="flex items-center gap-2 px-4 py-2 bg-red-50 hover:bg-red-100 text-red-700 disabled:opacity-50 rounded-lg transition-colors font-medium text-sm"
             >
               {isStopping ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Stopping...
+                  <Loader2 className="w-4 h-4 animate-spin" /> Stopping…
                 </>
               ) : (
                 <>
-                  <Square className="w-4 h-4" />
-                  Stop
+                  <Square className="w-4 h-4" /> Stop
                 </>
               )}
             </button>
@@ -338,207 +321,81 @@ export function Pipeline() {
             <button
               onClick={handleRescan}
               disabled={isTriggering}
-              className="flex items-center gap-2 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 rounded-lg transition-colors text-gray-700"
+              className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white disabled:opacity-50 rounded-lg transition-colors font-medium text-sm"
             >
               {isTriggering ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
                 <RotateCcw className="w-4 h-4" />
               )}
-              Rescan
+              Rescan library
             </button>
           )}
-          <button
-            onClick={handleClearIndex}
-            disabled={isTriggering || isActive}
-            className="flex items-center gap-2 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 disabled:opacity-50 rounded-lg transition-colors"
-          >
-            <Trash2 className="w-4 h-4" />
-            Clear index
-          </button>
-          <div className="flex items-center gap-1.5">
-            <span className={`w-2 h-2 rounded-full ${connected ? "bg-green-500" : "bg-red-400"}`} />
-            <span className="text-xs text-gray-400">{connected ? "Live" : "Offline"}</span>
-          </div>
         </div>
-      </div>
+      )}
 
-      {/* Quick Stats */}
-      <div className="grid grid-cols-4 gap-3 mb-6">
+      {/* Summary cards */}
+      <div className="grid grid-cols-3 gap-3 mb-6">
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
           <div className="text-xs text-gray-500 mb-0.5">Indexed Photos</div>
           <div className="text-2xl font-bold text-gray-900 tabular-nums">
             {formatNumber(totalPhotos)}
           </div>
         </div>
-        <div className="bg-white border border-gray-200 rounded-xl p-3.5">
-          <div className="text-xs text-gray-500 mb-0.5">{isActive ? "Queued" : "Need Processing"}</div>
-          <div className="text-2xl font-bold text-blue-600 tabular-nums">
-            {formatNumber(photosNeedingWork)}
+        <div className={clsx("border rounded-xl p-3.5", pendingCount > 0 ? "bg-white border-blue-200" : "bg-gray-50/60 border-gray-200")}>
+          <div className="text-xs text-gray-500 mb-0.5">Pending</div>
+          <div className={clsx("text-2xl font-bold tabular-nums", pendingCount > 0 ? "text-blue-600" : "text-gray-300")}>
+            {formatNumber(pendingCount)}
           </div>
         </div>
-        <div className="bg-white border border-gray-200 rounded-xl p-3.5">
-          <div className="text-xs text-gray-500 mb-0.5">Errors</div>
-          <div className={`text-2xl font-bold tabular-nums ${stats.error_count > 0 ? "text-red-600" : "text-gray-400"}`}>
-            {stats.error_count || 0}
+        <button
+          onClick={() => setShowFailures((s) => !s)}
+          disabled={unreadableCount === 0}
+          className={clsx(
+            "border rounded-xl p-3.5 text-left transition-colors",
+            unreadableCount > 0
+              ? "bg-amber-50 border-amber-200 hover:bg-amber-100 cursor-pointer"
+              : "bg-gray-50/60 border-gray-200"
+          )}
+        >
+          <div className={clsx("text-xs mb-0.5 flex items-center gap-1", unreadableCount > 0 ? "text-amber-700" : "text-gray-500")}>
+            Unreadable
+            {unreadableCount > 0 &&
+              (showFailures ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />)}
           </div>
-        </div>
-        <div className="bg-white border border-gray-200 rounded-xl p-3.5">
-          <div className="text-xs text-gray-500 mb-0.5">Status</div>
-          <div className="text-lg font-semibold text-gray-900">
-            {isActive ? (
-              <span className="flex items-center gap-1.5 text-green-600">
-                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                Processing
-              </span>
-            ) : (
-              <span className="text-gray-400">Idle</span>
-            )}
+          <div className={clsx("text-2xl font-bold tabular-nums", unreadableCount > 0 ? "text-amber-600" : "text-gray-300")}>
+            {formatNumber(unreadableCount)}
           </div>
-        </div>
+        </button>
       </div>
 
-      {/* Queue Table */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-4">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="border-b border-gray-100 bg-gray-50/50">
-              <th className="text-left font-medium text-gray-500 px-3 py-2">Stage</th>
-              <th className="text-left font-medium text-gray-500 px-3 py-2 w-[72px]">Status</th>
-              <th className="text-right font-medium text-gray-500 px-3 py-2 w-[72px]">Done</th>
-              <th className="text-right font-medium text-gray-500 px-3 py-2 w-[56px]">Failed</th>
-              <th className="text-right font-medium text-gray-500 px-3 py-2 w-[64px]">Pending</th>
-              <th className="font-medium text-gray-500 px-3 py-2 w-[160px]">Progress</th>
-              <th className="w-8"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {QUEUE_ORDER.map((queueType) => {
-              const Icon = QUEUE_ICONS[queueType] || Activity;
-              const label = QUEUE_LABELS[queueType] || queueType;
-              const colors = STAGE_COLORS[queueType] ?? STAGE_COLORS.discovery!;
-              const stageStats = getStageStats(queueType);
-              const pct = stageStats.total > 0 ? Math.min(100, Math.round((stageStats.completed / stageStats.total) * 100)) : 0;
-              
-              // Events is a batch operation - show count instead of progress
-              const isBatchStage = queueType === "events";
-              const eventCount = stageStats.count || 0;
-              const facesFound = stageStats.faces_found;
-              
-              return (
-                <tr key={queueType} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/40">
-                  <td className="px-3 py-1.5">
-                    <div className="flex items-center gap-2">
-                      <Icon className={`w-3.5 h-3.5 ${colors.text} shrink-0`} />
-                      <span className="font-medium text-gray-900">{label}</span>
-                      {facesFound !== undefined && facesFound > 0 && (
-                        <span className="text-[10px] text-gray-400">({formatNumber(facesFound)} faces)</span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-3 py-1.5">
-                    <StageBadge status={stageStats.status} queued={stageStats.queued} enabled={stageStats.enabled} />
-                  </td>
-                  <td className="px-3 py-1.5 text-right tabular-nums font-medium text-gray-900">
-                    {isBatchStage ? (
-                      <span className="text-gray-500">{formatNumber(eventCount)} events</span>
-                    ) : (
-                      <>
-                        {formatNumber(stageStats.completed)}<span className="text-gray-400">/{formatNumber(stageStats.total)}</span>
-                      </>
-                    )}
-                  </td>
-                  <td className="px-3 py-1.5 text-right tabular-nums">
-                    <span className="text-gray-300">-</span>
-                  </td>
-                  <td className="px-3 py-1.5 text-right tabular-nums">
-                    {isBatchStage ? (
-                      <span className="text-gray-300">-</span>
-                    ) : stageStats.queued > 0 ? (
-                      <span className="font-medium text-gray-600">{formatNumber(stageStats.queued)}</span>
-                    ) : (
-                      <span className="text-gray-300">-</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-1.5">
-                    {isBatchStage ? (
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
-                          <div className={`h-full ${colors.bar} rounded-full`} style={{ width: "100%" }} />
-                        </div>
-                        <span className="text-[10px] tabular-nums text-gray-500 w-8 text-right">done</span>
-                      </div>
-                    ) : !stageStats.enabled ? (
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-gray-300 rounded-full" style={{ width: "0%" }} />
-                        </div>
-                        <span className="text-[10px] tabular-nums text-gray-400 w-8 text-right">off</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full ${colors.bar} rounded-full transition-all duration-700 ease-out ${stageStats.status === "processing" ? "animate-pulse" : ""}`}
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
-                        <span className="text-[10px] tabular-nums text-gray-500 w-8 text-right">{pct}%</span>
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-1 py-1.5">
-                    {CLEARABLE_STAGES.has(queueType) && !isActive && (
-                      <button
-                        onClick={() => handleClearStage(queueType)}
-                        className="p-1 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
-                        title={`Clear ${label} data and re-process`}
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Error Log */}
-      {stats.error_log && stats.error_log.length > 0 && (
-        <div className="bg-white border border-red-200 rounded-xl overflow-hidden mb-4">
-          <div className="px-3 py-2 bg-red-50 border-b border-red-100 flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-red-500" />
-            <span className="text-sm font-medium text-red-700">Recent Errors</span>
-            <span className="text-xs text-red-500 ml-auto">{stats.error_log.length}</span>
+      {/* Unreadable files drawer */}
+      {showFailures && failures.length > 0 && (
+        <div className="bg-white border border-amber-200 rounded-xl overflow-hidden mb-6">
+          <div className="px-3 py-2 bg-amber-50 border-b border-amber-100 flex items-center gap-2">
+            <Eye className="w-4 h-4 text-amber-600" />
+            <span className="text-sm font-medium text-amber-800">
+              Files that could not be processed
+            </span>
+            <span className="text-xs text-amber-600 ml-auto">
+              won't be retried — fix or delete the file, or use a rebuild below
+            </span>
           </div>
-          <div className="max-h-48 overflow-y-auto">
+          <div className="max-h-64 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-gray-100 bg-gray-50/50 sticky top-0">
-                  <th className="text-left font-medium text-gray-500 px-3 py-1.5">Time</th>
-                  <th className="text-left font-medium text-gray-500 px-3 py-1.5">Stage</th>
-                  <th className="text-left font-medium text-gray-500 px-3 py-1.5">File</th>
-                  <th className="text-left font-medium text-gray-500 px-3 py-1.5">Error</th>
-                </tr>
-              </thead>
               <tbody>
-                {stats.error_log.map((err, i) => (
-                  <tr key={i} className="border-b border-gray-50 last:border-0 hover:bg-red-50/30">
-                    <td className="px-3 py-1.5 text-gray-500 tabular-nums whitespace-nowrap">
-                      {new Date(err.timestamp).toLocaleTimeString()}
+                {failures.map((f) => (
+                  <tr key={`${f.file_hash}-${f.stage}`} className="border-b border-gray-50 last:border-0">
+                    <td className="px-3 py-1.5 text-gray-700 max-w-72 truncate" title={f.file_path}>
+                      {f.file_path}
                     </td>
                     <td className="px-3 py-1.5">
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-700">
-                        {err.queue}
+                      <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600">
+                        {QUEUE_LABELS[f.stage] || f.stage}
                       </span>
                     </td>
-                    <td className="px-3 py-1.5 text-gray-600 max-w-48 truncate" title={err.file_path || err.file_hash}>
-                      {err.file_path ? err.file_path.split(/[\\/]/).pop() : err.file_hash.slice(0, 12)}
-                    </td>
-                    <td className="px-3 py-1.5 text-red-600 max-w-64 truncate" title={err.error}>
-                      {err.error}
+                    <td className="px-3 py-1.5 text-amber-700 max-w-64 truncate" title={f.error || ""}>
+                      {f.error}
                     </td>
                   </tr>
                 ))}
@@ -548,41 +405,194 @@ export function Pipeline() {
         </div>
       )}
 
-      {/* Processing Log */}
-      {logs.length > 0 && (
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <div className="px-3 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
-            <Activity className="w-4 h-4 text-gray-500" />
-            <span className="text-sm font-medium text-gray-700">Processing Log</span>
-            <span className="text-xs text-gray-400 ml-auto">{logs.length} entries</span>
-          </div>
-          <div className="max-h-80 overflow-y-auto font-mono text-[11px]">
-            {logs.slice(-100).reverse().map((log, i) => {
-              const stageMatch = log.message.match(/^\[(\w+)\]/);
-              const stage = stageMatch ? stageMatch[1] : null;
-              const colors: Record<string, string> = {
-                exif: "text-blue-600",
-                geocoding: "text-cyan-600",
-                thumbnails: "text-teal-600",
-                motion: "text-emerald-600",
-                hashing: "text-amber-600",
-                faces: "text-rose-600",
-                captioning: "text-pink-600",
+      {/* Stage table */}
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-6">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-gray-100 bg-gray-50/50">
+              <th className="text-left font-medium text-gray-500 px-3 py-2">Stage</th>
+              <th className="text-left font-medium text-gray-500 px-3 py-2 w-[130px]">Status</th>
+              <th className="text-right font-medium text-gray-500 px-3 py-2 w-[130px]">Done</th>
+              <th className="text-right font-medium text-gray-500 px-3 py-2 w-[64px]">Issues</th>
+              <th className="font-medium text-gray-500 px-3 py-2 w-[180px]">Progress</th>
+            </tr>
+          </thead>
+          <tbody>
+            {QUEUE_ORDER.map((queueType) => {
+              const Icon = QUEUE_ICONS[queueType] || Activity;
+              const label = QUEUE_LABELS[queueType] || queueType;
+              const stage: StageStats = processingStats?.stages[queueType] || {
+                status: "pending", queued: 0, completed: 0, total: 0, enabled: true, failed: 0,
               };
-              const colorClass = stage ? colors[stage] || "text-gray-700" : "text-gray-700";
-              const levelColor = log.level === "WARNING" ? "text-amber-600" : log.level === "ERROR" ? "text-red-600" : colorClass;
-              
+              const isBatch = queueType === "events";
+
+              const donePct = stage.total > 0 ? Math.floor((stage.completed / stage.total) * 100) : 0;
+              const failedPct = stage.total > 0 ? Math.ceil((stage.failed / stage.total) * 100) : 0;
+              const complete = stage.completed + stage.failed >= stage.total && stage.total > 0;
+
               return (
-                <div key={i} className={`px-3 py-1 border-b border-gray-50 ${levelColor}`}>
-                  <span className="text-gray-400 mr-2">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                  {log.message}
-                </div>
+                <tr key={queueType} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/40">
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <Icon className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                      <span className="font-medium text-gray-900">{label}</span>
+                      {stage.faces_found !== undefined && stage.faces_found > 0 && (
+                        <span className="text-[10px] text-gray-400">
+                          ({formatNumber(stage.faces_found)} faces)
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2">
+                    {!stage.enabled ? (
+                      <span className="inline-flex text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">Disabled</span>
+                    ) : stage.queued > 0 ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full">
+                        <Activity className="w-2.5 h-2.5 animate-pulse" />
+                        Processing ({formatNumber(stage.queued)} queued)
+                      </span>
+                    ) : stage.failed > 0 ? (
+                      <span className="inline-flex text-[10px] font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-full">Done with exceptions</span>
+                    ) : complete || isBatch ? (
+                      <span className="inline-flex text-[10px] font-medium text-green-600 bg-green-50 px-1.5 py-0.5 rounded-full">Done</span>
+                    ) : (
+                      <span className="inline-flex text-[10px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">Waiting</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums font-medium text-gray-900">
+                    {isBatch ? (
+                      <span className="text-gray-500">{formatNumber(stage.count || 0)} events</span>
+                    ) : (
+                      <>
+                        {formatNumber(stage.completed)}
+                        <span className="text-gray-400"> / {formatNumber(stage.total)}</span>
+                      </>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {stage.failed > 0 ? (
+                      <span className="font-medium text-amber-600">{formatNumber(stage.failed)}</span>
+                    ) : (
+                      <span className="text-gray-200">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    {isBatch || !stage.enabled ? (
+                      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div
+                          className={clsx("h-full rounded-full", !stage.enabled ? "bg-gray-200" : "bg-green-500")}
+                          style={{ width: !stage.enabled ? "0%" : "100%" }}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden flex">
+                          <div className="h-full bg-green-500" style={{ width: `${donePct}%` }} />
+                          {stage.failed > 0 && (
+                            <div className="h-full bg-amber-400" style={{ width: `${failedPct}%` }} />
+                          )}
+                        </div>
+                        <span className="text-[10px] tabular-nums text-gray-500 w-8 text-right">
+                          {complete && stage.failed === 0 ? "100%" : `${donePct}%`}
+                        </span>
+                      </div>
+                    )}
+                  </td>
+                </tr>
               );
             })}
-            <div ref={logsEndRef} />
+          </tbody>
+        </table>
+      </div>
+
+      {/* Activity feed */}
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-8">
+        <div className="px-3 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
+          <Activity className="w-4 h-4 text-gray-500" />
+          <span className="text-sm font-medium text-gray-700">Activity</span>
+          <div className="ml-auto flex rounded-lg border border-gray-200 overflow-hidden text-xs">
+            <button
+              onClick={() => setLogFilter("problems")}
+              className={clsx("px-2.5 py-1 transition-colors", logFilter === "problems" ? "bg-gray-200 text-gray-800 font-medium" : "bg-white text-gray-500 hover:bg-gray-50")}
+            >
+              Problems
+            </button>
+            <button
+              onClick={() => setLogFilter("all")}
+              className={clsx("px-2.5 py-1 transition-colors", logFilter === "all" ? "bg-gray-200 text-gray-800 font-medium" : "bg-white text-gray-500 hover:bg-gray-50")}
+            >
+              All
+            </button>
           </div>
         </div>
-      )}
+        <div className="max-h-80 overflow-y-auto text-xs">
+          {filteredLogs.length === 0 ? (
+            <div className="px-3 py-6 text-center text-gray-400">
+              {logFilter === "problems" ? "No problems logged." : "No recent activity."}
+            </div>
+          ) : (
+            filteredLogs.map((log, i) => {
+              const isSkip = log.level === "WARNING";
+              const isError = log.level === "ERROR";
+              return (
+                <div
+                  key={i}
+                  className={clsx(
+                    "px-3 py-1.5 border-b border-gray-50 last:border-0 flex items-baseline gap-2",
+                    isSkip && "border-l-2 border-l-amber-400 bg-amber-50/40",
+                    isError && "border-l-2 border-l-red-400 bg-red-50/40"
+                  )}
+                >
+                  <span className="text-gray-400 whitespace-nowrap tabular-nums">
+                    {formatWhen(log.timestamp)}
+                  </span>
+                  {isSkip && (
+                    <span className="shrink-0 text-[10px] font-medium text-amber-700 bg-amber-100 px-1.5 rounded-full">
+                      Skipped
+                    </span>
+                  )}
+                  {isError && (
+                    <span className="shrink-0 text-[10px] font-medium text-red-700 bg-red-100 px-1.5 rounded-full">
+                      Error
+                    </span>
+                  )}
+                  <span className={clsx("break-all", isError ? "text-red-700" : isSkip ? "text-amber-800" : "text-gray-600")}>
+                    {log.message}
+                  </span>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      {/* Danger zone */}
+      <div className="border-t-2 border-red-200 pt-4 pb-8">
+        <h2 className="text-sm font-semibold text-gray-700 mb-1">Destructive maintenance</h2>
+        <p className="text-xs text-gray-500 mb-3">
+          Rebuilds delete a stage's data for all photos and re-process from scratch. Your photo
+          files are never touched.
+        </p>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {REBUILDABLE.map(({ stage, label, warning }) => (
+            <button
+              key={stage}
+              onClick={() => handleRebuildStage(stage, warning)}
+              disabled={isActive}
+              className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-40 transition-colors"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={handleClearIndex}
+          disabled={isActive || isTriggering}
+          className="text-xs text-red-600 hover:text-red-700 hover:underline disabled:opacity-40"
+        >
+          Delete entire index and start over…
+        </button>
+      </div>
     </div>
   );
 }
