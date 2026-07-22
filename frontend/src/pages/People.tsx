@@ -79,6 +79,14 @@ export function PersonDetail() {
 
   const handleIgnore = useCallback(async () => {
     if (!person) return;
+    if (
+      !window.confirm(
+        `Hide ${personName(person)} (${person.photo_count} photos) from the people list?\n\n` +
+          `The photos stay in your library. You can restore them under "Ignored people" on the People page.`
+      )
+    ) {
+      return;
+    }
     await api.ignorePerson(person.person_id);
     navigate("/people");
   }, [person, navigate]);
@@ -300,10 +308,18 @@ export function People() {
     setShowIgnored(true);
   }, [showIgnored]);
 
-  const handleIgnore = useCallback(async (e: React.MouseEvent, personId: number) => {
+  const handleIgnore = useCallback(async (e: React.MouseEvent, person: PersonSummary) => {
     e.stopPropagation();
-    await api.ignorePerson(personId);
-    setPersons((prev) => prev.filter((p) => p.person_id !== personId));
+    if (
+      !window.confirm(
+        `Hide ${personName(person)} (${person.photo_count} photos) from the people list?\n\n` +
+          `The photos stay in your library. You can restore them under "Ignored people" below.`
+      )
+    ) {
+      return;
+    }
+    await api.ignorePerson(person.person_id);
+    setPersons((prev) => prev.filter((p) => p.person_id !== person.person_id));
     if (showIgnored) {
       const data = await api.getIgnoredPersons();
       setIgnoredPersons(data);
@@ -452,7 +468,7 @@ export function People() {
               <p className="text-xs text-gray-400">{person.photo_count} photos</p>
             </div>
             <button
-              onClick={(e) => handleIgnore(e, person.person_id)}
+              onClick={(e) => handleIgnore(e, person)}
               className="absolute top-1 right-1 p-1 rounded-full bg-white/80 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-200"
               title="Ignore"
             >
