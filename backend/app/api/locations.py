@@ -43,6 +43,7 @@ async def list_countries(session: AsyncSession = Depends(get_session)):
             func.count(Photo.file_hash).label("count"),
         )
         .where(Photo.location_country.is_not(None))
+        .where(Photo.flagged_for_removal == False)  # noqa: E712
         .group_by(Photo.location_country)
         .order_by(func.count(Photo.file_hash).desc())
     )
@@ -65,6 +66,7 @@ async def list_cities(
             func.count(Photo.file_hash).label("count"),
         )
         .where(Photo.location_city.is_not(None))
+        .where(Photo.flagged_for_removal == False)  # noqa: E712
         .group_by(Photo.location_city, Photo.location_country)
         .order_by(func.count(Photo.file_hash).desc())
     )
@@ -105,6 +107,7 @@ async def get_map_points(
         .where(
             Photo.gps_latitude.is_not(None),
             Photo.gps_longitude.is_not(None),
+            Photo.flagged_for_removal == False,  # noqa: E712
         )
         .order_by(Photo.date_taken.desc().nullslast())
     )
@@ -159,6 +162,7 @@ async def get_trail(
             Photo.gps_latitude.is_not(None),
             Photo.gps_longitude.is_not(None),
             Photo.date_taken.is_not(None),
+            Photo.flagged_for_removal == False,  # noqa: E712
         )
         .order_by(Photo.date_taken.asc())
     )
@@ -211,7 +215,10 @@ async def get_location_photos(
     session: AsyncSession = Depends(get_session),
 ):
     """Get photos from a specific location."""
-    query = select(Photo).where(Photo.location_city.is_not(None))
+    query = select(Photo).where(
+        Photo.location_city.is_not(None),
+        Photo.flagged_for_removal == False,  # noqa: E712
+    )
 
     if country:
         query = query.where(Photo.location_country == country)

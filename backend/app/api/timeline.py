@@ -39,6 +39,7 @@ async def get_years(session: AsyncSession = Depends(get_session)):
             ).label("year"),
             func.count(Photo.file_hash).label("count"),
         )
+        .where(Photo.flagged_for_removal == False)  # noqa: E712
         .group_by(
             func.coalesce(
                 extract("year", Photo.date_taken),
@@ -74,6 +75,7 @@ async def get_years(session: AsyncSession = Depends(get_session)):
                        ) AS cnt
                 FROM photos
                 WHERE COALESCE(date_taken, file_modified) IS NOT NULL
+                  AND flagged_for_removal = 0
             )
             SELECT year, file_hash FROM yearly
             WHERE rn = 1 OR rn = cnt / 4 + 1 OR rn = cnt / 2 + 1 OR rn = 3 * cnt / 4 + 1
@@ -101,7 +103,7 @@ async def get_timeline(
     session: AsyncSession = Depends(get_session),
 ):
     """Get photos grouped by time period."""
-    query = select(Photo)
+    query = select(Photo).where(Photo.flagged_for_removal == False)  # noqa: E712
 
     if year:
         query = query.where(extract("year", Photo.date_taken) == year)

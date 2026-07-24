@@ -47,7 +47,10 @@ async def list_events(
     cover_photos: dict[str, Photo] = {}
     if cover_hashes:
         cover_result = await session.execute(
-            select(Photo).where(Photo.file_hash.in_(cover_hashes))
+            select(Photo).where(
+                Photo.file_hash.in_(cover_hashes),
+                Photo.flagged_for_removal == False,  # noqa: E712
+            )
         )
         cover_photos = {p.file_hash: p for p in cover_result.scalars().all()}
 
@@ -78,6 +81,8 @@ async def get_event(event_id: int, session: AsyncSession = Depends(get_session))
     cover_photo = None
     if event.cover_file_hash:
         cover_photo = await session.get(Photo, event.cover_file_hash)
+        if cover_photo and cover_photo.flagged_for_removal:
+            cover_photo = None
 
     return EventSummary(
         event_id=event.event_id,
@@ -107,6 +112,7 @@ async def get_event_photos(
         select(Photo)
         .join(EventPhoto, EventPhoto.file_hash == Photo.file_hash)
         .where(EventPhoto.event_id == event_id)
+        .where(Photo.flagged_for_removal == False)  # noqa: E712
     )
 
     count_query = select(func.count()).select_from(query.subquery())
@@ -149,6 +155,7 @@ async def get_event_collage(
         .join(EventPhoto, EventPhoto.file_hash == Photo.file_hash)
         .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
         .where(EventPhoto.event_id == event_id)
+        .where(Photo.flagged_for_removal == False)  # noqa: E712
         .order_by(Photo.date_taken.asc().nullslast())
     )
     result = await session.execute(query)

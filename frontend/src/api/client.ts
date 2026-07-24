@@ -34,6 +34,9 @@ export interface PhotoSummary {
   date_taken: string | null;
   is_favorite: boolean;
   marked_for_print: boolean;
+  flagged_for_removal: boolean;
+  is_video: boolean;
+  duration: number | null;
   thumbnail_url: string | null;
   has_live_photo: boolean;
   caption: string | null;
@@ -231,6 +234,8 @@ export interface LibraryStats {
   locations_count: number;
   favorites_count: number;
   to_print_count: number;
+  flagged_count: number;
+  videos_count: number;
 }
 
 export interface DuplicatePhotoSummary extends PhotoSummary {
@@ -337,6 +342,11 @@ export const api = {
 
   clearPrintList: () =>
     request<{ removed: number }>("/photos/print/clear", { method: "POST" }),
+
+  toggleFlag: (hash: string) =>
+    request<{ file_hash: string; flagged_for_removal: boolean }>(`/photos/${hash}/flag`, {
+      method: "POST",
+    }),
 
   getStats: () => request<LibraryStats>("/photos/stats"),
 

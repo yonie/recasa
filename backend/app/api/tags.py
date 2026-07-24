@@ -44,6 +44,8 @@ async def list_tags(
             PhotoTag.tag_id,
             func.count(PhotoTag.file_hash).label("count"),
         )
+        .join(Photo, Photo.file_hash == PhotoTag.file_hash)
+        .where(Photo.flagged_for_removal == False)  # noqa: E712
         .group_by(PhotoTag.tag_id)
         .subquery()
     )
@@ -54,14 +56,20 @@ async def list_tags(
         .order_by(counts.c.count.desc(), Tag.name.asc())
         .limit(limit)
     )
-    total_query = select(func.count(func.distinct(PhotoTag.tag_id)))
+    total_query = (
+        select(func.count(func.distinct(PhotoTag.tag_id)))
+        .join(Photo, Photo.file_hash == PhotoTag.file_hash)
+        .where(Photo.flagged_for_removal == False)  # noqa: E712
+    )
     if q:
         pattern = f"%{q}%"
         query = query.where(Tag.name.ilike(pattern))
         total_query = (
             select(func.count(func.distinct(PhotoTag.tag_id)))
             .join(Tag, Tag.tag_id == PhotoTag.tag_id)
+            .join(Photo, Photo.file_hash == PhotoTag.file_hash)
             .where(Tag.name.ilike(pattern))
+            .where(Photo.flagged_for_removal == False)  # noqa: E712
         )
 
     total = (await session.execute(total_query)).scalar() or 0
@@ -90,7 +98,10 @@ async def get_tag(tag_id: int, session: AsyncSession = Depends(get_session)):
 
     count = (
         await session.execute(
-            select(func.count(PhotoTag.file_hash)).where(PhotoTag.tag_id == tag_id)
+            select(func.count(PhotoTag.file_hash))
+            .join(Photo, Photo.file_hash == PhotoTag.file_hash)
+            .where(PhotoTag.tag_id == tag_id)
+            .where(Photo.flagged_for_removal == False)  # noqa: E712
         )
     ).scalar() or 0
 
@@ -113,6 +124,7 @@ async def get_tag_photos(
         select(Photo)
         .join(PhotoTag, PhotoTag.file_hash == Photo.file_hash)
         .where(PhotoTag.tag_id == tag_id)
+        .where(Photo.flagged_for_removal == False)  # noqa: E712
     )
 
     count_query = select(func.count()).select_from(query.subquery())

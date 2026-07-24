@@ -139,6 +139,7 @@ async def get_person_photos(
         select(Photo)
         .join(Face, Face.file_hash == Photo.file_hash)
         .where(Face.person_id == person_id)
+        .where(Photo.flagged_for_removal == False)  # noqa: E712
         .distinct()
     )
 
@@ -306,7 +307,10 @@ async def list_person_groups(
     # Fetch cover photos
     cover_hashes = set(group_photos[g] for g, _ in top_groups if g in group_photos)
     photos_result = await session.execute(
-        select(Photo).where(Photo.file_hash.in_(cover_hashes))
+        select(Photo).where(
+            Photo.file_hash.in_(cover_hashes),
+            Photo.flagged_for_removal == False,  # noqa: E712
+        )
     )
     photos_map = {p.file_hash: p for p in photos_result.scalars().all()}
 
@@ -392,6 +396,7 @@ async def _get_together_photos(
     query = select(Photo).where(
         Photo.file_hash.in_(select(together)),
         Photo.file_hash.not_in(select(other_faces)),
+        Photo.flagged_for_removal == False,  # noqa: E712
     )
 
     count_query = select(func.count()).select_from(query.subquery())
@@ -430,6 +435,7 @@ async def get_person_collage(
         .join(Face, Face.file_hash == Photo.file_hash)
         .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
         .where(Face.person_id == person_id)
+        .where(Photo.flagged_for_removal == False)  # noqa: E712
         .distinct(Photo.file_hash)
         .order_by(Photo.date_taken.asc().nullslast())
     )
@@ -509,6 +515,7 @@ async def _together_collage(person_ids: list[int], grid: int, seed: int, session
         .where(
             Photo.file_hash.in_(select(together)),
             Photo.file_hash.not_in(select(other_faces)),
+            Photo.flagged_for_removal == False,  # noqa: E712
         )
         .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
         .order_by(Photo.date_taken.asc().nullslast())

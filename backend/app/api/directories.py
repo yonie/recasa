@@ -30,7 +30,9 @@ def _photo_to_summary(photo: Photo) -> PhotoSummary:
 @router.get("", response_model=list[DirectoryNode])
 async def get_directory_tree(session: AsyncSession = Depends(get_session)):
     """Get the full directory tree structure with photo counts."""
-    result = await session.execute(select(Photo.file_path))
+    result = await session.execute(
+        select(Photo.file_path).where(Photo.flagged_for_removal == False)  # noqa: E712
+    )
     paths = result.scalars().all()
 
     # Build tree structure
@@ -79,6 +81,7 @@ async def get_directory_photos(
     # Match photos in this directory (not subdirectories for direct listing)
     query = select(Photo).where(
         Photo.file_path.like(f"{path}/%"),
+        Photo.flagged_for_removal == False,  # noqa: E712
     )
 
     # Count total

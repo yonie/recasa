@@ -40,6 +40,9 @@ def _photo_to_summary(photo: Photo) -> PhotoSummary:
         date_taken=photo.date_taken,
         is_favorite=photo.is_favorite,
         marked_for_print=photo.marked_for_print,
+        flagged_for_removal=photo.flagged_for_removal,
+        is_video=photo.is_video,
+        duration=photo.duration,
         thumbnail_url=f"/api/photos/{photo.file_hash}/thumbnail/600",
         has_live_photo=bool(photo.live_photo_video or photo.motion_photo),
     )
@@ -53,6 +56,8 @@ async def list_photos(
     order: str = Query("desc", pattern="^(asc|desc)$"),
     favorite: bool | None = None,
     marked_for_print: bool | None = None,
+    flagged: bool | None = None,
+    video: bool | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     country: str | None = None,
@@ -64,10 +69,17 @@ async def list_photos(
     query = select(Photo)
 
     # Apply filters
+    # Flagged-for-removal photos are hidden everywhere except the Flagged page.
+    if flagged:
+        query = query.where(Photo.flagged_for_removal == True)  # noqa: E712
+    else:
+        query = query.where(Photo.flagged_for_removal == False)  # noqa: E712
     if favorite is not None:
         query = query.where(Photo.is_favorite == favorite)
     if marked_for_print is not None:
         query = query.where(Photo.marked_for_print == marked_for_print)
+    if video is not None:
+        query = query.where(Photo.is_video == video)
     if date_from:
         query = query.where(Photo.date_taken >= date_from)
     if date_to:
@@ -142,19 +154,30 @@ async def list_photos(
 @router.get("/stats", response_model=LibraryStats)
 async def get_stats(session: AsyncSession = Depends(get_session)):
     """Get library statistics."""
-    total = (await session.execute(select(func.count(Photo.file_hash)))).scalar() or 0
-    total_size = (await session.execute(select(func.sum(Photo.file_size)))).scalar() or 0
+    visible = Photo.flagged_for_removal == False  # noqa: E712
+    total = (await session.execute(select(func.count(Photo.file_hash)).where(visible))).scalar() or 0
+    total_size = (await session.execute(select(func.sum(Photo.file_size)).where(visible))).scalar() or 0
     total_faces = (await session.execute(select(func.count(Face.face_id)))).scalar() or 0
     total_persons = (await session.execute(select(func.count(Person.person_id)))).scalar() or 0
     total_tags = (await session.execute(select(func.count(Tag.tag_id)))).scalar() or 0
     favorites = (
         await session.execute(
-            select(func.count(Photo.file_hash)).where(Photo.is_favorite == True)  # noqa: E712
+            select(func.count(Photo.file_hash)).where(Photo.is_favorite == True, visible)  # noqa: E712
         )
     ).scalar() or 0
     to_print = (
         await session.execute(
-            select(func.count(Photo.file_hash)).where(Photo.marked_for_print == True)  # noqa: E712
+            select(func.count(Photo.file_hash)).where(Photo.marked_for_print == True, visible)  # noqa: E712
+        )
+    ).scalar() or 0
+    flagged = (
+        await session.execute(
+            select(func.count(Photo.file_hash)).where(Photo.flagged_for_removal == True)  # noqa: E712
+        )
+    ).scalar() or 0
+    videos = (
+        await session.execute(
+            select(func.count(Photo.file_hash)).where(Photo.is_video == True, visible)  # noqa: E712
         )
     ).scalar() or 0
 
@@ -188,6 +211,8 @@ async def get_stats(session: AsyncSession = Depends(get_session)):
         locations_count=locations,
         favorites_count=favorites,
         to_print_count=to_print,
+        flagged_count=flagged,
+        videos_count=videos,
     )
 
 
@@ -209,6 +234,7 @@ async def get_photos_collage(
     query = (
         select(Photo.file_hash, PhotoHash.phash)
         .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
+        .where(Photo.flagged_for_removal == False)  # noqa: E712
     )
     if favorite is not None:
         query = query.where(Photo.is_favorite == favorite)
@@ -245,7 +271,10 @@ async def export_print_zip(session: AsyncSession = Depends(get_session)):
 
     result = await session.execute(
         select(Photo)
-        .where(Photo.marked_for_print == True)  # noqa: E712
+        .where(
+            Photo.marked_for_print == True,  # noqa: E712
+            Photo.flagged_for_removal == False,  # noqa: E712
+        )
         .order_by(Photo.date_taken.asc().nullslast())
     )
     photos = result.scalars().all()
@@ -368,6 +397,9 @@ async def get_photo(file_hash: str, session: AsyncSession = Depends(get_session)
         date_taken=photo.date_taken,
         is_favorite=photo.is_favorite,
         marked_for_print=photo.marked_for_print,
+        flagged_for_removal=photo.flagged_for_removal,
+        is_video=photo.is_video,
+        duration=photo.duration,
         file_modified=photo.file_modified,
         location=location,
         exif=exif,
@@ -448,3 +480,20 @@ async def toggle_print(file_hash: str, session: AsyncSession = Depends(get_sessi
     await session.commit()
 
     return {"file_hash": file_hash, "marked_for_print": photo.marked_for_print}
+
+
+@router.post("/{file_hash}/flag")
+async def toggle_flag(file_hash: str, session: AsyncSession = Depends(get_session)):
+    """Toggle a photo's flagged-for-removal status.
+
+    The app never deletes files: flagged photos are hidden from normal views
+    and listed on the Flagged page with their paths for manual removal.
+    """
+    photo = await session.get(Photo, file_hash)
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    photo.flagged_for_removal = not photo.flagged_for_removal
+    await session.commit()
+
+    return {"file_hash": file_hash, "flagged_for_removal": photo.flagged_for_removal}

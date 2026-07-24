@@ -76,6 +76,7 @@ async def get_duplicates(
             select(Photo)
             .join(DuplicateMember, DuplicateMember.file_hash == Photo.file_hash)
             .where(DuplicateMember.group_id == group.group_id)
+            .where(Photo.flagged_for_removal == False)  # noqa: E712
         )
         members_result = await session.execute(members_query)
         photos = members_result.scalars().all()
@@ -98,6 +99,9 @@ async def get_duplicates(
     result = []
     for group in groups:
         photos = group_photos[group.group_id]
+        if len(photos) < 2:
+            # After hiding flagged photos the group no longer has duplicates.
+            continue
         result.append(
             DuplicateGroupSummary(
                 group_id=group.group_id,
@@ -141,7 +145,10 @@ async def get_large_files(
     session: AsyncSession = Depends(get_session),
 ):
     """Get photos above a certain file size, sorted largest first."""
-    query = select(Photo).where(Photo.file_size >= min_size)
+    query = select(Photo).where(
+        Photo.file_size >= min_size,
+        Photo.flagged_for_removal == False,  # noqa: E712
+    )
 
     count_query = select(func.count()).select_from(query.subquery())
     total = (await session.execute(count_query)).scalar() or 0

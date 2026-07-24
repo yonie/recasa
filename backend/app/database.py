@@ -64,6 +64,9 @@ async def _migrate_photo_columns(conn) -> None:
     new_columns = {
         "marked_for_print": "BOOLEAN DEFAULT 0 NOT NULL",
         "exported_at": "DATETIME",
+        "flagged_for_removal": "BOOLEAN DEFAULT 0 NOT NULL",
+        "is_video": "BOOLEAN DEFAULT 0 NOT NULL",
+        "duration": "REAL",
     }
     for name, ddl in new_columns.items():
         if name not in existing:

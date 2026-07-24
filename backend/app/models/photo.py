@@ -48,6 +48,13 @@ class Photo(Base):
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
     marked_for_print: Mapped[bool] = mapped_column(Boolean, default=False)
     exported_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Flagged photos are hidden from every normal view; the user deletes the
+    # files manually and the sweep then cleans the index.
+    flagged_for_removal: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Video (standalone videos share this table so all views work unchanged)
+    is_video: Mapped[bool] = mapped_column(Boolean, default=False)
+    duration: Mapped[float | None] = mapped_column(Float)
 
     # Timestamps
     indexed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

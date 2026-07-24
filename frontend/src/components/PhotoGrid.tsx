@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Star, Play, Printer, Grid2x2, Grid3x3, LayoutGrid, Crop, Expand } from "lucide-react";
+import { Star, Play, Printer, Flag, Grid2x2, Grid3x3, LayoutGrid, Crop, Expand } from "lucide-react";
 import { clsx } from "clsx";
 import type { PhotoSummary } from "../api/client";
 import { api, thumbnailUrl, livePhotoUrl } from "../api/client";
@@ -182,6 +182,21 @@ function PhotoGridItem({
     [photo, onPrintToggle, setStats, queryClient]
   );
 
+  const handleFlag = useCallback(
+    async (e: React.MouseEvent) => {
+      e.stopPropagation();
+      try {
+        await api.toggleFlag(photo.file_hash);
+        // Flagged photos leave normal views; refetch removes the tile.
+        api.getStats().then(setStats).catch(() => {});
+        queryClient.invalidateQueries();
+      } catch {
+        // ignore
+      }
+    },
+    [photo, setStats, queryClient]
+  );
+
 
   const [everHovered, setEverHovered] = useState(false);
 
@@ -280,16 +295,32 @@ function PhotoGridItem({
           />
         </button>
 
-        {/* Print toggle */}
+        {/* Print toggle (photos only — videos can't be printed) */}
+        {!photo.is_video && (
+          <button
+            onClick={handlePrint}
+            className="absolute top-2 right-9 p-1 rounded-full hover:bg-white/20 transition-colors"
+            title={isMarkedForPrint ? "Remove from To Print" : "Add to To Print"}
+          >
+            <Printer
+              className={clsx(
+                "w-5 h-5",
+                isMarkedForPrint ? "fill-sky-400 text-sky-400" : "text-white"
+              )}
+            />
+          </button>
+        )}
+
+        {/* Flag for removal */}
         <button
-          onClick={handlePrint}
-          className="absolute top-2 right-9 p-1 rounded-full hover:bg-white/20 transition-colors"
-          title={isMarkedForPrint ? "Remove from To Print" : "Add to To Print"}
+          onClick={handleFlag}
+          className="absolute top-2 right-16 p-1 rounded-full hover:bg-white/20 transition-colors"
+          title={photo.flagged_for_removal ? "Unflag" : "Flag for removal"}
         >
-          <Printer
+          <Flag
             className={clsx(
               "w-5 h-5",
-              isMarkedForPrint ? "fill-sky-400 text-sky-400" : "text-white"
+              photo.flagged_for_removal ? "fill-red-400 text-red-400" : "text-white"
             )}
           />
         </button>

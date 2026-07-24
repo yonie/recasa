@@ -3,6 +3,7 @@ import {
   X,
   Star,
   Printer,
+  Flag,
   MapPin,
   Camera,
   Clock,
@@ -54,6 +55,7 @@ export function PhotoViewer() {
       setDetail(viewerPhoto);
       setIsFavorite(viewerPhoto.is_favorite);
       setIsMarkedForPrint(viewerPhoto.marked_for_print);
+      setIsFlagged(viewerPhoto.flagged_for_removal);
     }
   }, [viewerPhoto]);
 
@@ -97,6 +99,10 @@ export function PhotoViewer() {
       if (e.key === "p") {
         // To Print toggle
         if (detail) handlePrint();
+      }
+      if (e.key === "r") {
+        // Flag for removal
+        if (detail) handleFlag();
       }
     },
     [closeViewer, canGoPrev, canGoNext, viewerIndex, navigateTo, detail]
@@ -161,6 +167,20 @@ export function PhotoViewer() {
     try {
       const result = await api.togglePrint(detail.file_hash);
       setIsMarkedForPrint(result.marked_for_print);
+      api.getStats().then(setStats).catch(() => {});
+      queryClient.invalidateQueries();
+    } catch {
+      // ignore
+    }
+  }, [detail, setStats, queryClient]);
+
+  const [isFlagged, setIsFlagged] = useState(false);
+
+  const handleFlag = useCallback(async () => {
+    if (!detail) return;
+    try {
+      const result = await api.toggleFlag(detail.file_hash);
+      setIsFlagged(result.flagged_for_removal);
       api.getStats().then(setStats).catch(() => {});
       queryClient.invalidateQueries();
     } catch {
@@ -234,6 +254,21 @@ export function PhotoViewer() {
                 className={clsx(
                   "w-5 h-5",
                   isMarkedForPrint && "fill-sky-400 text-sky-400"
+                )}
+              />
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleFlag();
+              }}
+              className="p-2 rounded-full bg-black/40 active:bg-black/60 text-white transition-colors"
+              title="Flag for removal (R)"
+            >
+              <Flag
+                className={clsx(
+                  "w-5 h-5",
+                  isFlagged && "fill-red-400 text-red-400"
                 )}
               />
             </button>
@@ -437,6 +472,8 @@ export function PhotoViewer() {
                 <span>Favorite</span>
                 <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">P</span>
                 <span>To Print</span>
+                <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">R</span>
+                <span>Flag for removal</span>
                 <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">&larr; &rarr;</span>
                 <span>Navigate</span>
               </div>

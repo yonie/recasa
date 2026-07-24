@@ -14,6 +14,9 @@ class PhotoBase(BaseModel):
     date_taken: datetime | None = None
     is_favorite: bool = False
     marked_for_print: bool = False
+    flagged_for_removal: bool = False
+    is_video: bool = False
+    duration: float | None = None
 
 
 class PhotoSummary(PhotoBase):
@@ -171,3 +174,5 @@ class LibraryStats(BaseModel):
     locations_count: int = 0
     favorites_count: int = 0
     to_print_count: int = 0
+    flagged_count: int = 0
+    videos_count: int = 0
