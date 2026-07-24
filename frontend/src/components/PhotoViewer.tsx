@@ -18,7 +18,7 @@ import {
 import { clsx } from "clsx";
 import { useQueryClient } from "@tanstack/react-query";
 import { useStore } from "../store/useStore";
-import { api, originalUrl, type PhotoDetail } from "../api/client";
+import { api, originalUrl, videoUrl, type PhotoDetail } from "../api/client";
 
 export function PhotoViewer() {
   const {
@@ -201,16 +201,28 @@ export function PhotoViewer() {
         onTouchMove={gestures.onTouchMove}
         onTouchEnd={gestures.onTouchEnd}
       >
-        <img
-          ref={gestures.imgRef}
-          src={originalUrl(detail.file_hash)}
-          alt={detail.file_name}
-          className={clsx(
-            "max-w-full max-h-full object-contain transition-opacity duration-200",
-            loading && "opacity-50"
-          )}
-          onClick={(e) => e.stopPropagation()}
-        />
+        {detail.is_video ? (
+          <video
+            src={videoUrl(detail.file_hash)}
+            className="max-w-full max-h-full object-contain"
+            controls
+            autoPlay
+            loop
+            playsInline
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <img
+            ref={gestures.imgRef}
+            src={originalUrl(detail.file_hash)}
+            alt={detail.file_name}
+            className={clsx(
+              "max-w-full max-h-full object-contain transition-opacity duration-200",
+              loading && "opacity-50"
+            )}
+            onClick={(e) => e.stopPropagation()}
+          />
+        )}
 
         {/* Top toolbar */}
         <div className="absolute top-0 left-0 right-0 flex items-center justify-between p-4 pt-[calc(1rem+env(safe-area-inset-top))]">

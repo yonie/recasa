@@ -44,6 +44,26 @@ def is_supported_photo(filepath: Path) -> bool:
     return filepath.suffix.lower() in settings.photo_extensions
 
 
+def is_supported_video(filepath: Path) -> bool:
+    """Check if a file is a supported standalone video format."""
+    return filepath.suffix.lower() in settings.video_extensions
+
+
+def is_indexable(filepath: Path) -> bool:
+    return is_supported_photo(filepath) or is_supported_video(filepath)
+
+
+def _is_live_photo_companion(filepath: Path) -> bool:
+    """True if this video is the movie half of a Live Photo (a sibling
+    photo shares its stem) — it's surfaced via the photo, not indexed alone."""
+    if filepath.suffix.lower() not in {".mov"}:
+        return False
+    for ext in settings.photo_extensions:
+        if filepath.with_suffix(ext).exists() or filepath.with_suffix(ext.upper()).exists():
+            return True
+    return False
+
+
 def is_valid_image(filepath: Path) -> bool:
     """Check if file is a valid readable image (not corrupted).
     
@@ -135,7 +155,11 @@ def _collect_photo_files(
         dir_unchanged = prev_mtime is not None and abs(prev_mtime - dir_mtime) < 1.0
         for f in files:
             filepath = Path(root) / f
-            if not is_supported_photo(filepath):
+            if not is_indexable(filepath):
+                continue
+            # Apple Live Photo movies (.mov beside a photo) are surfaced via
+            # the photo itself, so never index them as standalone videos.
+            if is_supported_video(filepath) and _is_live_photo_companion(filepath):
                 continue
             seen.add(str(filepath.relative_to(photos_dir)))
             if dir_unchanged:
@@ -349,8 +373,32 @@ async def _index_photo(
             return (file_hash, entry_stage)
         return None
 
-    # New photo - create record
+    # New file - create record
     mime_type, _ = mimetypes.guess_type(str(filepath))
+    is_video = is_supported_video(filepath)
+
+    if is_video:
+        from backend.app.services.video import extract_video_metadata
+
+        meta = await asyncio.to_thread(extract_video_metadata, filepath)
+        photo = Photo(
+            file_hash=file_hash,
+            file_path=relative_path,
+            file_name=filepath.name,
+            file_size=file_size,
+            file_modified=datetime.fromtimestamp(file_mtime),
+            mime_type=mime_type or "video/mp4",
+            is_video=True,
+            duration=meta.get("duration"),
+            width=meta.get("width"),
+            height=meta.get("height"),
+        )
+        session.add(photo)
+        session.add(PhotoPath(file_hash=file_hash, file_path=relative_path))
+        stats["new"] += 1
+        # Videos only need a poster thumbnail.
+        return (file_hash, "thumbnails")
+
     live_photo_video = None
     motion_photo = False
 
@@ -386,6 +434,16 @@ async def _get_entry_stage_async(photo: Photo, session) -> str | None:
     Stages with a recorded permanent failure are skipped — without this,
     photos that can never complete a stage get re-queued on every scan.
     """
+    # Videos only need a poster thumbnail; all other stages are image-only.
+    if photo.is_video:
+        if not thumb_exists(photo.file_hash):
+            failed_result = await session.execute(
+                select(StageFailure.stage).where(StageFailure.file_hash == photo.file_hash)
+            )
+            if "thumbnails" not in {row[0] for row in failed_result}:
+                return "thumbnails"
+        return None
+
     failed_result = await session.execute(
         select(StageFailure.stage).where(StageFailure.file_hash == photo.file_hash)
     )

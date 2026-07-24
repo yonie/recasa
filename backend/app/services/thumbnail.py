@@ -29,11 +29,26 @@ def _get_thumbnail_path(file_hash: str, size: int) -> Path:
     return settings.thumbnails_dir / prefix / f"{file_hash}_{size}.webp"
 
 
-def _generate_thumbnail(filepath: Path, file_hash: str, sizes: list[int]) -> list[Path]:
-    """Generate thumbnails at multiple sizes for a photo. Returns list of created paths."""
+def _generate_thumbnail(
+    filepath: Path, file_hash: str, sizes: list[int], is_video: bool = False
+) -> list[Path]:
+    """Generate thumbnails at multiple sizes for a photo. Returns list of created paths.
+
+    For videos the poster is the first frame (extracted via ffmpeg); the rest
+    of the resize pipeline is identical.
+    """
     created = []
 
     try:
+        if is_video:
+            from backend.app.services.video import extract_poster_frame
+
+            img = extract_poster_frame(filepath)
+            if img is None:
+                raise PermanentStageError("could not extract a video frame")
+            _resize_and_save(img, file_hash, sizes, created)
+            return created
+
         with Image.open(filepath) as img:
             # Handle EXIF orientation
             try:
@@ -46,25 +61,29 @@ def _generate_thumbnail(filepath: Path, file_hash: str, sizes: list[int]) -> lis
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
 
-            for size in sizes:
-                thumb_path = _get_thumbnail_path(file_hash, size)
-                thumb_path.parent.mkdir(parents=True, exist_ok=True)
+            _resize_and_save(img, file_hash, sizes, created)
 
-                if thumb_path.exists():
-                    created.append(thumb_path)
-                    continue
-
-                # Create thumbnail maintaining aspect ratio
-                thumb = img.copy()
-                thumb.thumbnail((size, size), Image.Resampling.LANCZOS)
-                thumb.save(thumb_path, "WEBP", quality=80)
-                created.append(thumb_path)
-
+    except PermanentStageError:
+        raise
     except Exception as e:
         logger.warning("Skipping corrupted image %s: %s", filepath, type(e).__name__)
         raise PermanentStageError(f"cannot read image ({type(e).__name__})") from e
 
     return created
+
+
+def _resize_and_save(img, file_hash: str, sizes: list[int], created: list[Path]) -> None:
+    """Write WebP thumbnails at each size from an already-open PIL image."""
+    for size in sizes:
+        thumb_path = _get_thumbnail_path(file_hash, size)
+        thumb_path.parent.mkdir(parents=True, exist_ok=True)
+        if thumb_path.exists():
+            created.append(thumb_path)
+            continue
+        thumb = img.copy()
+        thumb.thumbnail((size, size), Image.Resampling.LANCZOS)
+        thumb.save(thumb_path, "WEBP", quality=80)
+        created.append(thumb_path)
 
 
 async def generate_thumbnails(file_hash: str) -> bool:
@@ -86,7 +105,7 @@ async def generate_thumbnails(file_hash: str) -> bool:
             return False
 
         created = await asyncio.to_thread(
-            _generate_thumbnail, filepath, file_hash, settings.thumbnail_sizes
+            _generate_thumbnail, filepath, file_hash, settings.thumbnail_sizes, photo.is_video
         )
 
         if created:

@@ -76,12 +76,16 @@ async def resume_incomplete_processing() -> int:
     # Stage order matches the pipeline flow: EXIF -> GEOCODING -> THUMBNAILS -> HASHING -> FACES -> CAPTIONING
     needs: dict[QueueType, set[str]] = {}
 
+    # Videos only need a poster thumbnail — exclude them from image-only stages.
+    not_video = Photo.is_video == False  # noqa: E712
+
     # EXIF: photos missing camera_make AND date_taken (always enabled)
     async with async_session() as session:
         result = await session.execute(
             select(Photo.file_hash).where(
                 Photo.camera_make.is_(None),
-                Photo.date_taken.is_(None)
+                Photo.date_taken.is_(None),
+                not_video,
             )
         )
         needs[QueueType.EXIF] = {row[0] for row in result.fetchall()}
@@ -93,13 +97,14 @@ async def resume_incomplete_processing() -> int:
             result = await session.execute(
                 select(Photo.file_hash).where(
                     Photo.location_city.is_(None),
-                    Photo.gps_latitude.is_not(None)
+                    Photo.gps_latitude.is_not(None),
+                    not_video,
                 )
             )
             needs[QueueType.GEOCODING] = {row[0] for row in result.fetchall()}
             logger.info(f"Found {len(needs[QueueType.GEOCODING])} photos needing geocoding")
 
-    # Thumbnails: photos missing thumb file (always enabled)
+    # Thumbnails: photos AND videos missing a thumb/poster (always enabled)
     async with async_session() as session:
         result = await session.execute(select(Photo.file_hash))
         all_hashes = [row[0] for row in result.fetchall()]
@@ -110,7 +115,8 @@ async def resume_incomplete_processing() -> int:
     async with async_session() as session:
         result = await session.execute(
             select(Photo.file_hash).where(
-                ~Photo.file_hash.in_(select(PhotoHash.file_hash))
+                ~Photo.file_hash.in_(select(PhotoHash.file_hash)),
+                not_video,
             )
         )
         needs[QueueType.HASHING] = {row[0] for row in result.fetchall()}
@@ -121,7 +127,8 @@ async def resume_incomplete_processing() -> int:
         async with async_session() as session:
             result = await session.execute(
                 select(Photo.file_hash).where(
-                    ~Photo.file_hash.in_(select(Face.file_hash))
+                    ~Photo.file_hash.in_(select(Face.file_hash)),
+                    not_video,
                 )
             )
             needs[QueueType.FACES] = {row[0] for row in result.fetchall()}
@@ -132,7 +139,8 @@ async def resume_incomplete_processing() -> int:
         async with async_session() as session:
             result = await session.execute(
                 select(Photo.file_hash).where(
-                    ~Photo.file_hash.in_(select(Caption.file_hash))
+                    ~Photo.file_hash.in_(select(Caption.file_hash)),
+                    not_video,
                 )
             )
             needs[QueueType.CAPTIONING] = {row[0] for row in result.fetchall()}

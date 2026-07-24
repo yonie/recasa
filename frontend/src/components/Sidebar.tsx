@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   ImageIcon,
+  Clapperboard,
   FolderTree,
   Calendar,
   Star,
@@ -28,6 +29,7 @@ import { type PipelineStats } from "../api/client";
 
 const navItems = [
   { to: "/", icon: ImageIcon, label: "Photos" },
+  { to: "/videos", icon: Clapperboard, label: "Videos" },
   { to: "/folders", icon: FolderTree, label: "Folders" },
   { to: "/years", icon: Calendar, label: "Years" },
   { to: "/favorites", icon: Star, label: "Favorites" },

@@ -474,6 +474,18 @@ export function livePhotoUrl(hash: string): string {
   return `${BASE_URL}/photos/${hash}/live`;
 }
 
+/** Standalone videos are served through the same original endpoint (range-enabled). */
+export function videoUrl(hash: string): string {
+  return `${BASE_URL}/photos/${hash}/original`;
+}
+
+export function formatDuration(seconds: number | null): string {
+  if (!seconds || seconds < 0) return "";
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 export function printExportUrl(): string {
   return `${BASE_URL}/photos/print/export`;
 }

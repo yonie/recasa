@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Star, Play, Printer, Flag, Grid2x2, Grid3x3, LayoutGrid, Crop, Expand } from "lucide-react";
 import { clsx } from "clsx";
 import type { PhotoSummary } from "../api/client";
-import { api, thumbnailUrl, livePhotoUrl } from "../api/client";
+import { api, thumbnailUrl, livePhotoUrl, formatDuration } from "../api/client";
 import { useStore, type GridSize } from "../store/useStore";
 
 const GRID_CLASSES: Record<GridSize, string> = {
@@ -263,6 +263,18 @@ function PhotoGridItem({
           preload="none"
           onError={() => setVideoFailed(true)}
         />
+      )}
+
+      {/* Video duration badge */}
+      {photo.is_video && (
+        <div className="absolute bottom-1.5 right-1.5 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/60 pointer-events-none">
+          <Play className="w-3 h-3 text-white fill-white" />
+          {photo.duration ? (
+            <span className="text-white text-[10px] font-medium tabular-nums">
+              {formatDuration(photo.duration)}
+            </span>
+          ) : null}
+        </div>
       )}
 
       {/* Persistent printer mark (visible without hover) */}

@@ -256,6 +256,11 @@ class Worker:
             self._log_error(file_hash, None, "Photo not found in database")
             return False
 
+        # Videos only need a poster thumbnail; every other stage is image-only.
+        if photo.is_video and self.queue_type != QueueType.THUMBNAILS:
+            await self.pipeline.route_to_next(file_hash, self.queue_type)
+            return True
+
         filepath = settings.photos_dir / photo.file_path
 
         # Skip if condition met (e.g., no GPS data for geocoding)

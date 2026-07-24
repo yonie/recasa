@@ -11,6 +11,7 @@ import { Years } from "./pages/Years";
 import { Favorites } from "./pages/Favorites";
 import { ToPrint } from "./pages/ToPrint";
 import { Flagged } from "./pages/Flagged";
+import { Videos } from "./pages/Videos";
 import { Duplicates } from "./pages/Duplicates";
 import { LargeFiles } from "./pages/LargeFiles";
 import { SearchResults } from "./pages/SearchResults";
@@ -64,6 +65,7 @@ function AppContent() {
             <Route path="/favorites" element={<Favorites />} />
             <Route path="/to-print" element={<ToPrint />} />
             <Route path="/flagged" element={<Flagged />} />
+            <Route path="/videos" element={<Videos />} />
             <Route path="/people" element={<People />} />
             <Route path="/people/together/:personIds" element={<TogetherDetail />} />
             <Route path="/people/:personId" element={<PersonDetail />} />
