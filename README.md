@@ -33,6 +33,13 @@ you can jump straight to the era you're looking for.
 
 ![Year cards with preview photos](docs/screenshots/years.jpg)
 
+### Hero Trail
+
+Watch your travels replay across the map in chronological order — the route
+draws itself stop by stop, with the photos from each place, scrubbable by date.
+
+![Hero Trail replaying a route across the map](docs/screenshots/hero-trail.jpg)
+
 ### To Print
 
 Collect photos for printing the way you favorite them, review print quality
