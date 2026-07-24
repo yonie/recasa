@@ -1,27 +1,18 @@
-import { useEffect, useState, useCallback } from "react";
-import { api, type DuplicateGroup, type DuplicatePhotoSummary } from "../api/client";
+import { useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api, type DuplicatePhotoSummary } from "../api/client";
 import { useStore } from "../store/useStore";
 import { thumbnailUrl } from "../api/client";
 import { Loader2, Copy, MapPin, Camera, Users, Calendar } from "lucide-react";
 
 export function Duplicates() {
-  const [groups, setGroups] = useState<DuplicateGroup[]>([]);
-  const [loading, setLoading] = useState(true);
   const openViewer = useStore((s) => s.openViewer);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const data = await api.getDuplicates({ page_size: 50 });
-        setGroups(data);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, []);
+  const { data, isLoading: loading } = useQuery({
+    queryKey: ["duplicates"],
+    queryFn: () => api.getDuplicates({ page_size: 50 }),
+  });
+  const groups = data ?? [];
 
   const handlePhotoClick = useCallback(
     async (photo: DuplicatePhotoSummary, groupPhotos: DuplicatePhotoSummary[]) => {

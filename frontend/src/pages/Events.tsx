@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { api, type EventSummary, type PhotoSummary, thumbnailUrl } from "../api/client";
+import { useQuery } from "@tanstack/react-query";
+import { api, type PhotoSummary, thumbnailUrl } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { useScrollRestore } from "../hooks/useScrollRestore";
@@ -11,30 +12,21 @@ import { CollageButton } from "../components/CollagePopover";
 export function EventDetail() {
   const { eventId } = useParams<{ eventId: string }>();
   const navigate = useNavigate();
-  const [event, setEvent] = useState<EventSummary | null>(null);
-  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [loading, setLoading] = useState(true);
   const openViewer = useStore((s) => s.openViewer);
+  const id = Number(eventId);
 
-  useEffect(() => {
-    async function load() {
-      if (!eventId) return;
-      try {
-        setLoading(true);
-        const [eventData, photosData] = await Promise.all([
-          api.getEvent(Number(eventId)),
-          api.getEventPhotos(Number(eventId), { page_size: 200 }),
-        ]);
-        setEvent(eventData);
-        setPhotos(photosData.items);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, [eventId]);
+  const { data: event, isLoading: eventLoading } = useQuery({
+    queryKey: ["event", id],
+    queryFn: () => api.getEvent(id),
+    enabled: !!eventId,
+  });
+  const { data: photosPage, isLoading: photosLoading } = useQuery({
+    queryKey: ["event-photos", id],
+    queryFn: () => api.getEventPhotos(id, { page_size: 200 }),
+    enabled: !!eventId,
+  });
+  const photos = photosPage?.items ?? [];
+  const loading = eventLoading || photosLoading;
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary, index: number) => {
@@ -106,25 +98,14 @@ export function EventDetail() {
 
 // Events list view (route: /events)
 export function Events() {
-  const [events, setEvents] = useState<EventSummary[]>([]);
-  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const { scrollRef, restoreScroll } = useScrollRestore("events");
 
-  useEffect(() => {
-    async function load() {
-      try {
-        setLoading(true);
-        const data = await api.getEvents({ page_size: 1000 });
-        setEvents(data);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, []);
+  const { data, isLoading: loading } = useQuery({
+    queryKey: ["events"],
+    queryFn: () => api.getEvents({ page_size: 1000 }),
+  });
+  const events = data ?? [];
 
   // Restore scroll position after events load
   useEffect(() => {

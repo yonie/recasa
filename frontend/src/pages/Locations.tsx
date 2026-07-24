@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from "react";
+import { useCallback } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { api, type CountryCount, type CityCount, type PhotoSummary, type MapPoint } from "../api/client";
+import { useQuery } from "@tanstack/react-query";
+import { api, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { MapView } from "./MapView";
 import { useStore } from "../store/useStore";
@@ -10,32 +11,21 @@ import { Loader2, MapPin, ArrowLeft, Globe, Map, List } from "lucide-react";
 export function LocationCityPhotos() {
   const { country, city } = useParams<{ country: string; city: string }>();
   const navigate = useNavigate();
-  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
   const openViewer = useStore((s) => s.openViewer);
 
-  useEffect(() => {
-    async function load() {
-      if (!country || !city) return;
-      try {
-        setLoading(true);
-        const params: Record<string, string | number> = { page_size: 200 };
-        params.country = decodeURIComponent(country);
-        params.city = decodeURIComponent(city);
-        const data = await api.getLocationPhotos(params);
-        setPhotos(data.items);
-        setTotal(data.total);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-    const interval = setInterval(load, 10000);
-    return () => clearInterval(interval);
-  }, [country, city]);
+  const { data, isLoading: loading } = useQuery({
+    queryKey: ["location-photos", country, city],
+    queryFn: () =>
+      api.getLocationPhotos({
+        page_size: 200,
+        country: decodeURIComponent(country!),
+        city: decodeURIComponent(city!),
+      }),
+    enabled: !!country && !!city,
+    refetchInterval: 10000,
+  });
+  const photos = data?.items ?? [];
+  const total = data?.total ?? 0;
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary, index: number) => {
@@ -86,26 +76,14 @@ export function LocationCityPhotos() {
 export function LocationCountryCities() {
   const { country } = useParams<{ country: string }>();
   const navigate = useNavigate();
-  const [cities, setCities] = useState<CityCount[]>([]);
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function load() {
-      if (!country) return;
-      try {
-        setLoading(true);
-        const data = await api.getCities(decodeURIComponent(country));
-        setCities(data);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-    const interval = setInterval(load, 10000);
-    return () => clearInterval(interval);
-  }, [country]);
+  const { data, isLoading: loading } = useQuery({
+    queryKey: ["cities", country],
+    queryFn: () => api.getCities(decodeURIComponent(country!)),
+    enabled: !!country,
+    refetchInterval: 10000,
+  });
+  const cities = data ?? [];
 
   if (loading) {
     return (
@@ -158,37 +136,23 @@ export function LocationCountryCities() {
 
 // Locations main view with map/countries toggle (route: /locations)
 export function Locations() {
-  const [countries, setCountries] = useState<CountryCount[]>([]);
-  const [mapPoints, setMapPoints] = useState<MapPoint[]>([]);
-  const [loading, setLoading] = useState(true);
   const [searchParams, setSearchParams] = useSearchParams();
   const viewMode = (searchParams.get("view") as "map" | "countries") || "map";
   const navigate = useNavigate();
 
-  useEffect(() => {
-    let first = true;
-    async function load() {
-      try {
-        if (first) setLoading(true);
-        const [countriesData, mapData] = await Promise.all([
-          api.getCountries(),
-          api.getMapPoints(),
-        ]);
-        setCountries(countriesData);
-        setMapPoints(mapData);
-      } catch {
-        // ignore
-      } finally {
-        if (first) {
-          setLoading(false);
-          first = false;
-        }
-      }
-    }
-    load();
-    const interval = setInterval(load, 10000);
-    return () => clearInterval(interval);
-  }, []);
+  const { data: countriesData, isLoading: countriesLoading } = useQuery({
+    queryKey: ["countries"],
+    queryFn: () => api.getCountries(),
+    refetchInterval: 10000,
+  });
+  const { data: mapData, isLoading: mapLoading } = useQuery({
+    queryKey: ["map-points"],
+    queryFn: () => api.getMapPoints(),
+    refetchInterval: 10000,
+  });
+  const countries = countriesData ?? [];
+  const mapPoints = mapData ?? [];
+  const loading = countriesLoading || mapLoading;
 
   const setViewMode = (mode: "map" | "countries") => {
     setSearchParams({ view: mode });

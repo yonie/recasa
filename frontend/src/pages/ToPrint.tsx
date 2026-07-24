@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
+import { useState, useCallback } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, printExportUrl, thumbnailUrl, type PhotoSummary } from "../api/client";
 import { useStore, type GridSize } from "../store/useStore";
 import { GridViewControls } from "../components/PhotoGrid";
@@ -70,28 +71,17 @@ function formatBytes(bytes: number): string {
 }
 
 export function ToPrint() {
-  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
   const openViewer = useStore((s) => s.openViewer);
   const setStats = useStore((s) => s.setStats);
   const gridSize = useStore((s) => s.gridSize);
+  const queryClient = useQueryClient();
 
-  const loadPhotos = useCallback(async () => {
-    try {
-      setLoading(true);
-      const data = await api.getPhotos({ marked_for_print: true, page_size: 200 });
-      setPhotos(data.items);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadPhotos();
-  }, [loadPhotos]);
+  const { data, isLoading } = useQuery({
+    queryKey: ["photos", { marked_for_print: true }],
+    queryFn: () => api.getPhotos({ marked_for_print: true, page_size: 200 }),
+  });
+  const photos = data?.items ?? [];
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary, index: number) => {
@@ -110,12 +100,12 @@ export function ToPrint() {
       try {
         await api.togglePrint(photo.file_hash);
         api.getStats().then(setStats).catch(() => {});
-        loadPhotos();
+        queryClient.invalidateQueries();
       } catch {
         // ignore
       }
     },
-    [loadPhotos, setStats]
+    [queryClient, setStats]
   );
 
   const handleRemoveAll = useCallback(async () => {
@@ -132,15 +122,15 @@ export function ToPrint() {
       setClearing(true);
       await api.clearPrintList();
       api.getStats().then(setStats).catch(() => {});
-      await loadPhotos();
+      await queryClient.invalidateQueries();
     } catch {
       // ignore
     } finally {
       setClearing(false);
     }
-  }, [photos.length, loadPhotos, setStats]);
+  }, [photos.length, queryClient, setStats]);
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="w-8 h-8 animate-spin text-primary-500" />

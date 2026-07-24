@@ -1,29 +1,18 @@
-import { useEffect, useState, useCallback } from "react";
-import { api, type PhotoSummary, type TimelineGroup } from "../api/client";
+import { useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { Loader2 } from "lucide-react";
 
 export function Home() {
-  const [groups, setGroups] = useState<TimelineGroup[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const openViewer = useStore((s) => s.openViewer);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        setLoading(true);
-        const data = await api.getTimeline({ group_by: "month", limit: 24 });
-        setGroups(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load photos");
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, []);
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["timeline", "month", 24],
+    queryFn: () => api.getTimeline({ group_by: "month", limit: 24 }),
+  });
+  const groups = data ?? [];
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary, index: number, groupPhotos: PhotoSummary[]) => {
@@ -37,7 +26,7 @@ export function Home() {
     [openViewer]
   );
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
@@ -48,7 +37,7 @@ export function Home() {
   if (error) {
     return (
       <div className="flex items-center justify-center h-64 text-red-500">
-        <p>{error}</p>
+        <p>{error instanceof Error ? error.message : "Failed to load photos"}</p>
       </div>
     );
   }

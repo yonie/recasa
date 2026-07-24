@@ -15,6 +15,7 @@ import {
   Tag,
 } from "lucide-react";
 import { clsx } from "clsx";
+import { useQueryClient } from "@tanstack/react-query";
 import { useStore } from "../store/useStore";
 import { api, originalUrl, type PhotoDetail } from "../api/client";
 
@@ -36,6 +37,7 @@ export function PhotoViewer() {
   const [isMarkedForPrint, setIsMarkedForPrint] = useState(false);
   const [loading, setLoading] = useState(false);
   const setStats = useStore((s) => s.setStats);
+  const queryClient = useQueryClient();
 
   const gestures = usePhotoGestures({
     resetKey: viewerPhoto?.file_hash ?? "",
@@ -148,10 +150,11 @@ export function PhotoViewer() {
     try {
       const result = await api.toggleFavorite(detail.file_hash);
       setIsFavorite(result.is_favorite);
+      queryClient.invalidateQueries();
     } catch {
       // ignore
     }
-  }, [detail]);
+  }, [detail, queryClient]);
 
   const handlePrint = useCallback(async () => {
     if (!detail) return;
@@ -159,10 +162,11 @@ export function PhotoViewer() {
       const result = await api.togglePrint(detail.file_hash);
       setIsMarkedForPrint(result.marked_for_print);
       api.getStats().then(setStats).catch(() => {});
+      queryClient.invalidateQueries();
     } catch {
       // ignore
     }
-  }, [detail, setStats]);
+  }, [detail, setStats, queryClient]);
 
   if (!viewerOpen || !detail) return null;
 

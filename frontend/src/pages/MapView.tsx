@@ -8,9 +8,9 @@ import {
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
+import { useQuery } from "@tanstack/react-query";
 import {
   api,
-  type MapPoint,
   type TrailStop,
   thumbnailUrl,
 } from "../api/client";
@@ -353,8 +353,6 @@ export function MapView({
 }: {
   onLocationClick?: (city: string | null, country: string | null) => void;
 } = {}) {
-  const [points, setPoints] = useState<MapPoint[]>([]);
-  const [loading, setLoading] = useState(true);
   const openViewer = useStore((s) => s.openViewer);
   const viewerOpen = useStore((s) => s.viewerOpen);
 
@@ -370,20 +368,11 @@ export function MapView({
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
-  useEffect(() => {
-    async function load() {
-      try {
-        setLoading(true);
-        const data = await api.getMapPoints();
-        setPoints(data);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, []);
+  const { data: pointsData, isLoading: loading } = useQuery({
+    queryKey: ["map-points"],
+    queryFn: () => api.getMapPoints(),
+  });
+  const points = pointsData ?? [];
 
   const handleMarkerClick = useCallback(
     async (hash: string) => {

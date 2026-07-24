@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
+import { useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { api, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
@@ -6,25 +7,13 @@ import { Loader2, Star } from "lucide-react";
 import { CollageButton } from "../components/CollagePopover";
 
 export function Favorites() {
-  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [loading, setLoading] = useState(true);
   const openViewer = useStore((s) => s.openViewer);
 
-  const loadFavorites = useCallback(async () => {
-    try {
-      setLoading(true);
-      const data = await api.getPhotos({ favorite: true, page_size: 200 });
-      setPhotos(data.items);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadFavorites();
-  }, [loadFavorites]);
+  const { data, isLoading } = useQuery({
+    queryKey: ["photos", { favorite: true }],
+    queryFn: () => api.getPhotos({ favorite: true, page_size: 200 }),
+  });
+  const photos = data?.items ?? [];
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary, index: number) => {
@@ -38,12 +27,7 @@ export function Favorites() {
     [openViewer, photos]
   );
 
-  const handleFavoriteToggle = useCallback(() => {
-    // Reload to reflect changes
-    loadFavorites();
-  }, [loadFavorites]);
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
@@ -78,11 +62,7 @@ export function Favorites() {
           />
         </div>
       </div>
-      <PhotoGrid
-        photos={photos}
-        onPhotoClick={handlePhotoClick}
-        onFavoriteToggle={handleFavoriteToggle}
-      />
+      <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
     </div>
   );
 }

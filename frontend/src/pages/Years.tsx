@@ -1,43 +1,30 @@
-import { useEffect, useState, useCallback } from "react";
-import { api, type YearCount, type PhotoSummary, type TimelineGroup } from "../api/client";
+import { useState, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { Loader2, ChevronLeft } from "lucide-react";
 import { CollageButton } from "../components/CollagePopover";
 
 export function Years() {
-  const [years, setYears] = useState<YearCount[]>([]);
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
-  const [groups, setGroups] = useState<TimelineGroup[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [photosLoading, setPhotosLoading] = useState(false);
   const openViewer = useStore((s) => s.openViewer);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const data = await api.getYears();
-        setYears(data);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, []);
+  const { data: yearsData, isLoading: loading } = useQuery({
+    queryKey: ["years"],
+    queryFn: () => api.getYears(),
+  });
+  const years = yearsData ?? [];
 
-  const handleSelectYear = useCallback(async (year: number) => {
+  const { data: groupsData, isLoading: photosLoading } = useQuery({
+    queryKey: ["timeline", "year", selectedYear],
+    queryFn: () => api.getTimeline({ year: selectedYear!, group_by: "month", limit: 12 }),
+    enabled: selectedYear !== null,
+  });
+  const groups = groupsData ?? [];
+
+  const handleSelectYear = useCallback((year: number) => {
     setSelectedYear(year);
-    setPhotosLoading(true);
-    try {
-      const data = await api.getTimeline({ year, group_by: "month", limit: 12 });
-      setGroups(data);
-    } catch {
-      setGroups([]);
-    } finally {
-      setPhotosLoading(false);
-    }
   }, []);
 
   const handlePhotoClick = useCallback(

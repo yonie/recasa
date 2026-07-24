@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
+import { useState, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Folder, ChevronRight, ChevronDown } from "lucide-react";
 import { clsx } from "clsx";
 import { api, type DirectoryNode, type PhotoSummary } from "../api/client";
@@ -7,38 +8,24 @@ import { useStore } from "../store/useStore";
 import { Loader2 } from "lucide-react";
 
 export function Folders() {
-  const [tree, setTree] = useState<DirectoryNode[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [photosLoading, setPhotosLoading] = useState(false);
   const openViewer = useStore((s) => s.openViewer);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const data = await api.getDirectoryTree();
-        setTree(data);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, []);
+  const { data: treeData, isLoading: loading } = useQuery({
+    queryKey: ["directory-tree"],
+    queryFn: () => api.getDirectoryTree(),
+  });
+  const tree = treeData ?? [];
 
-  const handleSelectFolder = useCallback(async (path: string) => {
+  const { data: photosPage, isLoading: photosLoading } = useQuery({
+    queryKey: ["directory-photos", selectedPath],
+    queryFn: () => api.getDirectoryPhotos(selectedPath!, { page_size: 200 }),
+    enabled: !!selectedPath,
+  });
+  const photos = photosPage?.items ?? [];
+
+  const handleSelectFolder = useCallback((path: string) => {
     setSelectedPath(path);
-    setPhotosLoading(true);
-    try {
-      const data = await api.getDirectoryPhotos(path, { page_size: 200 });
-      setPhotos(data.items);
-    } catch {
-      setPhotos([]);
-    } finally {
-      setPhotosLoading(false);
-    }
   }, []);
 
   const handlePhotoClick = useCallback(

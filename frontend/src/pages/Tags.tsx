@@ -1,42 +1,31 @@
-import { useEffect, useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { api, type TagCount, type PhotoSummary } from "../api/client";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { api, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { useScrollRestore } from "../hooks/useScrollRestore";
-import { Loader2, Tag, ArrowLeft } from "lucide-react";
+import { Loader2, Tag, ArrowLeft, Search, X } from "lucide-react";
 import { CollageButton } from "../components/CollagePopover";
 
 // Tag detail view (route: /tags/:tagId)
 export function TagDetail() {
   const { tagId } = useParams<{ tagId: string }>();
   const navigate = useNavigate();
-  const [tag, setTag] = useState<TagCount | null>(null);
-  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [loading, setLoading] = useState(true);
   const openViewer = useStore((s) => s.openViewer);
+  const id = Number(tagId);
 
-  useEffect(() => {
-    async function load() {
-      if (!tagId) return;
-      try {
-        setLoading(true);
-        // Load tag info from the tags list and photos for this tag
-        const [tagsData, photosData] = await Promise.all([
-          api.getTags(),
-          api.getTagPhotos(Number(tagId), { page_size: 200 }),
-        ]);
-        const found = tagsData.find((t) => t.tag_id === Number(tagId));
-        if (found) setTag(found);
-        setPhotos(photosData.items);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, [tagId]);
+  const { data: tag } = useQuery({
+    queryKey: ["tag", id],
+    queryFn: () => api.getTag(id),
+    enabled: !!tagId,
+  });
+  const { data: photosPage, isLoading } = useQuery({
+    queryKey: ["tag-photos", id],
+    queryFn: () => api.getTagPhotos(id, { page_size: 200 }),
+    enabled: !!tagId,
+  });
+  const photos = photosPage?.items ?? [];
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary, index: number) => {
@@ -50,7 +39,7 @@ export function TagDetail() {
     [openViewer, photos]
   );
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
@@ -92,33 +81,31 @@ export function TagDetail() {
 
 // Tags list view (route: /tags)
 export function Tags() {
-  const [tags, setTags] = useState<TagCount[]>([]);
-  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const { scrollRef, restoreScroll } = useScrollRestore("tags");
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
   useEffect(() => {
-    async function load() {
-      try {
-        setLoading(true);
-        const data = await api.getTags();
-        setTags(data);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, []);
+    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["tags", debouncedSearch],
+    queryFn: () => api.getTags({ q: debouncedSearch || undefined }),
+    placeholderData: keepPreviousData,
+  });
+  const tags = data?.items ?? [];
+  const total = data?.total ?? 0;
 
   useEffect(() => {
-    if (!loading && tags.length > 0) {
+    if (!isLoading && tags.length > 0 && !debouncedSearch) {
       restoreScroll();
     }
-  }, [loading, tags.length, restoreScroll]);
+  }, [isLoading, tags.length, debouncedSearch, restoreScroll]);
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
@@ -126,7 +113,7 @@ export function Tags() {
     );
   }
 
-  if (tags.length === 0) {
+  if (tags.length === 0 && !debouncedSearch) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-2">
         <Tag className="w-12 h-12 text-gray-300" />
@@ -138,40 +125,67 @@ export function Tags() {
 
   return (
     <div ref={scrollRef} className="overflow-y-auto h-full">
-      <div className="px-4 py-3 border-b border-gray-100">
+      <div className="px-4 py-3 border-b border-gray-100 flex flex-wrap items-center gap-3">
         <h1 className="text-lg font-semibold">
           Tags
           <span className="ml-2 text-gray-400 font-normal text-sm">
-            {tags.length} tag{tags.length !== 1 ? "s" : ""}
+            {debouncedSearch
+              ? `${total.toLocaleString()} match${total !== 1 ? "es" : ""}`
+              : `showing ${tags.length.toLocaleString()} most used of ${total.toLocaleString()}`}
           </span>
         </h1>
+        <div className="ml-auto relative">
+          <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search all tags…"
+            className="pl-9 pr-8 py-1.5 w-64 text-sm rounded-lg border border-gray-200
+                       focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-gray-100"
+            >
+              <X className="w-4 h-4 text-gray-400" />
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="flex flex-wrap gap-2 p-4">
-        {tags.map((tag) => {
-          const color = getTagColor(tag.name);
-          return (
-            <button
-              key={tag.tag_id}
-              onClick={() => navigate(`/tags/${tag.tag_id}`)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors text-sm"
-              style={{
-                backgroundColor: color.bg,
-                color: color.text,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = color.bgHover;
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = color.bg;
-              }}
-            >
-              <span className="font-medium">{tag.name}</span>
-              <span className="text-xs" style={{ opacity: 0.6 }}>{tag.count}</span>
-            </button>
-          );
-        })}
-      </div>
+      {tags.length === 0 ? (
+        <div className="flex items-center justify-center h-40 text-gray-400">
+          <p>No tags match "{debouncedSearch}"</p>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2 p-4">
+          {tags.map((tag) => {
+            const color = getTagColor(tag.name);
+            return (
+              <button
+                key={tag.tag_id}
+                onClick={() => navigate(`/tags/${tag.tag_id}`)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors text-sm"
+                style={{
+                  backgroundColor: color.bg,
+                  color: color.text,
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = color.bgHover;
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = color.bg;
+                }}
+              >
+                <span className="font-medium">{tag.name}</span>
+                <span className="text-xs" style={{ opacity: 0.6 }}>{tag.count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

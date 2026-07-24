@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Star, Play, Printer, Grid2x2, Grid3x3, LayoutGrid, Crop, Expand } from "lucide-react";
 import { clsx } from "clsx";
 import type { PhotoSummary } from "../api/client";
@@ -144,6 +145,7 @@ function PhotoGridItem({
   const [isFavorite, setIsFavorite] = useState(photo.is_favorite);
   const [isMarkedForPrint, setIsMarkedForPrint] = useState(photo.marked_for_print);
   const setStats = useStore((s) => s.setStats);
+  const queryClient = useQueryClient();
   const gridFit = useStore((s) => s.gridFit);
   const fitClass = gridFit === "square" ? "object-cover" : "object-contain";
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -155,11 +157,13 @@ function PhotoGridItem({
         const result = await api.toggleFavorite(photo.file_hash);
         setIsFavorite(result.is_favorite);
         onFavoriteToggle?.(photo);
+        // Single-user app: blanket invalidation is cheap and always correct.
+        queryClient.invalidateQueries();
       } catch {
         // ignore
       }
     },
-    [photo, onFavoriteToggle]
+    [photo, onFavoriteToggle, queryClient]
   );
 
   const handlePrint = useCallback(
@@ -170,11 +174,12 @@ function PhotoGridItem({
         setIsMarkedForPrint(result.marked_for_print);
         onPrintToggle?.(photo);
         api.getStats().then(setStats).catch(() => {});
+        queryClient.invalidateQueries();
       } catch {
         // ignore
       }
     },
-    [photo, onPrintToggle, setStats]
+    [photo, onPrintToggle, setStats, queryClient]
   );
 
 

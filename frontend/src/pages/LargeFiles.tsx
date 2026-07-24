@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
+import { useState, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { api, type PhotoSummary } from "../api/client";
 import { useStore } from "../store/useStore";
 import { thumbnailUrl } from "../api/client";
@@ -13,27 +14,15 @@ const SIZE_OPTIONS = [
 ];
 
 export function LargeFiles() {
-  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [total, setTotal] = useState(0);
   const [minSize, setMinSize] = useState(10_000_000);
-  const [loading, setLoading] = useState(true);
   const openViewer = useStore((s) => s.openViewer);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        setLoading(true);
-        const data = await api.getLargeFiles({ min_size: minSize, page_size: 100 });
-        setPhotos(data.items);
-        setTotal(data.total);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, [minSize]);
+  const { data, isLoading: loading } = useQuery({
+    queryKey: ["large-files", minSize],
+    queryFn: () => api.getLargeFiles({ min_size: minSize, page_size: 100 }),
+  });
+  const photos = data?.items ?? [];
+  const total = data?.total ?? 0;
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary) => {

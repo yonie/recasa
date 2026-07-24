@@ -305,7 +305,7 @@ export interface TrailStop {
 
 // API functions
 
-function buildQuery(params?: Record<string, string | number | boolean>): string {
+function buildQuery(params?: Record<string, string | number | boolean | undefined>): string {
   if (!params) return "";
   const searchParams = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -438,7 +438,10 @@ export const api = {
     request<PhotoPage>(`/locations/photos${buildQuery(params)}`),
 
   // Tags
-  getTags: () => request<TagCount[]>("/tags"),
+  getTags: (params?: { limit?: number; q?: string }) =>
+    request<{ items: TagCount[]; total: number }>(`/tags${buildQuery(params)}`),
+
+  getTag: (tagId: number) => request<TagCount>(`/tags/${tagId}`),
 
   getTagPhotos: (tagId: number, params?: Record<string, string | number>) =>
     request<PhotoPage>(`/tags/${tagId}/photos${buildQuery(params)}`),

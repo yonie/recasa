@@ -1,5 +1,6 @@
-import { useEffect, useState, useCallback } from "react";
+import { useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { api, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
@@ -8,33 +9,16 @@ import { Loader2, Search } from "lucide-react";
 export function SearchResults() {
   const [searchParams] = useSearchParams();
   const query = searchParams.get("q") || "";
-  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
   const openViewer = useStore((s) => s.openViewer);
 
-  useEffect(() => {
-    async function load() {
-      if (!query) {
-        setPhotos([]);
-        setTotal(0);
-        setLoading(false);
-        return;
-      }
-
-      try {
-        setLoading(true);
-        const data = await api.getPhotos({ search: query, page_size: 200 });
-        setPhotos(data.items);
-        setTotal(data.total);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, [query]);
+  const { data, isLoading: loading } = useQuery({
+    queryKey: ["search", query],
+    queryFn: () => api.getPhotos({ search: query, page_size: 200 }),
+    enabled: !!query,
+    placeholderData: keepPreviousData,
+  });
+  const photos = query ? data?.items ?? [] : [];
+  const total = query ? data?.total ?? 0 : 0;
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary, index: number) => {

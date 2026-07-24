@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { api, type PersonSummary, type PersonGroup, type PhotoSummary, thumbnailUrl } from "../api/client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, type PersonSummary, type PhotoSummary, thumbnailUrl } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { useScrollRestore } from "../hooks/useScrollRestore";
@@ -20,32 +21,24 @@ function groupNames(persons: PersonSummary[]): string {
 export function PersonDetail() {
   const { personId } = useParams<{ personId: string }>();
   const navigate = useNavigate();
-  const [person, setPerson] = useState<PersonSummary | null>(null);
-  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [loading, setLoading] = useState(true);
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const openViewer = useStore((s) => s.openViewer);
+  const queryClient = useQueryClient();
+  const id = Number(personId);
 
-  useEffect(() => {
-    async function load() {
-      if (!personId) return;
-      try {
-        setLoading(true);
-        const [personData, photosData] = await Promise.all([
-          api.getPerson(Number(personId)),
-          api.getPersonPhotos(Number(personId), { page_size: 200 }),
-        ]);
-        setPerson(personData);
-        setPhotos(photosData.items);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, [personId]);
+  const { data: person, isLoading: personLoading } = useQuery({
+    queryKey: ["person", id],
+    queryFn: () => api.getPerson(id),
+    enabled: !!personId,
+  });
+  const { data: photosPage, isLoading: photosLoading } = useQuery({
+    queryKey: ["person-photos", id],
+    queryFn: () => api.getPersonPhotos(id, { page_size: 200 }),
+    enabled: !!personId,
+  });
+  const photos = photosPage?.items ?? [];
+  const loading = personLoading || photosLoading;
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary, index: number) => {
@@ -70,12 +63,12 @@ export function PersonDetail() {
     if (!person || !nameInput.trim()) return;
     try {
       const updated = await api.updatePerson(person.person_id, nameInput.trim());
-      setPerson(updated);
+      queryClient.setQueryData(["person", id], updated);
       setEditingName(false);
     } catch {
       // ignore
     }
-  }, [person, nameInput]);
+  }, [person, nameInput, queryClient, id]);
 
   const handleIgnore = useCallback(async () => {
     if (!person) return;
@@ -184,32 +177,23 @@ export function PersonDetail() {
 export function TogetherDetail() {
   const { personIds } = useParams<{ personIds: string }>();
   const navigate = useNavigate();
-  const [photos, setPhotos] = useState<PhotoSummary[]>([]);
-  const [persons, setPersons] = useState<PersonSummary[]>([]);
-  const [loading, setLoading] = useState(true);
   const openViewer = useStore((s) => s.openViewer);
+  const ids = (personIds ?? "").split(",").map(Number).filter(Boolean);
+  const enabled = ids.length >= 2;
 
-  useEffect(() => {
-    async function load() {
-      if (!personIds) return;
-      const ids = personIds.split(",").map(Number).filter(Boolean);
-      if (ids.length < 2) return;
-      try {
-        setLoading(true);
-        // Fetch all persons in parallel
-        const personPromises = ids.map((id) => api.getPerson(id));
-        const personsData = await Promise.all(personPromises);
-        setPersons(personsData);
-        const photosData = await api.getSharedPhotosN(ids, { page_size: 200 });
-        setPhotos(photosData.items);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, [personIds]);
+  const { data: personsData, isLoading: personsLoading } = useQuery({
+    queryKey: ["persons-together", personIds],
+    queryFn: () => Promise.all(ids.map((id) => api.getPerson(id))),
+    enabled,
+  });
+  const { data: photosPage, isLoading: photosLoading } = useQuery({
+    queryKey: ["shared-photos", personIds],
+    queryFn: () => api.getSharedPhotosN(ids, { page_size: 200 }),
+    enabled,
+  });
+  const persons = personsData ?? [];
+  const photos = photosPage?.items ?? [];
+  const loading = personsLoading || photosLoading;
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary, index: number) => {
@@ -266,31 +250,22 @@ export function TogetherDetail() {
 
 // People list view (route: /people)
 export function People() {
-  const [persons, setPersons] = useState<PersonSummary[]>([]);
-  const [groups, setGroups] = useState<PersonGroup[]>([]);
   const [ignoredPersons, setIgnoredPersons] = useState<PersonSummary[]>([]);
   const [showIgnored, setShowIgnored] = useState(false);
-  const [loadingPersons, setLoadingPersons] = useState(true);
-  const [loadingGroups, setLoadingGroups] = useState(true);
   const navigate = useNavigate();
   const { scrollRef, restoreScroll } = useScrollRestore("people");
+  const queryClient = useQueryClient();
 
-  const loadAll = useCallback(() => {
-    setLoadingPersons(true);
-    setLoadingGroups(true);
-
-    api.getPersons({ page_size: 200 })
-      .then(setPersons)
-      .catch(() => {})
-      .finally(() => setLoadingPersons(false));
-
-    api.getPersonGroups({ min_photos: 3 })
-      .then(setGroups)
-      .catch(() => {})
-      .finally(() => setLoadingGroups(false));
-  }, []);
-
-  useEffect(() => { loadAll(); }, [loadAll]);
+  const { data: personsData, isLoading: loadingPersons } = useQuery({
+    queryKey: ["persons"],
+    queryFn: () => api.getPersons({ page_size: 200 }),
+  });
+  const { data: groupsData, isLoading: loadingGroups } = useQuery({
+    queryKey: ["person-groups", { min_photos: 3 }],
+    queryFn: () => api.getPersonGroups({ min_photos: 3 }),
+  });
+  const persons = personsData ?? [];
+  const groups = groupsData ?? [];
 
   useEffect(() => {
     if (!loadingPersons && !loadingGroups && persons.length > 0) {
@@ -319,19 +294,19 @@ export function People() {
       return;
     }
     await api.ignorePerson(person.person_id);
-    setPersons((prev) => prev.filter((p) => p.person_id !== person.person_id));
+    queryClient.invalidateQueries({ queryKey: ["persons"] });
     if (showIgnored) {
       const data = await api.getIgnoredPersons();
       setIgnoredPersons(data);
     }
-  }, [showIgnored]);
+  }, [showIgnored, queryClient]);
 
   const handleUnignore = useCallback(async (personId: number) => {
     await api.unignorePerson(personId);
     setIgnoredPersons((prev) => prev.filter((p) => p.person_id !== personId));
     // Reload main list
-    api.getPersons({ page_size: 200 }).then(setPersons).catch(() => {});
-  }, []);
+    queryClient.invalidateQueries({ queryKey: ["persons"] });
+  }, [queryClient]);
 
   if (loadingPersons) {
     return (
