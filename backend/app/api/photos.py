@@ -5,9 +5,46 @@ from datetime import datetime
 # Content addressed by file_hash is immutable — cache for 1 year.
 _IMMUTABLE_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select, or_, exists
+from sqlalchemy import func, select, or_, and_, exists, extract
+
+_MONTHS = {
+    m: i
+    for i, names in enumerate(
+        [
+            ("january", "jan"),
+            ("february", "feb"),
+            ("march", "mar"),
+            ("april", "apr"),
+            ("may",),
+            ("june", "jun"),
+            ("july", "jul"),
+            ("august", "aug"),
+            ("september", "sep", "sept"),
+            ("october", "oct"),
+            ("november", "nov"),
+            ("december", "dec"),
+        ],
+        start=1,
+    )
+    for m in names
+}
+
+
+def _date_search_condition(search: str):
+    """Build a date filter from year and/or month-name tokens in the query
+    (e.g. "2013 august", "august 2013", "2013"), or None if none are present."""
+    tokens = re.findall(r"[a-z]+|\d{4}", search.lower())
+    parts = []
+    for tok in tokens:
+        if tok.isdigit() and 1900 <= int(tok) <= 2100:
+            parts.append(extract("year", Photo.date_taken) == int(tok))
+        elif tok in _MONTHS:
+            parts.append(extract("month", Photo.date_taken) == _MONTHS[tok])
+    return and_(*parts) if parts else None
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -111,18 +148,21 @@ async def list_photos(
             .where(PhotoTag.file_hash == Photo.file_hash)
             .exists()
         )
-        query = query.where(
-            or_(
-                Photo.file_name.ilike(search_term),
-                Photo.file_path.ilike(search_term),
-                Photo.location_city.ilike(search_term),
-                Photo.location_country.ilike(search_term),
-                Photo.location_address.ilike(search_term),
-                exists(caption_match),
-                exists(person_match),
-                tag_match,
-            )
-        )
+        conditions = [
+            Photo.file_name.ilike(search_term),
+            Photo.file_path.ilike(search_term),
+            Photo.location_city.ilike(search_term),
+            Photo.location_country.ilike(search_term),
+            Photo.location_address.ilike(search_term),
+            exists(caption_match),
+            exists(person_match),
+            tag_match,
+        ]
+        # Also match year / month-name terms against the capture date.
+        date_condition = _date_search_condition(search)
+        if date_condition is not None:
+            conditions.append(date_condition)
+        query = query.where(or_(*conditions))
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
