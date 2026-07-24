@@ -5,6 +5,7 @@ import {
   Marker,
   Popup,
   Polyline,
+  CircleMarker,
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
@@ -65,22 +66,6 @@ function createActiveStopIcon(): L.DivIcon {
     className: "active-stop-icon",
     iconSize: [18, 18],
     iconAnchor: [9, 9],
-  });
-}
-
-function createTrailDotIcon(): L.DivIcon {
-  return L.divIcon({
-    html: `<div style="
-      background: #3b82f6;
-      border-radius: 50%;
-      width: 8px;
-      height: 8px;
-      border: 2px solid white;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-    "></div>`,
-    className: "trail-dot-icon",
-    iconSize: [8, 8],
-    iconAnchor: [4, 4],
   });
 }
 
@@ -515,6 +500,28 @@ export function MapView({
     ? trail.slice(currentStop).map((s) => [s.latitude, s.longitude])
     : [];
 
+  // Canvas-rendered stop dots, memoized on the trail alone so they aren't
+  // rebuilt on every playback tick. Rendering thousands of DOM <Marker>s and
+  // recreating them each frame was the FPS killer; CircleMarker draws into the
+  // map's shared canvas (preferCanvas) and the memo keeps the layer stable.
+  const trailDots = useMemo(
+    () =>
+      trail.map((stop, i) => (
+        <CircleMarker
+          key={`dot-${i}`}
+          center={[stop.latitude, stop.longitude]}
+          radius={3}
+          pathOptions={{
+            color: "#2563eb",
+            weight: 1,
+            fillColor: "#3b82f6",
+            fillOpacity: 0.8,
+          }}
+        />
+      )),
+    [trail]
+  );
+
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr + "T00:00:00");
     return d.toLocaleDateString(undefined, {
@@ -532,6 +539,7 @@ export function MapView({
         zoom={4}
         className="h-full w-full"
         scrollWheelZoom={true}
+        preferCanvas={true}
       >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -608,17 +616,8 @@ export function MapView({
           />
         )}
 
-        {/* Play mode: small dots for all stops */}
-        {playMode &&
-          trail.map((stop, i) =>
-            i !== currentStop ? (
-              <Marker
-                key={`dot-${i}`}
-                position={[stop.latitude, stop.longitude]}
-                icon={createTrailDotIcon()}
-              />
-            ) : null
-          )}
+        {/* Play mode: canvas dots for all stops (memoized; see trailDots) */}
+        {playMode && trailDots}
 
         {/* Play mode: active stop marker with photo popup */}
         {activeStop && (
