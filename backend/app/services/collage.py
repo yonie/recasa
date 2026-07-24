@@ -13,6 +13,11 @@ def _hamming(a: int, b: int) -> int:
     return bin(a ^ b).count("1")
 
 
+# Photos within this phash distance are the same shot (mirrors
+# DUPLICATE_THRESHOLD in the hasher service) — never show both in one collage.
+DUPLICATE_HAMMING = 4
+
+
 def _select_diverse(
     file_hashes: list[str],
     phashes: list[str | None],
@@ -37,7 +42,17 @@ def _select_diverse(
             ph_ints.append(None)
 
     if n <= needed:
-        return list(file_hashes)
+        # Small pool: keep order, but still drop near-duplicate shots.
+        kept: list[int] = []
+        kept_ph: list[int] = []
+        for i in range(n):
+            ph = ph_ints[i]
+            if ph is not None and any(_hamming(ph, kp) <= DUPLICATE_HAMMING for kp in kept_ph):
+                continue
+            kept.append(i)
+            if ph is not None:
+                kept_ph.append(ph)
+        return [file_hashes[i] for i in kept]
 
     # Start from a random photo (seed-controlled via caller's random.seed)
     start = random.randint(0, n - 1)
@@ -65,7 +80,10 @@ def _select_diverse(
                 best_min_dist = min_dist
                 best_idx = idx
 
-        if best_idx < 0:
+        # If the most-different candidate left is still a near-duplicate of a
+        # selected photo, every remaining photo is a dupe: stop and let the
+        # caller shrink the grid rather than show the same shot twice.
+        if best_idx < 0 or best_min_dist <= DUPLICATE_HAMMING:
             break
 
         selected.append(best_idx)
