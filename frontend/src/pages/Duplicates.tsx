@@ -1,18 +1,34 @@
 import { useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type DuplicatePhotoSummary } from "../api/client";
 import { useStore } from "../store/useStore";
 import { thumbnailUrl } from "../api/client";
-import { Loader2, Copy, MapPin, Camera, Users, Calendar } from "lucide-react";
+import { Loader2, Copy, MapPin, Camera, Users, Calendar, Flag } from "lucide-react";
 
 export function Duplicates() {
   const openViewer = useStore((s) => s.openViewer);
+  const setStats = useStore((s) => s.setStats);
+  const queryClient = useQueryClient();
 
   const { data, isLoading: loading } = useQuery({
     queryKey: ["duplicates"],
     queryFn: () => api.getDuplicates({ page_size: 50 }),
   });
   const groups = data ?? [];
+
+  const handleFlag = useCallback(
+    async (photo: DuplicatePhotoSummary) => {
+      try {
+        await api.toggleFlag(photo.file_hash);
+        api.getStats().then(setStats).catch(() => {});
+        // Flagged photo leaves duplicate groups; refetch updates the page.
+        queryClient.invalidateQueries();
+      } catch {
+        // ignore
+      }
+    },
+    [queryClient, setStats]
+  );
 
   const handlePhotoClick = useCallback(
     async (photo: DuplicatePhotoSummary, groupPhotos: DuplicatePhotoSummary[]) => {
@@ -72,12 +88,23 @@ export function Duplicates() {
                   className="flex-shrink-0 w-56 cursor-pointer group relative"
                   onClick={() => handlePhotoClick(photo, group.photos)}
                 >
-                  <div className="aspect-square rounded-lg overflow-hidden bg-gray-100">
+                  <div className="aspect-square rounded-lg overflow-hidden bg-gray-100 relative">
                     <img
                       src={thumbnailUrl(photo.file_hash, 600)}
                       alt={photo.file_name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                     />
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleFlag(photo);
+                      }}
+                      className="absolute top-2 right-2 p-1.5 rounded-full bg-black/40 text-white
+                                 opacity-0 group-hover:opacity-100 hover:bg-red-500/80 transition-all"
+                      title="Flag this copy for removal"
+                    >
+                      <Flag className="w-4 h-4" />
+                    </button>
                   </div>
                   <div className="mt-1.5 text-xs space-y-0.5">
                     <p className="text-gray-600 truncate" title={photo.file_path}>{photo.file_path}</p>
