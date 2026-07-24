@@ -32,6 +32,7 @@ const navItems = [
   { to: "/years", icon: Calendar, label: "Years" },
   { to: "/favorites", icon: Star, label: "Favorites" },
   { to: "/to-print", icon: Printer, label: "To Print" },
+  { to: "/flagged", icon: Flag, label: "Flagged" },
   { to: "/people", icon: Users, label: "People" },
   { to: "/events", icon: CalendarDays, label: "Events" },
   { to: "/locations", icon: Map, label: "Locations" },
@@ -41,7 +42,6 @@ const navItems = [
 const toolItems = [
   { to: "/duplicates", icon: Copy, label: "Duplicates" },
   { to: "/large-files", icon: HardDrive, label: "Large Files" },
-  { to: "/flagged", icon: Flag, label: "Flagged" },
   { to: "/export-import", icon: ArrowDownUp, label: "Export / Import" },
 ];
 
@@ -129,6 +129,11 @@ export function Sidebar() {
                     {stats?.to_print_count}
                   </span>
                 )}
+                {item.to === "/flagged" && (stats?.flagged_count ?? 0) > 0 && (
+                  <span className="ml-auto text-xs font-medium bg-red-100 text-red-700 px-2 py-0.5 rounded-full">
+                    {stats?.flagged_count}
+                  </span>
+                )}
               </NavLink>
             ))}
 
@@ -157,11 +162,6 @@ export function Sidebar() {
                   >
                     <item.icon className="w-5 h-5 flex-shrink-0" />
                     <span>{item.label}</span>
-                    {item.to === "/flagged" && (stats?.flagged_count ?? 0) > 0 && (
-                      <span className="ml-auto text-xs font-medium bg-red-100 text-red-700 px-2 py-0.5 rounded-full">
-                        {stats?.flagged_count}
-                      </span>
-                    )}
                   </NavLink>
                 ))}
               </div>

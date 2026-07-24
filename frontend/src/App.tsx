@@ -58,7 +58,9 @@ function AppContent() {
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/folders" element={<Folders />} />
+            <Route path="/folders/*" element={<Folders />} />
             <Route path="/years" element={<Years />} />
+            <Route path="/years/:year" element={<Years />} />
             <Route path="/favorites" element={<Favorites />} />
             <Route path="/to-print" element={<ToPrint />} />
             <Route path="/flagged" element={<Flagged />} />

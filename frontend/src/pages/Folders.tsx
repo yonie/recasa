@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Folder, ChevronRight, ChevronDown } from "lucide-react";
 import { clsx } from "clsx";
@@ -8,7 +9,11 @@ import { useStore } from "../store/useStore";
 import { Loader2 } from "lucide-react";
 
 export function Folders() {
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const location = useLocation();
+  // Selected folder lives in the URL (/folders/<path>) so Back and deep links work.
+  const rawPath = decodeURIComponent(location.pathname.replace(/^\/folders\/?/, ""));
+  const selectedPath = rawPath || null;
   const openViewer = useStore((s) => s.openViewer);
 
   const { data: treeData, isLoading: loading } = useQuery({
@@ -24,9 +29,12 @@ export function Folders() {
   });
   const photos = photosPage?.items ?? [];
 
-  const handleSelectFolder = useCallback((path: string) => {
-    setSelectedPath(path);
-  }, []);
+  const handleSelectFolder = useCallback(
+    (path: string) => {
+      navigate(`/folders/${path.split("/").map(encodeURIComponent).join("/")}`);
+    },
+    [navigate]
+  );
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary, index: number) => {

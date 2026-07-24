@@ -1,4 +1,5 @@
-import { useState, useCallback } from "react";
+import { useCallback } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, thumbnailUrl, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
@@ -7,7 +8,9 @@ import { Loader2, ChevronLeft } from "lucide-react";
 import { CollageButton } from "../components/CollagePopover";
 
 export function Years() {
-  const [selectedYear, setSelectedYear] = useState<number | null>(null);
+  const { year: yearParam } = useParams<{ year: string }>();
+  const navigate = useNavigate();
+  const selectedYear = yearParam ? Number(yearParam) : null;
   const openViewer = useStore((s) => s.openViewer);
 
   const { data: yearsData, isLoading: loading } = useQuery({
@@ -23,9 +26,12 @@ export function Years() {
   });
   const groups = groupsData ?? [];
 
-  const handleSelectYear = useCallback((year: number) => {
-    setSelectedYear(year);
-  }, []);
+  const handleSelectYear = useCallback(
+    (year: number) => {
+      navigate(`/years/${year}`);
+    },
+    [navigate]
+  );
 
   const handlePhotoClick = useCallback(
     async (photo: PhotoSummary, index: number, groupPhotos: PhotoSummary[]) => {
@@ -93,7 +99,7 @@ export function Years() {
     <div className="overflow-y-auto h-full">
       <div className="sticky top-0 bg-white z-10 px-4 py-3 border-b border-gray-200 flex items-center gap-3">
         <button
-          onClick={() => setSelectedYear(null)}
+          onClick={() => navigate("/years")}
           className="p-1 hover:bg-gray-100 rounded"
         >
           <ChevronLeft className="w-5 h-5" />
