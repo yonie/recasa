@@ -419,11 +419,17 @@ export function People() {
       </div>
 
       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4 p-4">
+        {/* Cards are divs, not <button>s: the Ignore button nests inside, and button-in-button is invalid HTML */}
         {persons.map((person) => (
-          <button
+          <div
             key={person.person_id}
+            role="button"
+            tabIndex={0}
             onClick={() => navigate(`/people/${person.person_id}`)}
-            className="flex flex-col items-center gap-2 p-3 rounded-xl hover:bg-gray-50 transition-colors group relative"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") navigate(`/people/${person.person_id}`);
+            }}
+            className="flex flex-col items-center gap-2 p-3 rounded-xl hover:bg-gray-50 transition-colors group relative cursor-pointer"
           >
             {person.face_thumbnail_url ? (
               <img
@@ -449,7 +455,7 @@ export function People() {
             >
               <EyeOff className="w-3 h-3 text-gray-400" />
             </button>
-          </button>
+          </div>
         ))}
       </div>
 
