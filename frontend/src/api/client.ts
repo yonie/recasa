@@ -152,6 +152,7 @@ export interface StageStats {
 
 export interface ProcessingStats {
   total_photos: number;
+  total_videos: number;
   stages: {
     discovery: StageStats;
     exif: StageStats;

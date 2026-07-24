@@ -357,6 +357,12 @@ export function Pipeline() {
           <div className="text-2xl font-bold text-gray-900 tabular-nums">
             {formatNumber(totalPhotos)}
           </div>
+          {(processingStats?.total_videos ?? 0) > 0 && (
+            <div className="text-xs text-gray-400 mt-0.5">
+              + {formatNumber(processingStats!.total_videos)} video
+              {processingStats!.total_videos !== 1 ? "s" : ""}
+            </div>
+          )}
         </div>
         <div className={clsx("border rounded-xl p-3.5", pendingCount > 0 ? "bg-white border-blue-200" : "bg-gray-50/60 border-gray-200")}>
           <div className="text-xs text-gray-500 mb-0.5">Pending</div>

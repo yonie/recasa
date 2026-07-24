@@ -266,8 +266,14 @@ async def scan_directory(
             stats["skipped"] += 1
             continue
 
-        # Validity (PIL verify) is expensive — only check files we might index.
-        if not unchanged and not await asyncio.to_thread(is_valid_image, filepath):
+        # Validity (PIL verify) is expensive and image-only — only check photos
+        # we might index. Videos can't be opened by PIL; they're validated later
+        # when their poster frame is extracted.
+        if (
+            not unchanged
+            and not is_supported_video(filepath)
+            and not await asyncio.to_thread(is_valid_image, filepath)
+        ):
             stats["errors"] += 1
             error_dirs.add(str(filepath.parent))
             continue

@@ -78,7 +78,15 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
     have been queued yet.
     """
     total = await session.execute(select(func.count(Photo.file_hash)))
-    total_photos = total.scalar() or 0
+    total_all = total.scalar() or 0
+    videos = (
+        await session.execute(
+            select(func.count(Photo.file_hash)).where(Photo.is_video == True)  # noqa: E712
+        )
+    ).scalar() or 0
+    # Image-only stages apply to photos only; videos never reach them, so
+    # counting them in the denominator would peg those stages below 100%.
+    total_photos = total_all - videos
 
     queue_sizes = pipeline.get_queue_sizes()
 
@@ -113,9 +121,9 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
         select(func.count(Photo.file_hash)).where(Photo.location_city.is_not(None))
     )).scalar() or 0
 
-    # Thumbnails: no DB flag, use queue-based estimate (filesystem check is too expensive per-poll)
+    # Thumbnails/posters apply to photos AND videos, so use the full total.
     thumbs_queued = queue_sizes.get("thumbnails", 0)
-    thumbs_completed = max(0, total_photos - thumbs_queued)
+    thumbs_completed = max(0, total_all - thumbs_queued)
 
     # Motion Photos: queue-based (fast no-op for non-motion photos)
     motion_queued = queue_sizes.get("motion_photos", 0)
@@ -152,12 +160,13 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
 
     payload = {
         "total_photos": total_photos,
+        "total_videos": videos,
         "stages": {
             "discovery": {
                 "status": "done",
                 "queued": 0,
-                "completed": total_photos,
-                "total": total_photos,
+                "completed": total_all,
+                "total": total_all,
                 "enabled": True,
             },
             "exif": {
@@ -175,10 +184,10 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
                 "enabled": settings.ENABLE_GEOCODING,
             },
             "thumbnails": {
-                "status": get_stage_status(True, thumbs_queued, thumbs_completed, total_photos),
+                "status": get_stage_status(True, thumbs_queued, thumbs_completed, total_all),
                 "queued": thumbs_queued,
                 "completed": thumbs_completed,
-                "total": total_photos,
+                "total": total_all,
                 "enabled": True,
             },
             "motion_photos": {
