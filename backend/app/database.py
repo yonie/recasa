@@ -69,3 +69,8 @@ async def _migrate_photo_columns(conn) -> None:
         if name not in existing:
             await conn.execute(text(f"ALTER TABLE photos ADD COLUMN {name} {ddl}"))
             logger.info("Added column photos.%s", name)
+
+    # Indexes added after tables already existed (create_all won't add these).
+    await conn.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_photo_tags_tag_id ON photo_tags (tag_id)")
+    )

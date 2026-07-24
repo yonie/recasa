@@ -29,34 +29,72 @@ def _photo_to_summary(photo: Photo) -> PhotoSummary:
 
 @router.get("")
 async def list_tags(
+    limit: int = Query(300, ge=1, le=1000),
+    q: str | None = Query(None, max_length=100),
     session: AsyncSession = Depends(get_session),
 ):
-    """List all tags with photo counts."""
-    query = (
+    """List the most-used tags (optionally filtered by name), with photo counts.
+
+    AI tagging produces tens of thousands of tags; returning them all made
+    this endpoint a multi-MB response and the page a 74k-button DOM. Clients
+    get the top `limit` by count plus the total, and search server-side.
+    """
+    counts = (
         select(
-            Tag.tag_id,
-            Tag.name,
-            Tag.category,
+            PhotoTag.tag_id,
             func.count(PhotoTag.file_hash).label("count"),
         )
-        .join(PhotoTag, PhotoTag.tag_id == Tag.tag_id)
-        .group_by(Tag.tag_id, Tag.name, Tag.category)
-        .having(func.count(PhotoTag.file_hash) > 0)
-        .order_by(func.count(PhotoTag.file_hash).desc())
+        .group_by(PhotoTag.tag_id)
+        .subquery()
     )
 
-    result = await session.execute(query)
-    rows = result.all()
+    query = (
+        select(Tag.tag_id, Tag.name, Tag.category, counts.c.count)
+        .join(counts, counts.c.tag_id == Tag.tag_id)
+        .order_by(counts.c.count.desc(), Tag.name.asc())
+        .limit(limit)
+    )
+    total_query = select(func.count(func.distinct(PhotoTag.tag_id)))
+    if q:
+        pattern = f"%{q}%"
+        query = query.where(Tag.name.ilike(pattern))
+        total_query = (
+            select(func.count(func.distinct(PhotoTag.tag_id)))
+            .join(Tag, Tag.tag_id == PhotoTag.tag_id)
+            .where(Tag.name.ilike(pattern))
+        )
 
-    return [
-        {
-            "tag_id": row.tag_id,
-            "name": row.name,
-            "category": row.category,
-            "count": row.count,
-        }
-        for row in rows
-    ]
+    total = (await session.execute(total_query)).scalar() or 0
+    result = await session.execute(query)
+
+    return {
+        "items": [
+            {
+                "tag_id": row.tag_id,
+                "name": row.name,
+                "category": row.category,
+                "count": row.count,
+            }
+            for row in result.all()
+        ],
+        "total": total,
+    }
+
+
+@router.get("/{tag_id}")
+async def get_tag(tag_id: int, session: AsyncSession = Depends(get_session)):
+    """Get a single tag with its photo count."""
+    tag = await session.get(Tag, tag_id)
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    count = (
+        await session.execute(
+            select(func.count(PhotoTag.file_hash)).where(PhotoTag.tag_id == tag_id)
+        )
+    ).scalar() or 0
+
+    return {"tag_id": tag.tag_id, "name": tag.name, "category": tag.category, "count": count}
 
 
 @router.get("/{tag_id}/photos", response_model=PhotoPage)

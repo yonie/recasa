@@ -1,4 +1,4 @@
-from sqlalchemy import Float, ForeignKey, Integer, String
+from sqlalchemy import Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.models.base import Base
@@ -31,3 +31,6 @@ class PhotoTag(Base):
 
     photo: Mapped["Photo"] = relationship(back_populates="tags")  # noqa: F821
     tag: Mapped["Tag"] = relationship(back_populates="photo_tags")
+
+    # The composite PK leads with file_hash; tag-led lookups need their own index.
+    __table_args__ = (Index("idx_photo_tags_tag_id", "tag_id"),)
