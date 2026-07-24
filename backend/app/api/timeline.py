@@ -53,7 +53,42 @@ async def get_years(session: AsyncSession = Depends(get_session)):
         )
     )
 
-    return [{"year": int(row.year), "count": row.count} for row in result if row.year]
+    years = [{"year": int(row.year), "count": row.count} for row in result if row.year]
+
+    # Four preview photos per year, evenly spaced through the year so the
+    # strip reads like a mini summary (not just four January shots).
+    from sqlalchemy import text
+
+    preview_rows = await session.execute(
+        text(
+            """
+            WITH yearly AS (
+                SELECT file_hash,
+                       CAST(strftime('%Y', COALESCE(date_taken, file_modified)) AS INTEGER) AS year,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY strftime('%Y', COALESCE(date_taken, file_modified))
+                           ORDER BY COALESCE(date_taken, file_modified)
+                       ) AS rn,
+                       COUNT(*) OVER (
+                           PARTITION BY strftime('%Y', COALESCE(date_taken, file_modified))
+                       ) AS cnt
+                FROM photos
+                WHERE COALESCE(date_taken, file_modified) IS NOT NULL
+            )
+            SELECT year, file_hash FROM yearly
+            WHERE rn = 1 OR rn = cnt / 4 + 1 OR rn = cnt / 2 + 1 OR rn = 3 * cnt / 4 + 1
+            ORDER BY year DESC, rn
+            """
+        )
+    )
+    previews: dict[int, list[str]] = {}
+    for year, file_hash in preview_rows.all():
+        previews.setdefault(int(year), []).append(file_hash)
+
+    for entry in years:
+        entry["previews"] = previews.get(entry["year"], [])[:4]
+
+    return years
 
 
 @router.get("", response_model=list[TimelineGroup])

@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, type PhotoSummary } from "../api/client";
+import { api, thumbnailUrl, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { Loader2, ChevronLeft } from "lucide-react";
@@ -50,20 +50,36 @@ export function Years() {
   // Year selection view
   if (!selectedYear) {
     return (
-      <div className="p-6">
+      <div className="p-6 overflow-y-auto h-full">
         <h1 className="text-xl font-semibold text-gray-800 mb-6">Browse by Year</h1>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
-          {years.map(({ year, count }) => (
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
+          {years.map(({ year, count, previews }) => (
             <button
               key={year}
               onClick={() => handleSelectYear(year)}
-              className="p-6 bg-gray-50 rounded-xl hover:bg-primary-50 hover:text-primary-700
+              className="bg-gray-50 rounded-xl overflow-hidden hover:bg-primary-50
                          border border-gray-200 hover:border-primary-200
-                         transition-all text-center group"
+                         transition-all text-left group"
             >
-              <div className="text-2xl font-bold group-hover:text-primary-700">{year}</div>
-              <div className="text-sm text-gray-500 mt-1">
-                {count.toLocaleString()} photo{count !== 1 ? "s" : ""}
+              {previews.length > 0 && (
+                <div className="grid grid-cols-4 gap-px bg-gray-200">
+                  {previews.slice(0, 4).map((hash) => (
+                    <img
+                      key={hash}
+                      src={thumbnailUrl(hash, 200)}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      className="w-full aspect-square object-cover"
+                    />
+                  ))}
+                </div>
+              )}
+              <div className="px-4 py-3 flex items-baseline justify-between">
+                <span className="text-xl font-bold group-hover:text-primary-700">{year}</span>
+                <span className="text-sm text-gray-500">
+                  {count.toLocaleString()} photo{count !== 1 ? "s" : ""}
+                </span>
               </div>
             </button>
           ))}

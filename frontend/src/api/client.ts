@@ -112,6 +112,7 @@ export interface TimelineGroup {
 export interface YearCount {
   year: number;
   count: number;
+  previews: string[];
 }
 
 export interface ScanStatus {
