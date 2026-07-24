@@ -34,14 +34,27 @@ def extract_video_metadata(filepath: Path) -> dict:
         return {}
 
 
-def extract_poster_frame(filepath: Path):
-    """Decode the first video frame and return it as a PIL RGB Image (or None).
+def _display_rotation(stream) -> int:
+    """Display rotation in degrees, normalized to 0/90/180/270.
 
-    Note: display rotation is not applied — PyAV 13 doesn't expose the
-    rotation/display-matrix side data at the Python level and no ffmpeg CLI is
-    available to autorotate, so a small number of posters (rotated recordings)
-    render sideways. Playback in the browser is unaffected (it honors the
-    rotation). Tracked as a follow-up.
+    PyAV 13 exposes the display matrix as a float under the DISPLAYMATRIX key
+    of stream.side_data (dict). ffmpeg's convention is a counter-clockwise
+    angle, e.g. -90 for a clip that must be turned 90 clockwise to view.
+    """
+    try:
+        sd = stream.side_data
+        if sd and "DISPLAYMATRIX" in sd:
+            return int(round(float(sd["DISPLAYMATRIX"]))) % 360
+    except Exception:
+        pass
+    return 0
+
+
+def extract_poster_frame(filepath: Path):
+    """Decode the first video frame as an upright PIL RGB Image (or None).
+
+    Frames decode in storage orientation; we apply the stream's display
+    rotation so the poster matches what a player shows.
     """
     try:
         import av
@@ -50,9 +63,16 @@ def extract_poster_frame(filepath: Path):
             stream = next((s for s in container.streams if s.type == "video"), None)
             if stream is None:
                 return None
+            rotation = _display_rotation(stream)
             stream.codec_context.skip_frame = "NONKEY"
             for frame in container.decode(stream):
-                return frame.to_image().convert("RGB")
+                img = frame.to_image().convert("RGB")
+                if rotation:
+                    # side_data angle is counter-clockwise; PIL rotate() is
+                    # also counter-clockwise, so rotating by the same angle
+                    # brings the stored frame upright.
+                    img = img.rotate(rotation, expand=True)
+                return img
     except Exception as e:
         logger.warning("Could not extract poster from %s: %s", filepath, type(e).__name__)
     return None
