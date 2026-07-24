@@ -64,6 +64,36 @@ def _is_live_photo_companion(filepath: Path) -> bool:
     return False
 
 
+# Apple Live Photo movies carry this QuickTime metadata key (and a paired
+# still-image-time track); genuine videos never do. Reliably distinguishes a
+# Live Photo movie from a deliberately-recorded short clip, even when the
+# still half isn't present in the library. See:
+# https://www.whexy.com/dyn/ec968903-2fab-44ac-8003-62d14cacc2f5
+_LIVE_PHOTO_MARKER = b"com.apple.quicktime.content.identifier"
+
+
+def is_live_photo_movie(filepath: Path) -> bool:
+    """Detect an Apple Live Photo movie by its content-identifier marker.
+
+    The marker lives in the moov atom, which QuickTime places at either the
+    start or the end of the file, so scan a 1 MB chunk from each end rather
+    than reading the whole (possibly huge) file.
+    """
+    if filepath.suffix.lower() != ".mov":
+        return False
+    chunk = 1024 * 1024
+    try:
+        size = filepath.stat().st_size
+        with open(filepath, "rb") as f:
+            data = f.read(chunk)
+            if size > chunk * 2:
+                f.seek(-chunk, 2)
+                data += f.read(chunk)
+        return _LIVE_PHOTO_MARKER in data
+    except OSError:
+        return False
+
+
 def is_valid_image(filepath: Path) -> bool:
     """Check if file is a valid readable image (not corrupted).
     
@@ -157,9 +187,13 @@ def _collect_photo_files(
             filepath = Path(root) / f
             if not is_indexable(filepath):
                 continue
-            # Apple Live Photo movies (.mov beside a photo) are surfaced via
-            # the photo itself, so never index them as standalone videos.
-            if is_supported_video(filepath) and _is_live_photo_companion(filepath):
+            # Never index Apple Live Photo movies as standalone videos: those
+            # beside their still (same folder) OR carrying the Live Photo
+            # marker (still elsewhere or absent). Genuine short clips lack the
+            # marker and are kept.
+            if is_supported_video(filepath) and (
+                _is_live_photo_companion(filepath) or is_live_photo_movie(filepath)
+            ):
                 continue
             seen.add(str(filepath.relative_to(photos_dir)))
             if dir_unchanged:
