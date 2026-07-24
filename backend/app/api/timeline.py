@@ -22,6 +22,10 @@ def _photo_to_summary(photo: Photo) -> PhotoSummary:
         height=photo.height,
         date_taken=photo.date_taken,
         is_favorite=photo.is_favorite,
+        marked_for_print=photo.marked_for_print,
+        flagged_for_removal=photo.flagged_for_removal,
+        is_video=photo.is_video,
+        duration=photo.duration,
         thumbnail_url=f"/api/photos/{photo.file_hash}/thumbnail/600",
         has_live_photo=bool(photo.live_photo_video or photo.motion_photo),
     )
@@ -97,6 +101,7 @@ async def get_years(session: AsyncSession = Depends(get_session)):
 async def get_timeline(
     year: int | None = None,
     month: int | None = None,
+    video: bool | None = None,
     group_by: str = Query("month", pattern="^(year|month|day)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -105,6 +110,8 @@ async def get_timeline(
     """Get photos grouped by time period."""
     query = select(Photo).where(Photo.flagged_for_removal == False)  # noqa: E712
 
+    if video is not None:
+        query = query.where(Photo.is_video == video)
     if year:
         query = query.where(extract("year", Photo.date_taken) == year)
     if month:

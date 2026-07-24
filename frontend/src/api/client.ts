@@ -360,7 +360,7 @@ export const api = {
   // Timeline
   getYears: () => request<YearCount[]>("/timeline/years"),
 
-  getTimeline: (params?: Record<string, string | number>) =>
+  getTimeline: (params?: Record<string, string | number | boolean>) =>
     request<TimelineGroup[]>(`/timeline${buildQuery(params)}`),
 
   // Scan

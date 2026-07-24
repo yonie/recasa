@@ -207,7 +207,6 @@ export function PhotoViewer() {
             className="max-w-full max-h-full object-contain"
             controls
             autoPlay
-            loop
             playsInline
             onClick={(e) => e.stopPropagation()}
           />

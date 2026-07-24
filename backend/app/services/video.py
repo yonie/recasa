@@ -35,7 +35,14 @@ def extract_video_metadata(filepath: Path) -> dict:
 
 
 def extract_poster_frame(filepath: Path):
-    """Decode the first video frame and return it as a PIL RGB Image (or None)."""
+    """Decode the first video frame and return it as a PIL RGB Image (or None).
+
+    Note: display rotation is not applied — PyAV 13 doesn't expose the
+    rotation/display-matrix side data at the Python level and no ffmpeg CLI is
+    available to autorotate, so a small number of posters (rotated recordings)
+    render sideways. Playback in the browser is unaffected (it honors the
+    rotation). Tracked as a follow-up.
+    """
     try:
         import av
 
