@@ -202,14 +202,24 @@ export function PhotoViewer() {
         onTouchEnd={gestures.onTouchEnd}
       >
         {detail.is_video ? (
-          <video
-            src={videoUrl(detail.file_hash)}
-            className="max-w-full max-h-full object-contain"
-            controls
-            autoPlay
-            playsInline
-            onClick={(e) => e.stopPropagation()}
-          />
+          <div className="flex flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
+            <video
+              src={videoUrl(detail.file_hash)}
+              className="max-w-full max-h-[85vh] object-contain"
+              controls
+              autoPlay
+              playsInline
+            />
+            {/* Old codecs (MPEG-4 Part 2, MJPEG) can't decode in-browser —
+                offer the original so the video is still retrievable. */}
+            <a
+              href={videoUrl(detail.file_hash)}
+              download={detail.file_name}
+              className="text-xs text-white/60 hover:text-white/90 underline"
+            >
+              Video won't play? Download the original
+            </a>
+          </div>
         ) : (
           <img
             ref={gestures.imgRef}
