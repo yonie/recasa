@@ -41,14 +41,6 @@ print-ready zip — HEIC converted to JPEG — to upload to any print service.
 
 ![To Print list with per-photo print-quality details](docs/screenshots/to-print.jpg)
 
-### Processing pipeline, honestly reported
-
-A single dashboard shows whether the library is being watched or processed,
-what's pending, and which files are genuinely unreadable — listed with reasons
-instead of being retried forever.
-
-![Pipeline processing dashboard](docs/screenshots/pipeline.jpg)
-
 ### AI tags &nbsp;·&nbsp; Duplicates &nbsp;·&nbsp; Flag for removal
 
 | | |
