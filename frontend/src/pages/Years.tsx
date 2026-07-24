@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, thumbnailUrl, type PhotoSummary } from "../api/client";
-import { PhotoGrid } from "../components/PhotoGrid";
+import { PhotoGrid, GridViewControls } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
 import { Loader2, ChevronLeft } from "lucide-react";
 import { CollageButton } from "../components/CollagePopover";
@@ -132,10 +132,12 @@ export function Years() {
             <PhotoGrid
               photos={group.photos}
               onPhotoClick={(photo, index) => handlePhotoClick(photo, index, group.photos)}
+              showControls={false}
             />
           </div>
         ))
       )}
+      <GridViewControls />
     </div>
   );
 }

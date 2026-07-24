@@ -21,6 +21,9 @@ interface PhotoGridProps {
   onPrintToggle?: (photo: PhotoSummary) => void;
   /** Persistent printer mark on marked thumbnails (off on the To Print page itself). */
   showPrintMark?: boolean;
+  /** Render the floating size/fit controls. Set false when a page shows many
+   *  grids (month groups) and renders GridViewControls once itself. */
+  showControls?: boolean;
 }
 
 /** Touch devices never hover, so live-photo <video> elements would be dead
@@ -93,6 +96,7 @@ export function PhotoGrid({
   onFavoriteToggle,
   onPrintToggle,
   showPrintMark = true,
+  showControls = true,
 }: PhotoGridProps) {
   const gridSize = useStore((s) => s.gridSize);
 
@@ -119,7 +123,7 @@ export function PhotoGrid({
           />
         ))}
       </div>
-      <GridViewControls />
+      {showControls && <GridViewControls />}
     </>
   );
 }
