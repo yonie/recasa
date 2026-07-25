@@ -110,12 +110,15 @@ async def get_timeline(
     """Get photos grouped by time period."""
     query = select(Photo).where(Photo.flagged_for_removal == False)  # noqa: E712
 
+    # Match the /years counts, which fall back to file_modified when
+    # date_taken is null (common for videos without EXIF dates).
+    effective_date = func.coalesce(Photo.date_taken, Photo.file_modified)
     if video is not None:
         query = query.where(Photo.is_video == video)
     if year:
-        query = query.where(extract("year", Photo.date_taken) == year)
+        query = query.where(extract("year", effective_date) == year)
     if month:
-        query = query.where(extract("month", Photo.date_taken) == month)
+        query = query.where(extract("month", effective_date) == month)
 
     query = query.order_by(Photo.date_taken.desc().nullslast(), Photo.file_modified.desc().nullslast())
 

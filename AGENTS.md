@@ -35,13 +35,13 @@ docker-compose down
 The app runs as a **single Docker container** (`recasa`) with nginx (port 8080) reverse-proxying to uvicorn (port 8000). Nginx serves the frontend static files from `/app/frontend/dist` and proxies `/api/` to uvicorn.
 
 **Dev mode** (`docker-compose.override.yml`) volume-mounts source code into the container:
-- `./backend` → `/app/backend` (Python code, auto-reloads via `UVICORN_RELOAD=true`)
+- `./backend` → `/app/backend` (Python code)
 - `./frontend/dist` → `/app/frontend/dist` (built frontend assets)
 
 This means:
 
 #### Backend changes (Python)
-No action needed. Uvicorn auto-reloads when files change on disk (the volume mount makes host changes visible inside the container immediately).
+Run `docker compose restart recasa` after changing Python code. `UVICORN_RELOAD` is deliberately set to `false` (auto-reload hurts performance a lot) — do not turn it on. The volume mount makes host changes visible inside the container immediately, but uvicorn only picks them up on restart.
 
 #### Frontend changes (React/TypeScript)
 1. Rebuild on the host: `cd frontend && npm run build`
@@ -49,7 +49,7 @@ No action needed. Uvicorn auto-reloads when files change on disk (the volume mou
 
 **IMPORTANT:** Always run `npm run build` after frontend changes. The user tests on localhost:7000 (Docker/nginx), NOT the Vite dev server on port 3000. Without building, changes are invisible. Type-checking (`tsc --noEmit`) alone is not enough.
 
-No `docker compose restart` or `docker compose up --build` needed for either case in dev mode.
+Frontend changes need no restart; backend changes need `docker compose restart recasa` (but never `docker compose up --build`).
 
 #### When to rebuild the Docker image
 Only needed when:

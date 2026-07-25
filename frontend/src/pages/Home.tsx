@@ -9,8 +9,8 @@ export function Home() {
   const openViewer = useStore((s) => s.openViewer);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["timeline", "month", 24],
-    queryFn: () => api.getTimeline({ group_by: "month", limit: 24 }),
+    queryKey: ["timeline", "month", 24, "photos-only"],
+    queryFn: () => api.getTimeline({ group_by: "month", limit: 24, video: false }),
   });
   const groups = data ?? [];
 
