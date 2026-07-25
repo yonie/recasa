@@ -266,21 +266,6 @@ export function PhotoViewer() {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                handlePrint();
-              }}
-              className="p-2 rounded-full bg-black/40 active:bg-black/60 text-white transition-colors"
-              title="To Print (P)"
-            >
-              <Printer
-                className={clsx(
-                  "w-5 h-5",
-                  isMarkedForPrint && "fill-sky-400 text-sky-400"
-                )}
-              />
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
                 handleFlag();
               }}
               className="p-2 rounded-full bg-black/40 active:bg-black/60 text-white transition-colors"
@@ -290,6 +275,21 @@ export function PhotoViewer() {
                 className={clsx(
                   "w-5 h-5",
                   isFlagged && "fill-red-400 text-red-400"
+                )}
+              />
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handlePrint();
+              }}
+              className="p-2 rounded-full bg-black/40 active:bg-black/60 text-white transition-colors"
+              title="To Print (P)"
+            >
+              <Printer
+                className={clsx(
+                  "w-5 h-5",
+                  isMarkedForPrint && "fill-sky-400 text-sky-400"
                 )}
               />
             </button>
@@ -487,14 +487,14 @@ export function PhotoViewer() {
               <div className="grid grid-cols-2 gap-1 text-xs text-gray-500">
                 <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">Esc</span>
                 <span>Close</span>
-                <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">I</span>
-                <span>Toggle info</span>
                 <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">F</span>
                 <span>Favorite</span>
-                <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">P</span>
-                <span>To Print</span>
                 <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">R</span>
                 <span>Flag for removal</span>
+                <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">P</span>
+                <span>To Print</span>
+                <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">I</span>
+                <span>Toggle info</span>
                 <span className="font-mono bg-gray-800 px-1.5 py-0.5 rounded text-center">&larr; &rarr;</span>
                 <span>Navigate</span>
               </div>

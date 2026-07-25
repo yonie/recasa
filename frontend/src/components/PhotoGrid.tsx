@@ -298,48 +298,49 @@ function PhotoGridItem({
           "transition-opacity duration-200"
         )}
       >
-        {/* Favorite button */}
-        <button
-          onClick={handleFavorite}
-          className="absolute top-2 right-2 p-1 rounded-full hover:bg-white/20 transition-colors"
-        >
-          <Star
-            className={clsx(
-              "w-5 h-5",
-              isFavorite ? "fill-yellow-400 text-yellow-400" : "text-white"
-            )}
-          />
-        </button>
-
-        {/* Print toggle (photos only — videos can't be printed) */}
-        {!photo.is_video && (
+        {/* Actions, in the app-wide order: favorite, flag, print */}
+        <div className="absolute top-2 right-2 flex gap-1">
           <button
-            onClick={handlePrint}
-            className="absolute top-2 right-9 p-1 rounded-full hover:bg-white/20 transition-colors"
-            title={isMarkedForPrint ? "Remove from To Print" : "Add to To Print"}
+            onClick={handleFavorite}
+            className="p-1 rounded-full hover:bg-white/20 transition-colors"
           >
-            <Printer
+            <Star
               className={clsx(
                 "w-5 h-5",
-                isMarkedForPrint ? "fill-sky-400 text-sky-400" : "text-white"
+                isFavorite ? "fill-yellow-400 text-yellow-400" : "text-white"
               )}
             />
           </button>
-        )}
 
-        {/* Flag for removal */}
-        <button
-          onClick={handleFlag}
-          className="absolute top-2 right-16 p-1 rounded-full hover:bg-white/20 transition-colors"
-          title={photo.flagged_for_removal ? "Unflag" : "Flag for removal"}
-        >
-          <Flag
-            className={clsx(
-              "w-5 h-5",
-              photo.flagged_for_removal ? "fill-red-400 text-red-400" : "text-white"
-            )}
-          />
-        </button>
+          <button
+            onClick={handleFlag}
+            className="p-1 rounded-full hover:bg-white/20 transition-colors"
+            title={photo.flagged_for_removal ? "Unflag" : "Flag for removal"}
+          >
+            <Flag
+              className={clsx(
+                "w-5 h-5",
+                photo.flagged_for_removal ? "fill-red-400 text-red-400" : "text-white"
+              )}
+            />
+          </button>
+
+          {/* Photos only — videos can't be printed */}
+          {!photo.is_video && (
+            <button
+              onClick={handlePrint}
+              className="p-1 rounded-full hover:bg-white/20 transition-colors"
+              title={isMarkedForPrint ? "Remove from To Print" : "Add to To Print"}
+            >
+              <Printer
+                className={clsx(
+                  "w-5 h-5",
+                  isMarkedForPrint ? "fill-sky-400 text-sky-400" : "text-white"
+                )}
+              />
+            </button>
+          )}
+        </div>
 
         {/* Live photo indicator */}
         {photo.has_live_photo && (
