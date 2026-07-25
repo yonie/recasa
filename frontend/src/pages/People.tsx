@@ -24,6 +24,7 @@ export function PersonDetail() {
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const openViewer = useStore((s) => s.openViewer);
+  const setStats = useStore((s) => s.setStats);
   const queryClient = useQueryClient();
   const id = Number(personId);
 
@@ -64,11 +65,17 @@ export function PersonDetail() {
     try {
       const updated = await api.updatePerson(person.person_id, nameInput.trim());
       queryClient.setQueryData(["person", id], updated);
+      // The new name must show up everywhere it's cached: the people list,
+      // group listings and the sidebar's named-people count.
+      queryClient.invalidateQueries({ queryKey: ["persons"] });
+      queryClient.invalidateQueries({ queryKey: ["person-groups"] });
+      queryClient.invalidateQueries({ queryKey: ["persons-together"] });
+      api.getStats().then(setStats).catch(() => {});
       setEditingName(false);
     } catch {
       // ignore
     }
-  }, [person, nameInput, queryClient, id]);
+  }, [person, nameInput, queryClient, id, setStats]);
 
   const handleIgnore = useCallback(async () => {
     if (!person) return;
