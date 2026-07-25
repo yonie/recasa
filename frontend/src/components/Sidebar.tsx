@@ -197,6 +197,14 @@ export function Sidebar() {
                 {stats.total_photos.toLocaleString()}
               </span>
             </div>
+            {stats.videos_count > 0 && (
+              <div className="flex justify-between">
+                <span>Videos</span>
+                <span className="font-medium text-gray-700">
+                  {stats.videos_count.toLocaleString()}
+                </span>
+              </div>
+            )}
             <div className="flex justify-between">
               <span>Size</span>
               <span className="font-medium text-gray-700">

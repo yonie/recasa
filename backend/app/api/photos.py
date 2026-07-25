@@ -195,10 +195,22 @@ async def list_photos(
 async def get_stats(session: AsyncSession = Depends(get_session)):
     """Get library statistics."""
     visible = Photo.flagged_for_removal == False  # noqa: E712
-    total = (await session.execute(select(func.count(Photo.file_hash)).where(visible))).scalar() or 0
+    total = (
+        await session.execute(
+            select(func.count(Photo.file_hash)).where(visible, Photo.is_video == False)  # noqa: E712
+        )
+    ).scalar() or 0
     total_size = (await session.execute(select(func.sum(Photo.file_size)).where(visible))).scalar() or 0
     total_faces = (await session.execute(select(func.count(Face.face_id)))).scalar() or 0
-    total_persons = (await session.execute(select(func.count(Person.person_id)))).scalar() or 0
+    # Only user-named people count as "people" — unnamed rows are automatic
+    # face clusters (mostly single-face noise), not verified identities.
+    total_persons = (
+        await session.execute(
+            select(func.count(Person.person_id)).where(
+                Person.name.is_not(None), Person.name != "", Person.ignored == False  # noqa: E712
+            )
+        )
+    ).scalar() or 0
     total_tags = (await session.execute(select(func.count(Tag.tag_id)))).scalar() or 0
     favorites = (
         await session.execute(

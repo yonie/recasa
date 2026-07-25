@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   type PipelineStats,
-  type ProcessingStats,
   type StageStats,
-  type StageFailureItem,
 } from "../api/client";
 import {
   Activity,
@@ -102,33 +101,29 @@ function formatAgo(timestamp: string): string {
 }
 
 export function Pipeline() {
-  const [stats, setStats] = useState<PipelineStats | null>(null);
-  const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null);
-  const [failures, setFailures] = useState<StageFailureItem[]>([]);
+  const queryClient = useQueryClient();
   const [wsState, setWsState] = useState<"connecting" | "connected" | "lost">("connecting");
   const [isTriggering, setIsTriggering] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [showFailures, setShowFailures] = useState(false);
 
-  useEffect(() => {
-    async function loadStats() {
-      try {
-        const [pipelineData, processingData, failuresData] = await Promise.all([
-          api.getPipelineStatus(),
-          api.getProcessingStats(),
-          api.getPipelineFailures(),
-        ]);
-        setStats(pipelineData);
-        setProcessingStats(processingData);
-        setFailures(failuresData);
-      } catch {
-        // ignore
-      }
-    }
-    loadStats();
-    const interval = setInterval(loadStats, 3000);
-    return () => clearInterval(interval);
-  }, []);
+  // Each query renders as soon as its own data arrives (no combined await),
+  // and react-query's cache makes revisits instant with a background refresh.
+  const { data: stats = null } = useQuery({
+    queryKey: ["pipeline", "status"],
+    queryFn: () => api.getPipelineStatus(),
+    refetchInterval: 3000,
+  });
+  const { data: processingStats = null } = useQuery({
+    queryKey: ["pipeline", "processing-stats"],
+    queryFn: () => api.getProcessingStats(),
+    refetchInterval: 3000,
+  });
+  const { data: failures = [] } = useQuery({
+    queryKey: ["pipeline", "failures"],
+    queryFn: () => api.getPipelineFailures(),
+    refetchInterval: 3000,
+  });
 
   useEffect(() => {
     // Live updates over websocket, with automatic reconnect. A connection
@@ -155,8 +150,8 @@ export function Pipeline() {
       };
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
-          setStats(data);
+          const data: PipelineStats = JSON.parse(event.data);
+          queryClient.setQueryData(["pipeline", "status"], data);
           if (data.state === "idle") setIsStopping(false);
         } catch {
           // ignore
@@ -170,7 +165,7 @@ export function Pipeline() {
       if (retryTimer) clearTimeout(retryTimer);
       ws?.close();
     };
-  }, []);
+  }, [queryClient]);
 
   const handleRescan = async () => {
     if (isTriggering) return;
@@ -225,17 +220,9 @@ export function Pipeline() {
     }
   };
 
-  if (!stats || !processingStats) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Activity className="w-8 h-8 animate-spin text-primary-500" />
-      </div>
-    );
-  }
-
-  const isActive = stats.state === "scanning" || stats.state === "processing";
+  const isActive = stats?.state === "scanning" || stats?.state === "processing";
   const totalPhotos = processingStats?.total_photos || 0;
-  const watcher = stats.watcher;
+  const watcher = stats?.watcher;
 
   // Photos still waiting on some enabled stage, not counting terminal failures
   const pendingCount = (() => {
@@ -266,7 +253,19 @@ export function Pipeline() {
       {(
         <div className="mb-6 rounded-xl border border-gray-200 bg-white px-5 py-4 flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3.5 min-w-0">
-            {stats.state === "scanning" ? (
+            {!stats ? (
+              <>
+                <span className="relative flex w-8 h-8 items-center justify-center shrink-0">
+                  <span className="w-3 h-3 rounded-full bg-gray-300 animate-pulse" />
+                </span>
+                <div className="min-w-0">
+                  <div className="font-semibold text-gray-900">Checking pipeline status…</div>
+                  <div className="text-sm text-gray-500 truncate">
+                    Fetching the current state of the library pipeline.
+                  </div>
+                </div>
+              </>
+            ) : stats.state === "scanning" ? (
               <Loader2 className="w-8 h-8 text-blue-500 animate-spin shrink-0" />
             ) : isActive ? (
               <span className="relative flex w-8 h-8 items-center justify-center shrink-0">
@@ -279,6 +278,7 @@ export function Pipeline() {
                 <span className="relative w-3 h-3 rounded-full bg-green-500" />
               </span>
             )}
+            {stats && (
             <div className="min-w-0">
               <div className="font-semibold text-gray-900">
                 {stats.state === "scanning"
@@ -315,9 +315,10 @@ export function Pipeline() {
                 )}
               </div>
             </div>
+            )}
           </div>
 
-          {isActive ? (
+          {!stats ? null : isActive ? (
             <button
               onClick={handleStop}
               disabled={isStopping}
@@ -354,9 +355,13 @@ export function Pipeline() {
       <div className="grid grid-cols-3 gap-3 mb-6">
         <div className="bg-white border border-gray-200 rounded-xl p-3.5">
           <div className="text-xs text-gray-500 mb-0.5">Indexed Photos</div>
-          <div className="text-2xl font-bold text-gray-900 tabular-nums">
-            {formatNumber(totalPhotos)}
-          </div>
+          {processingStats ? (
+            <div className="text-2xl font-bold text-gray-900 tabular-nums">
+              {formatNumber(totalPhotos)}
+            </div>
+          ) : (
+            <div className="h-8 w-20 bg-gray-100 rounded animate-pulse" />
+          )}
           {(processingStats?.total_videos ?? 0) > 0 && (
             <div className="text-xs text-gray-400 mt-0.5">
               + {formatNumber(processingStats!.total_videos)} video
@@ -366,9 +371,13 @@ export function Pipeline() {
         </div>
         <div className={clsx("border rounded-xl p-3.5", pendingCount > 0 ? "bg-white border-blue-200" : "bg-gray-50/60 border-gray-200")}>
           <div className="text-xs text-gray-500 mb-0.5">Pending</div>
-          <div className={clsx("text-2xl font-bold tabular-nums", pendingCount > 0 ? "text-blue-600" : "text-gray-300")}>
-            {formatNumber(pendingCount)}
-          </div>
+          {processingStats ? (
+            <div className={clsx("text-2xl font-bold tabular-nums", pendingCount > 0 ? "text-blue-600" : "text-gray-300")}>
+              {formatNumber(pendingCount)}
+            </div>
+          ) : (
+            <div className="h-8 w-14 bg-gray-100 rounded animate-pulse" />
+          )}
         </div>
         <button
           onClick={() => setShowFailures((s) => !s)}
@@ -443,7 +452,33 @@ export function Pipeline() {
             {QUEUE_ORDER.map((queueType) => {
               const Icon = QUEUE_ICONS[queueType] || Activity;
               const label = QUEUE_LABELS[queueType] || queueType;
-              const stage: StageStats = processingStats?.stages[queueType] || {
+
+              if (!processingStats) {
+                return (
+                  <tr key={queueType} className="border-b border-gray-50 last:border-0">
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <Icon className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                        <span className="font-medium text-gray-900">{label}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="h-4 w-16 bg-gray-100 rounded-full animate-pulse" />
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="h-4 w-20 bg-gray-100 rounded animate-pulse ml-auto" />
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="h-4 w-6 bg-gray-100 rounded animate-pulse ml-auto" />
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="h-1.5 bg-gray-100 rounded-full animate-pulse" />
+                    </td>
+                  </tr>
+                );
+              }
+
+              const stage: StageStats = processingStats.stages[queueType] || {
                 status: "pending", queued: 0, completed: 0, total: 0, enabled: true, failed: 0,
               };
               const isBatch = queueType === "events";
@@ -546,7 +581,7 @@ export function Pipeline() {
             <button
               key={stage}
               onClick={() => handleRebuildStage(stage, warning)}
-              disabled={isActive}
+              disabled={isActive || !stats}
               className="px-3 py-1.5 text-xs rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-40 transition-colors"
             >
               {label}
@@ -555,7 +590,7 @@ export function Pipeline() {
         </div>
         <button
           onClick={handleClearIndex}
-          disabled={isActive || isTriggering}
+          disabled={isActive || isTriggering || !stats}
           className="text-xs text-red-600 hover:text-red-700 hover:underline disabled:opacity-40"
         >
           Delete entire index and start over…
