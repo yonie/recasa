@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type PhotoSummary } from "../api/client";
-import { useStore } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { thumbnailUrl } from "../api/client";
 import { Loader2, HardDrive } from "lucide-react";
 
@@ -15,7 +15,7 @@ const SIZE_OPTIONS = [
 
 export function LargeFiles() {
   const [minSize, setMinSize] = useState(10_000_000);
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
 
   const { data, isLoading: loading } = useQuery({
     queryKey: ["large-files", minSize],
@@ -25,16 +25,9 @@ export function LargeFiles() {
   const total = data?.total ?? 0;
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        const index = photos.findIndex((p) => p.file_hash === photo.file_hash);
-        openViewer(detail, photos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer, photos]
+    (photo: PhotoSummary) =>
+      openPhoto(photo, photos.findIndex((p) => p.file_hash === photo.file_hash), photos),
+    [openPhoto, photos]
   );
 
   return (

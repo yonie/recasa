@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type PersonSummary, type PhotoSummary, thumbnailUrl } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useStore } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { useScrollRestore } from "../hooks/useScrollRestore";
 import { Loader2, Users, ArrowLeft, Pencil, Check, X, EyeOff, Eye, ChevronDown } from "lucide-react";
 import { CollageButton } from "../components/CollagePopover";
@@ -23,7 +24,7 @@ export function PersonDetail() {
   const navigate = useNavigate();
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
   const setStats = useStore((s) => s.setStats);
   const queryClient = useQueryClient();
   const id = Number(personId);
@@ -42,15 +43,8 @@ export function PersonDetail() {
   const loading = personLoading || photosLoading;
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary, index: number) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail, photos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer, photos]
+    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
+    [openPhoto, photos]
   );
 
   const handleStartEdit = useCallback(() => {
@@ -184,7 +178,7 @@ export function PersonDetail() {
 export function TogetherDetail() {
   const { personIds } = useParams<{ personIds: string }>();
   const navigate = useNavigate();
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
   const ids = (personIds ?? "").split(",").map(Number).filter(Boolean);
   const enabled = ids.length >= 2;
 
@@ -203,15 +197,8 @@ export function TogetherDetail() {
   const loading = personsLoading || photosLoading;
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary, index: number) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail, photos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer, photos]
+    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
+    [openPhoto, photos]
   );
 
   if (loading) {

@@ -17,6 +17,7 @@ from sqlalchemy import select
 from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.models import Photo, Caption, Tag, PhotoTag
+from backend.app.services.image_loader import open_image_cm
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +44,11 @@ def _strip_think_blocks(text: str) -> str:
 def _prepare_image_base64(filepath: Path) -> str | None:
     """Load and resize an image, returning base64-encoded JPEG."""
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
 
-        with Image.open(filepath) as img:
+        with open_image_cm(filepath) as img:
             # Handle EXIF orientation
             try:
-                from PIL import ImageOps
                 img = ImageOps.exif_transpose(img)
             except Exception:
                 pass
@@ -233,7 +233,19 @@ async def caption_photo(file_hash: str) -> bool:
             return False
 
         caption_text, tag_list = await _generate_caption_and_tags(image_base64)
-        
+
+        if caption_text is None and not await _check_ollama_available():
+            # Ollama is unreachable: a transient outage, not a photo that cannot
+            # be captioned. The marker below is keyed off "a Caption row exists"
+            # meaning "this stage is done", so writing one here would make the
+            # miss permanent — the photo would never be retried even after the
+            # service came back. Leave no row and let a later sweep pick it up.
+            logger.warning(
+                "Captioning deferred for %s: Ollama unreachable at %s",
+                file_hash, settings.ollama_url,
+            )
+            return False
+
         # Always store a Caption record (marker) to prevent re-processing
         session.add(Caption(
             file_hash=file_hash,

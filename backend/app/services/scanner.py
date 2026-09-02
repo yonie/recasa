@@ -18,6 +18,9 @@ from pathlib import Path
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Register MIME types for formats Python's mimetypes module doesn't know.
+mimetypes.add_type("image/x-olympus-orf", ".orf")
+
 from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.models import Photo, PhotoPath, PhotoHash, Face, Caption, StageFailure
@@ -96,7 +99,7 @@ def is_live_photo_movie(filepath: Path) -> bool:
 
 def is_valid_image(filepath: Path) -> bool:
     """Check if file is a valid readable image (not corrupted).
-    
+
     Returns False for:
     - Files too small to be valid images (< 1KB)
     - Truncated/corrupted images
@@ -105,6 +108,13 @@ def is_valid_image(filepath: Path) -> bool:
     try:
         if filepath.stat().st_size < 1024:
             return False
+        from backend.app.services.image_loader import is_raw
+        if is_raw(filepath):
+            # For RAW (ORF), opening with rawpy confirms the file is parseable;
+            # we use the lightweight sizes path rather than full pixel decode.
+            import rawpy as _rawpy  # type: ignore[import-not-found]
+            with _rawpy.imread(str(filepath)) as raw:
+                return raw.sizes.width > 0 and raw.sizes.height > 0
         from PIL import Image
         with Image.open(filepath) as img:
             img.verify()
@@ -553,6 +563,35 @@ async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> None:
             ]
 
         removed_paths = await asyncio.to_thread(_missing_on_disk, candidates)
+
+        # Refuse to clean up when the library is *unavailable* rather than
+        # emptied. Deleting here cascades to faces, captions, favourites and
+        # flags, which cost days of processing to rebuild, so an unmounted or
+        # unreadable directory must not be mistaken for a deletion.
+        #
+        # There is deliberately no cap on how many files may be cleaned up at
+        # once. Deleting a big folder is a normal thing to do, and a threshold
+        # would leave the index permanently unable to converge on the truth.
+        # The two checks below are unambiguous failures rather than heuristics:
+        # a genuine deletion leaves the library readable and still full of
+        # other photos.
+        if removed_paths:
+            if not settings.photos_dir.is_dir():
+                logger.error(
+                    "REFUSING to clean up %d indexed paths: %s is not a readable "
+                    "directory. The library looks unmounted, not deleted. Nothing "
+                    "was removed from the index.",
+                    len(removed_paths), settings.photos_dir,
+                )
+                return
+            if seen_paths is not None and not seen_paths:
+                logger.error(
+                    "REFUSING to clean up %d indexed paths: the sweep of %s found "
+                    "no photos at all. The library looks unmounted or empty, not "
+                    "deleted. Nothing was removed from the index.",
+                    len(removed_paths), settings.photos_dir,
+                )
+                return
 
         if removed_paths:
             for path in removed_paths:

@@ -2,11 +2,11 @@ import { useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type PhotoSummary } from "../api/client";
 import { PhotoGrid, GridViewControls } from "../components/PhotoGrid";
-import { useStore } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { Loader2 } from "lucide-react";
 
 export function Home() {
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["timeline", "month", 24, "photos-only"],
@@ -15,15 +15,9 @@ export function Home() {
   const groups = data ?? [];
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary, index: number, groupPhotos: PhotoSummary[]) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail, groupPhotos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer]
+    (photo: PhotoSummary, index: number, groupPhotos: PhotoSummary[]) =>
+      openPhoto(photo, index, groupPhotos),
+    [openPhoto]
   );
 
   if (isLoading) {

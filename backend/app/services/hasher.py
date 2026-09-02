@@ -14,6 +14,7 @@ from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.exceptions import PermanentStageError
 from backend.app.models import Photo, PhotoHash, DuplicateGroup, DuplicateMember
+from backend.app.services.image_loader import open_image_cm, PermanentReadError
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def _compute_perceptual_hashes(filepath: Path) -> dict:
     records the failure instead of re-queueing the photo forever.
     """
     try:
-        with Image.open(filepath) as img:
+        with open_image_cm(filepath) as img:
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
 
@@ -38,6 +39,8 @@ def _compute_perceptual_hashes(filepath: Path) -> dict:
                 "ahash": str(imagehash.average_hash(img)),
                 "dhash": str(imagehash.dhash(img)),
             }
+    except PermanentReadError as e:
+        raise PermanentStageError(str(e)) from e
     except Exception as e:
         logger.warning("Skipping hash for %s: %s", filepath, type(e).__name__)
         raise PermanentStageError(f"cannot read image ({type(e).__name__})") from e

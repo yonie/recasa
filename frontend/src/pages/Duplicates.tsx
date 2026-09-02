@@ -2,11 +2,12 @@ import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type DuplicatePhotoSummary } from "../api/client";
 import { useStore } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { thumbnailUrl } from "../api/client";
 import { Loader2, Copy, MapPin, Camera, Users, Calendar, Flag } from "lucide-react";
 
 export function Duplicates() {
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
   const setStats = useStore((s) => s.setStats);
   const queryClient = useQueryClient();
 
@@ -31,16 +32,9 @@ export function Duplicates() {
   );
 
   const handlePhotoClick = useCallback(
-    async (photo: DuplicatePhotoSummary, groupPhotos: DuplicatePhotoSummary[]) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        const index = groupPhotos.findIndex((p) => p.file_hash === photo.file_hash);
-        openViewer(detail, groupPhotos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer]
+    (photo: DuplicatePhotoSummary, groupPhotos: DuplicatePhotoSummary[]) =>
+      openPhoto(photo, groupPhotos.findIndex((p) => p.file_hash === photo.file_hash), groupPhotos),
+    [openPhoto]
   );
 
   if (loading) {

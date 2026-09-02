@@ -243,6 +243,61 @@ Pipeline may take longer for large images or slow networks. Adjust wait time:
 if not await api_client.wait_for_idle(max_seconds=600):  # 10 minutes
 ```
 
+## Frontend (Playwright) tests
+
+Browser tests live in `frontend/tests/` and run against a *running* instance on
+`localhost:7000` — they do not start the app themselves.
+
+```bash
+cd frontend
+
+# Run serially. See the caveat below before using the default worker count.
+npx playwright test --project=chromium --workers=1
+
+# Safari/WebKit, which matters for HEIC and for iOS scroll behaviour
+npx playwright test --config=playwright.webkit.config.ts
+```
+
+### Run them with `--workers=1`
+
+`playwright.config.ts` sets `workers: 4`, but on a large library the backend
+cannot serve four concurrent browser contexts and tests fail on timeouts
+unrelated to whatever they are testing.
+
+If a run has already left the backend struggling, restart before the next one:
+
+```bash
+docker compose restart recasa
+```
+
+### Some tests require an idle pipeline
+
+Most of `pipeline.spec.ts` is gated on `waitForPipelineComplete`, so those tests
+cannot pass while a scan is running — and with `WATCH_INTERVAL` at its default a
+scan runs often.
+
+Because of that, a failure here is often environmental rather than a real
+regression. Get a baseline before concluding otherwise: stash the change,
+rebuild the frontend, and run the same tests. Failures present in both runs are
+not caused by the change.
+
+### Prefer bounded queries when writing tests
+
+Tests that need a photo grid should drive it from a route backed by a paged
+query — `/search?q=...`, `/to-print`, `/favorites` (all `api.getPhotos`, ~10ms)
+— rather than the home timeline, which is the one endpoint that stalls under
+load. `viewer-swap.spec.ts` does this.
+
+Two other traps worth knowing:
+
+- **Previews are served immutable**, so a prefetched image is answered from
+  cache and a `page.route()` added *after* navigation never sees the request.
+  Install interception before the first `goto`.
+- **Several synthesised `keydown` events in one tick collapse into a single
+  navigation**, because the handler closes over the current index until React
+  re-renders. Use `keyboard.press()`, which dispatches across tasks, when you
+  mean several steps.
+
 ## Continuous Integration
 
 For CI pipelines:

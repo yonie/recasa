@@ -4,14 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 import { api, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { MapView } from "./MapView";
-import { useStore } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { Loader2, MapPin, ArrowLeft, Globe, Map, List } from "lucide-react";
 
 // Location city photos view (route: /locations/:country/:city)
 export function LocationCityPhotos() {
   const { country, city } = useParams<{ country: string; city: string }>();
   const navigate = useNavigate();
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
 
   const { data, isLoading: loading } = useQuery({
     queryKey: ["location-photos", country, city],
@@ -28,15 +28,8 @@ export function LocationCityPhotos() {
   const total = data?.total ?? 0;
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary, index: number) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail, photos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer, photos]
+    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
+    [openPhoto, photos]
   );
 
   if (loading) {

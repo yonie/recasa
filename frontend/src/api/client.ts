@@ -91,6 +91,26 @@ export interface PhotoDetail extends PhotoSummary {
   indexed_at: string | null;
 }
 
+/**
+ * A PhotoDetail renderable right now from a grid list entry. The summary
+ * already carries everything the image and toolbar need; only the info-panel
+ * fields (EXIF, faces, tags, location) require a fetch, and those can arrive a
+ * moment later without holding up the photo itself.
+ */
+export function provisionalDetail(p: PhotoSummary): PhotoDetail {
+  return {
+    ...p,
+    file_modified: null,
+    location: null,
+    exif: null,
+    faces: [],
+    tags: [],
+    live_photo_video: null,
+    motion_photo: false,
+    indexed_at: null,
+  };
+}
+
 export interface PhotoPage {
   items: PhotoSummary[];
   total: number;
@@ -469,6 +489,29 @@ export function thumbnailUrl(hash: string, size: number = 600): string {
 
 export function originalUrl(hash: string): string {
   return `${BASE_URL}/photos/${hash}/original`;
+}
+
+/**
+ * Full view for the photo viewer. Same bytes as the original for formats the
+ * browser can decode; a rendered JPEG for RAW (ORF) and HEIC, which it can't.
+ */
+export function previewUrl(hash: string): string {
+  return `${BASE_URL}/photos/${hash}/preview`;
+}
+
+/** Formats no browser decodes: ORF has no LibRaw, HEIC only works in Safari. */
+const NEEDS_RENDER = /\.(orf|heic|heif)$/i;
+
+/**
+ * Best full-view URL for a photo. Sending decodable formats straight to
+ * /original keeps them from queueing behind a RAW decode on the render
+ * endpoint. The backend stays the authority — /preview serves the original
+ * for anything it doesn't need to convert — so an unrecognised name is safe.
+ */
+export function fullViewUrl(photo: { file_hash: string; file_name: string }): string {
+  return NEEDS_RENDER.test(photo.file_name)
+    ? previewUrl(photo.file_hash)
+    : originalUrl(photo.file_hash);
 }
 
 export function livePhotoUrl(hash: string): string {

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { api, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
-import { useStore } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { useScrollRestore } from "../hooks/useScrollRestore";
 import { Loader2, Tag, ArrowLeft, Search, X } from "lucide-react";
 import { CollageButton } from "../components/CollagePopover";
@@ -12,7 +12,7 @@ import { CollageButton } from "../components/CollagePopover";
 export function TagDetail() {
   const { tagId } = useParams<{ tagId: string }>();
   const navigate = useNavigate();
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
   const id = Number(tagId);
 
   const { data: tag } = useQuery({
@@ -28,15 +28,8 @@ export function TagDetail() {
   const photos = photosPage?.items ?? [];
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary, index: number) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail, photos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer, photos]
+    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
+    [openPhoto, photos]
   );
 
   if (isLoading) {

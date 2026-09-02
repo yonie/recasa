@@ -22,6 +22,22 @@ class Settings(BaseSettings):
 
     thumbnail_sizes: list[int] = [200, 600, 1200]
 
+    # Full-view previews for formats browsers can't decode (RAW). Rendered
+    # on demand and cached; see services/preview.py.
+    @property
+    def previews_dir(self) -> Path:
+        return self.data_dir / "previews"
+
+    # Long-edge cap for rendered previews. 0 = native resolution, matching how
+    # JPEG originals are served (the viewer supports pinch-zoom, so downscaling
+    # would make RAW softer than everything else).
+    preview_max_dimension: int = 0
+
+    # Concurrent preview renders. A RAW decode is ~0.5s of CPU, and the viewer
+    # prefetches neighbours, so this has to be bounded or previews starve the
+    # API and the processing pipeline. Cache hits bypass it entirely.
+    preview_concurrency: int = 2
+
     # Ollama
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3-vl:30b-a3b-instruct"
@@ -48,7 +64,11 @@ class Settings(BaseSettings):
         ".jpg", ".jpeg", ".png", ".webp",
         ".heic", ".heif",
         ".tiff", ".tif", ".bmp",
+        ".orf",  # Olympus RAW Format
     }
+
+    # RAW formats (decoded via rawpy, not natively readable by PIL)
+    raw_extensions: set[str] = {".orf"}
     video_extensions: set[str] = {
         ".mp4", ".mov", ".avi", ".mkv",
     }

@@ -10,6 +10,7 @@ dependencies = [
     "aiosqlite>=0.20,<1",
     "pillow>=10.0",
     "pillow-heif>=0.18,<1",
+    "rawpy>=0.21,<1",
     "exifread>=3.0,<4",
     "imagehash>=4.3,<5",
     "watchdog>=4.0,<6",

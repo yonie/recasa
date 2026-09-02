@@ -11,7 +11,7 @@ from backend.app.config import settings
 from sqlalchemy import select, func
 
 
-PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif", ".cr2", ".nef", ".dng", ".arw"}
+PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif", ".cr2", ".nef", ".dng", ".arw", ".orf"}
 
 
 def count_photos_on_disk() -> dict[str, int]:

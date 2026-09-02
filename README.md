@@ -126,6 +126,8 @@ All settings go in `.env`:
 | `OLLAMA_URL` | `http://ollama:11434` | URL for the Ollama API (optional) |
 | `WATCH_INTERVAL` | `300` | How often to check for new files (seconds, `0` disables) |
 | `LOG_LEVEL` | `info` | Logging level (`debug`, `info`, `warning`, `error`) |
+| `PREVIEW_MAX_DIMENSION` | `0` | Long-edge cap for RAW/HEIC previews in px; `0` keeps native resolution |
+| `PREVIEW_CONCURRENCY` | `2` | Concurrent RAW/HEIC decodes; raising this competes with the pipeline for CPU |
 
 ### Processing stages
 
@@ -160,7 +162,12 @@ ENABLE_CAPTIONING=true
 
 ## Supported formats
 
-**Photos:** JPEG, PNG, WebP, HEIC/HEIF, TIFF, BMP
+**Photos:** JPEG, PNG, WebP, HEIC/HEIF, TIFF, BMP, ORF (Olympus RAW)
+
+RAW files have no in-browser decoder, and HEIC only decodes in Safari, so the
+viewer serves those as a full-resolution JPEG rendered on first open and cached
+from then on. Originals are never modified, and exports and prints still work
+from the original file.
 
 **Videos:** MP4, MOV, AVI, MKV (poster + metadata always work; in-browser
 playback depends on the codec — modern H.264/H.265 play directly, older

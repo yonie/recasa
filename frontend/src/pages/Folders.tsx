@@ -5,7 +5,7 @@ import { Folder, ChevronRight, ChevronDown } from "lucide-react";
 import { clsx } from "clsx";
 import { api, type DirectoryNode, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
-import { useStore } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { Loader2 } from "lucide-react";
 
 export function Folders() {
@@ -14,7 +14,7 @@ export function Folders() {
   // Selected folder lives in the URL (/folders/<path>) so Back and deep links work.
   const rawPath = decodeURIComponent(location.pathname.replace(/^\/folders\/?/, ""));
   const selectedPath = rawPath || null;
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
 
   const { data: treeData, isLoading: loading } = useQuery({
     queryKey: ["directory-tree"],
@@ -37,15 +37,8 @@ export function Folders() {
   );
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary, index: number) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail, photos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer, photos]
+    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
+    [openPhoto, photos]
   );
 
   if (loading) {

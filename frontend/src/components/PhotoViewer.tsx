@@ -18,7 +18,15 @@ import {
 import { clsx } from "clsx";
 import { useQueryClient } from "@tanstack/react-query";
 import { useStore } from "../store/useStore";
-import { api, originalUrl, videoUrl, type PhotoDetail } from "../api/client";
+import { THUMB_SIZE } from "./PhotoGrid";
+import {
+  api,
+  fullViewUrl,
+  provisionalDetail,
+  thumbnailUrl,
+  videoUrl,
+  type PhotoDetail,
+} from "../api/client";
 
 export function PhotoViewer() {
   const {
@@ -36,7 +44,10 @@ export function PhotoViewer() {
   const [showInfo, setShowInfo] = useState(false);
   const [isFavorite, setIsFavorite] = useState(false);
   const [isMarkedForPrint, setIsMarkedForPrint] = useState(false);
-  const [loading, setLoading] = useState(false);
+  // Hash of the photo whose full view has finished decoding. Until it matches,
+  // the thumbnail placeholder stays visible underneath.
+  const [fullLoaded, setFullLoaded] = useState<string | null>(null);
+  const gridSize = useStore((s) => s.gridSize);
   const setStats = useStore((s) => s.setStats);
   const queryClient = useQueryClient();
 
@@ -64,27 +75,51 @@ export function PhotoViewer() {
   const canGoNext = canNavigate && viewerIndex < viewerPhotoList.length - 1;
 
   const navigateTo = useCallback(
-    async (newIndex: number) => {
-      if (newIndex < 0 || newIndex >= viewerPhotoList.length || loading) return;
+    (newIndex: number) => {
+      if (newIndex < 0 || newIndex >= viewerPhotoList.length) return;
 
       const photo = viewerPhotoList[newIndex];
       if (!photo) return;
 
-      setLoading(true);
-      try {
-        const fullDetail = await api.getPhoto(photo.file_hash);
-        setViewerPhoto(fullDetail);
-        setViewerIndex(newIndex);
-        // Update URL to reflect current photo
-        window.history.replaceState({ viewerOpen: true }, "", `/photos/${photo.file_hash}`);
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
-      }
+      // Switch photos synchronously from the list entry we already have.
+      // Awaiting the detail fetch first is what used to leave the previous
+      // photo on screen for the length of a round-trip.
+      setViewerPhoto(provisionalDetail(photo));
+      setViewerIndex(newIndex);
+      window.history.replaceState({ viewerOpen: true }, "", `/photos/${photo.file_hash}`);
+
+      api
+        .getPhoto(photo.file_hash)
+        .then((fullDetail) => {
+          // Drop a response that lost the race to a newer navigation.
+          if (useStore.getState().viewerPhoto?.file_hash === fullDetail.file_hash) {
+            setViewerPhoto(fullDetail);
+          }
+        })
+        .catch(() => {});
     },
-    [viewerPhotoList, loading, setViewerPhoto, setViewerIndex]
+    [viewerPhotoList, setViewerPhoto, setViewerIndex]
   );
+
+  // Warm the next/previous full views (and, for RAW and HEIC, the server-side
+  // render cache) so stepping through the list doesn't wait on a decode.
+  useEffect(() => {
+    if (!viewerOpen || viewerIndex < 0) return;
+    const t = setTimeout(() => {
+      for (const i of [viewerIndex + 1, viewerIndex - 1]) {
+        const p = viewerPhotoList[i];
+        if (p && !p.is_video) new Image().src = fullViewUrl(p);
+      }
+    }, 200); // let the photo on screen finish first
+    return () => clearTimeout(t);
+  }, [viewerOpen, viewerIndex, viewerPhotoList]);
+
+  // An image served from cache can finish before React attaches onLoad, which
+  // would leave the placeholder up over a ready image.
+  useEffect(() => {
+    const el = gestures.imgRef.current;
+    if (detail && el?.complete && el.naturalWidth > 0) setFullLoaded(detail.file_hash);
+  }, [detail, gestures.imgRef]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -196,6 +231,19 @@ export function PhotoViewer() {
       <div
         ref={gestures.containerRef}
         className="flex-1 flex items-center justify-center relative touch-none"
+        /* The grid's own thumbnail, already in the browser cache, stands in
+           until the full view decodes. Letterboxed the same way the image is,
+           so the swap lands in place. */
+        style={
+          !detail.is_video && fullLoaded !== detail.file_hash
+            ? {
+                backgroundImage: `url("${thumbnailUrl(detail.file_hash, THUMB_SIZE[gridSize])}")`,
+                backgroundSize: "contain",
+                backgroundPosition: "center",
+                backgroundRepeat: "no-repeat",
+              }
+            : undefined
+        }
         onClick={closeViewer}
         onTouchStart={gestures.onTouchStart}
         onTouchMove={gestures.onTouchMove}
@@ -222,13 +270,18 @@ export function PhotoViewer() {
           </div>
         ) : (
           <img
+            /* Keyed so each photo gets a fresh element — a reused <img> keeps
+               painting the previous photo until the new bytes decode. */
+            key={detail.file_hash}
             ref={gestures.imgRef}
-            src={originalUrl(detail.file_hash)}
+            data-testid="full-view"
+            src={fullViewUrl(detail)}
             alt={detail.file_name}
             className={clsx(
               "max-w-full max-h-full object-contain transition-opacity duration-200",
-              loading && "opacity-50"
+              fullLoaded === detail.file_hash ? "opacity-100" : "opacity-0"
             )}
+            onLoad={() => setFullLoaded(detail.file_hash)}
             onClick={(e) => e.stopPropagation()}
           />
         )}

@@ -1,0 +1,73 @@
+# Recasa on a Raspberry Pi 5 (aarch64) — an always-on host.
+#
+#   docker compose -f docker-compose.pi.yml up -d --build
+#
+# Do not combine this with docker-compose.override.yml; the -f flag replaces the
+# default file set rather than adding to it, which is what we want here.
+#
+# Every difference from the desktop setup is deliberate. The reasoning, and the
+# migration procedure, are in docs/RASPBERRY-PI.md.
+
+services:
+  recasa:
+    build: .
+    ports:
+      - "${RECASA_PORT:-7000}:8080"
+
+    volumes:
+      # Receive-only Syncthing target holding the photo library. Read-only here
+      # so recasa can never write into the replica.
+      - "${PHOTOS_PATH:-/mnt/ssd/photos}:/photos:ro"
+
+      # A BIND MOUNT on the SSD, not a named volume. Named volumes live under
+      # /var/lib/docker on the Pi's small root disk, which is usually nearly full and
+      # already carries every other container on the Pi. /data is ~8.4 GB of
+      # index, thumbnails, previews and face models, and it grows.
+      - "${RECASA_DATA_PATH:-/mnt/ssd/recasa/data}:/data"
+
+    environment:
+      - PHOTOS_DIR=/photos
+      - DATA_DIR=/data
+
+      # Captioning is the only stage a Pi cannot do well itself: there is no
+      # usable GPU and token generation is memory-bandwidth-bound. Point this at
+      # any Ollama reachable on the LAN — a desktop with a GPU keeps your photos
+      # off third-party infrastructure entirely, which a hosted :cloud model does
+      # not. If that machine is not always on, captions simply arrive late; see
+      # caption_photo() in services/captioner.py, which deliberately writes no
+      # marker row when Ollama is unreachable so the photo is retried later.
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3.8:latest}
+
+      # The photo directory is a Syncthing replica on a native ext4 filesystem,
+      # so inotify works here and the sweep is only a backstop. Longer than the
+      # desktop's 300s because a sweep stats 41k files while the box is also
+      # serving.
+      - WATCH_INTERVAL=${WATCH_INTERVAL:-900}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+
+      # Two, not four. The Pi has 4 cores and face detection is CPU-bound;
+      # MAX_CONCURRENT=2 held the API at 2.6-12.9 ms through a full pipeline run
+      # on this hardware. Responsiveness matters more here than throughput,
+      # because this box serves as well as processes.
+      - MAX_CONCURRENT=${MAX_CONCURRENT:-2}
+      - UVICORN_RELOAD=false
+
+      - ENABLE_EXIF_EXTRACTION=${ENABLE_EXIF_EXTRACTION:-true}
+      - ENABLE_GEOCODING=${ENABLE_GEOCODING:-true}
+      - ENABLE_THUMBNAILS=${ENABLE_THUMBNAILS:-true}
+      - ENABLE_MOTION_PHOTOS=${ENABLE_MOTION_PHOTOS:-true}
+      - ENABLE_HASHING=${ENABLE_HASHING:-true}
+      - ENABLE_FACE_DETECTION=${ENABLE_FACE_DETECTION:-true}
+      - ENABLE_CAPTIONING=${ENABLE_CAPTIONING:-true}
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    restart: unless-stopped
+
+    # NOTE: no deploy.resources.limits here on purpose. Raspberry Pi OS boots
+    # with cgroup_disable=memory, so Docker discards memory limits and only
+    # prints a warning. Setting one would read as protection that isn't there.
+    # docs/RASPBERRY-PI.md has the one-line kernel cmdline fix; add the
+    # limit back once the Pi has been rebooted with memory accounting on.

@@ -1,5 +1,6 @@
 """Reverse geocoding service - converts GPS coordinates to location names."""
 
+import asyncio
 import logging
 
 from sqlalchemy import select
@@ -41,8 +42,18 @@ async def geocode_photo(file_hash: str) -> bool:
             return False
 
         try:
-            results = geocoder.search(
-                [(photo.gps_latitude, photo.gps_longitude)], verbose=False
+            # mode=1 is reverse_geocoder's single-threaded query. The default
+            # (mode=2) forks worker processes and joins them, and forking a
+            # process that already has ~30 threads and a running event loop
+            # deadlocks: the child dies, the parent waits on join() forever and
+            # takes the whole API down with it. to_thread keeps even the
+            # single-threaded query off the event loop, since the KD-tree
+            # lookup is CPU-bound and blocks every other request while it runs.
+            results = await asyncio.to_thread(
+                geocoder.search,
+                [(photo.gps_latitude, photo.gps_longitude)],
+                1,
+                False,
             )
             if results:
                 result = results[0]

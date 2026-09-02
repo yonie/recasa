@@ -3,13 +3,13 @@ import { useSearchParams } from "react-router-dom";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { api, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
-import { useStore } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { Loader2, Search } from "lucide-react";
 
 export function SearchResults() {
   const [searchParams] = useSearchParams();
   const query = searchParams.get("q") || "";
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
 
   const { data, isLoading: loading } = useQuery({
     queryKey: ["search", query],
@@ -21,15 +21,8 @@ export function SearchResults() {
   const total = query ? data?.total ?? 0 : 0;
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary, index: number) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail, photos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer, photos]
+    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
+    [openPhoto, photos]
   );
 
   if (loading) {

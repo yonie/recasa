@@ -2,12 +2,12 @@ import { useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type PhotoSummary } from "../api/client";
 import { PhotoGrid } from "../components/PhotoGrid";
-import { useStore } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { Loader2, Star } from "lucide-react";
 import { CollageButton } from "../components/CollagePopover";
 
 export function Favorites() {
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
 
   const { data, isLoading } = useQuery({
     queryKey: ["photos", { favorite: true }],
@@ -16,15 +16,8 @@ export function Favorites() {
   const photos = data?.items ?? [];
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary, index: number) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail, photos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer, photos]
+    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
+    [openPhoto, photos]
   );
 
   if (isLoading) {

@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, printExportUrl, thumbnailUrl, type PhotoSummary } from "../api/client";
 import { useStore, type GridSize } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { GridViewControls } from "../components/PhotoGrid";
 import { Loader2, Printer, Download, ListX } from "lucide-react";
 import { clsx } from "clsx";
@@ -72,7 +73,7 @@ function formatBytes(bytes: number): string {
 
 export function ToPrint() {
   const [clearing, setClearing] = useState(false);
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
   const setStats = useStore((s) => s.setStats);
   const gridSize = useStore((s) => s.gridSize);
   const queryClient = useQueryClient();
@@ -84,15 +85,8 @@ export function ToPrint() {
   const photos = data?.items ?? [];
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary, index: number) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail, photos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer, photos]
+    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
+    [openPhoto, photos]
   );
 
   const handleRemove = useCallback(

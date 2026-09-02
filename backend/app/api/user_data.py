@@ -42,5 +42,10 @@ async def import_data(
     if not isinstance(data, dict) or "version" not in data:
         return {"status": "error", "message": "Not a valid recasa export file"}
 
-    summary = await import_user_data(data, session)
+    try:
+        summary = await import_user_data(data, session)
+    except ValueError as e:
+        # Raised for an unsupported format version. A rejected file is a normal
+        # outcome here, not a server fault, so it gets a message rather than a 500.
+        return {"status": "error", "message": str(e)}
     return {"status": "ok", **summary}

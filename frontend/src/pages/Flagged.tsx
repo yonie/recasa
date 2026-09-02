@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, thumbnailUrl, type PhotoSummary } from "../api/client";
 import { useStore } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { Loader2, Flag, X } from "lucide-react";
 
 /**
@@ -10,7 +11,7 @@ import { Loader2, Flag, X } from "lucide-react";
  * themselves; the periodic sweep then cleans the index.
  */
 export function Flagged() {
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
   const setStats = useStore((s) => s.setStats);
   const queryClient = useQueryClient();
 
@@ -34,15 +35,8 @@ export function Flagged() {
   );
 
   const handleOpen = useCallback(
-    async (photo: PhotoSummary, index: number) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail, photos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer, photos]
+    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
+    [openPhoto, photos]
   );
 
   if (isLoading) {

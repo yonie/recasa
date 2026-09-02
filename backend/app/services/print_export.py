@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 HEIC_SUFFIXES = {".heic", ".heif"}
 HEIC_MIME_TYPES = {"image/heic", "image/heif"}
 
+# RAW formats - print services don't accept these, convert to JPEG.
+RAW_SUFFIXES = {".orf"}
+
 # Photos are already compressed — ZIP_STORED avoids pointless recompression.
 _ZIP_MODE = zipfile.ZIP_STORED
 
@@ -49,6 +52,10 @@ def _is_heic(filepath: Path, mime_type: str | None) -> bool:
     return filepath.suffix.lower() in HEIC_SUFFIXES or (mime_type or "") in HEIC_MIME_TYPES
 
 
+def _is_raw(filepath: Path) -> bool:
+    return filepath.suffix.lower() in RAW_SUFFIXES
+
+
 def _convert_heic_to_jpeg(filepath: Path) -> bytes | None:
     """Convert a HEIC file to JPEG bytes, baking in EXIF orientation."""
     try:
@@ -69,6 +76,22 @@ def _convert_heic_to_jpeg(filepath: Path) -> bytes | None:
             return out.getvalue()
     except Exception as e:
         logger.warning("HEIC conversion failed for %s: %s", filepath, type(e).__name__)
+        return None
+
+
+def _convert_raw_to_jpeg(filepath: Path) -> bytes | None:
+    """Convert a RAW (ORF) file to JPEG bytes via rawpy."""
+    try:
+        from backend.app.services.image_loader import open_image_cm
+
+        with open_image_cm(filepath) as img:
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            out = io.BytesIO()
+            img.save(out, "JPEG", quality=95)
+            return out.getvalue()
+    except Exception as e:
+        logger.warning("RAW conversion failed for %s: %s", filepath, type(e).__name__)
         return None
 
 
@@ -108,6 +131,10 @@ def build_print_zip(
             out_name = file_name
             if _is_heic(filepath, mime_type):
                 data = _convert_heic_to_jpeg(filepath)
+                if data is not None:
+                    out_name = f"{filepath.stem}.jpg"
+            elif _is_raw(filepath):
+                data = _convert_raw_to_jpeg(filepath)
                 if data is not None:
                     out_name = f"{filepath.stem}.jpg"
             if data is None:

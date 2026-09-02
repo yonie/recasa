@@ -20,6 +20,10 @@ node_modules/
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
 
+# Playwright / test artifacts
+frontend/playwright-report/
+frontend/test-results/
+
 # IDE
 .idea/
 .vscode/
@@ -42,6 +46,11 @@ Thumbs.db
 .claude/
 CLAUDE.md
 AGENTS.md
+
+# Internal notes — scratch findings and the working todo, not for the repo
+NOTES.md
+todo.md
+mastodon-post.txt
 
 # Demo/tooling
 demo-photos/

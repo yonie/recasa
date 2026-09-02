@@ -21,6 +21,7 @@ from sqlalchemy import select, func
 from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.models import Photo, Face, Person
+from backend.app.services.image_loader import open_image_cm
 
 logger = logging.getLogger(__name__)
 
@@ -105,29 +106,27 @@ def _detect_faces(filepath: Path) -> list[dict]:
         return []
 
     try:
-        # Load image - handle HEIC/HEIF files specially
+        # Load image - OpenCV reads most formats (JPEG/PNG/TIFF/BMP) directly
+        # to BGR, which is the fastest path. HEIC/HEIF and RAW (ORF) must go
+        # through the central image loader (pillow-heif / rawpy).
         import cv2
-        
-        # Check if HEIC/HEIF - OpenCV doesn't support these
+        from backend.app.services.image_loader import is_raw
+
         ext = filepath.suffix.lower()
-        if ext in ('.heic', '.heif'):
+        needs_pil_path = ext in ('.heic', '.heif') or is_raw(filepath)
+
+        if needs_pil_path:
             try:
-                from pillow_heif import register_heif_opener
-                from PIL import Image
-                register_heif_opener()
-                
-                with Image.open(filepath) as pil_img:
+                from backend.app.services.image_loader import open_image_cm
+                with open_image_cm(filepath) as pil_img:
                     pil_img = pil_img.convert('RGB')
                     img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-            except ImportError:
-                logger.debug("pillow-heif not installed, skipping HEIC: %s", filepath)
-                return []
             except Exception as e:
-                logger.debug("Could not read HEIC %s: %s", filepath, type(e).__name__)
+                logger.debug("Could not read %s: %s", filepath, type(e).__name__)
                 return []
         else:
             img = cv2.imread(str(filepath))
-            
+
         if img is None:
             logger.error("Could not read image: %s", filepath)
             return []
@@ -190,7 +189,7 @@ def _generate_face_thumbnail(filepath: Path, bbox: tuple, file_hash: str, face_i
         pad_x = int(w * 0.3)
         pad_y = int(h * 0.3)
 
-        with Image.open(filepath) as img:
+        with open_image_cm(filepath) as img:
             # Handle EXIF orientation
             try:
                 from PIL import ImageOps

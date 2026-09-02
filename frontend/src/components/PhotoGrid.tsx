@@ -12,7 +12,9 @@ const GRID_CLASSES: Record<GridSize, string> = {
   L: "grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4",
 };
 
-const THUMB_SIZE: Record<GridSize, number> = { S: 300, M: 600, L: 600 };
+// Exported so the viewer can reuse the exact URL the grid already fetched —
+// that cache hit is what makes its placeholder appear with no network wait.
+export const THUMB_SIZE: Record<GridSize, number> = { S: 300, M: 600, L: 600 };
 
 interface PhotoGridProps {
   photos: PhotoSummary[];

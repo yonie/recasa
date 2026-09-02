@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, thumbnailUrl, type PhotoSummary } from "../api/client";
 import { PhotoGrid, GridViewControls } from "../components/PhotoGrid";
-import { useStore } from "../store/useStore";
+import { useOpenPhoto } from "../hooks/useOpenPhoto";
 import { Loader2, ChevronLeft } from "lucide-react";
 import { CollageButton } from "../components/CollagePopover";
 
@@ -11,7 +11,7 @@ export function Years() {
   const { year: yearParam } = useParams<{ year: string }>();
   const navigate = useNavigate();
   const selectedYear = yearParam ? Number(yearParam) : null;
-  const openViewer = useStore((s) => s.openViewer);
+  const openPhoto = useOpenPhoto();
 
   const { data: yearsData, isLoading: loading } = useQuery({
     queryKey: ["years"],
@@ -34,15 +34,9 @@ export function Years() {
   );
 
   const handlePhotoClick = useCallback(
-    async (photo: PhotoSummary, index: number, groupPhotos: PhotoSummary[]) => {
-      try {
-        const detail = await api.getPhoto(photo.file_hash);
-        openViewer(detail, groupPhotos, index);
-      } catch {
-        // ignore
-      }
-    },
-    [openViewer]
+    (photo: PhotoSummary, index: number, groupPhotos: PhotoSummary[]) =>
+      openPhoto(photo, index, groupPhotos),
+    [openPhoto]
   );
 
   if (loading) {

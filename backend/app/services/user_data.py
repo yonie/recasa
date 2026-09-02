@@ -2,12 +2,20 @@
 
 The export format is a JSON file containing:
 - favorites: list of file_hashes
-- persons: list of {name, ignored, encodings} where encodings are base64-encoded
-  512-dim insightface faceprint vectors (the actual identity signal)
+- persons: list of {name, ignored, encodings} where each encoding is the raw
+  little-endian float32 bytes of a 512-dim insightface faceprint vector,
+  base64-encoded (the actual identity signal)
 
 On import, favorites are restored by file_hash immediately. Person names are
 stored as pending and applied whenever face clusters exist — either right away
 or automatically after face detection + clustering finishes.
+
+Format version 2 exists because version 1 base64-encoded the *pickled* numpy
+array straight out of the database, and the importer called ``pickle.loads`` on
+it. Unpickling a file someone uploads is arbitrary code execution, in a process
+that has the entire photo library mounted. Version 2 carries plain float32 bytes
+that are parsed with ``np.frombuffer``, which cannot execute anything, and
+version 1 files are refused rather than read.
 """
 
 import asyncio
@@ -29,6 +37,42 @@ from backend.app.models.face import Face, Person
 logger = logging.getLogger(__name__)
 
 PENDING_IMPORT_KEY = "pending_person_import"
+
+# Current export format. See the module docstring for why version 1 is refused.
+EXPORT_VERSION = 2
+
+# insightface buffalo_l faceprints. Fixed so a malformed or hostile file is
+# rejected on sight rather than reaching numpy with an arbitrary shape.
+ENCODING_DIM = 512
+ENCODING_NBYTES = ENCODING_DIM * 4  # float32
+
+
+def _encoding_from_db(enc_bytes: bytes) -> np.ndarray | None:
+    """Decode a faceprint as stored in our own database.
+
+    This is the one place pickle is still used, and it reads only rows this app
+    wrote itself. Changing the stored format would mean a schema change and a
+    full re-detect of every face, which is days of processing.
+    """
+    try:
+        return np.asarray(pickle.loads(enc_bytes), dtype=np.float32)
+    except Exception:
+        return None
+
+
+def _encoding_from_export(b64: str) -> np.ndarray | None:
+    """Decode a faceprint out of an uploaded export file.
+
+    Deliberately not pickle: ``np.frombuffer`` interprets bytes as numbers and
+    can do nothing else, so a hostile file is at worst rejected here.
+    """
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except Exception:
+        return None
+    if len(raw) != ENCODING_NBYTES:
+        return None
+    return np.frombuffer(raw, dtype="<f4")
 
 
 async def export_user_data(session: AsyncSession) -> dict:
@@ -59,7 +103,14 @@ async def export_user_data(session: AsyncSession) -> dict:
         )
         encodings_b64 = []
         for (enc_bytes,) in faces_result:
-            encodings_b64.append(base64.b64encode(enc_bytes).decode("ascii"))
+            enc = _encoding_from_db(enc_bytes)
+            if enc is None or enc.size != ENCODING_DIM:
+                continue
+            # Raw float32 bytes, not the pickle we happen to store internally,
+            # so importing this file never has to deserialise code.
+            encodings_b64.append(
+                base64.b64encode(enc.astype("<f4").tobytes()).decode("ascii")
+            )
 
         if encodings_b64:
             persons.append({
@@ -69,7 +120,7 @@ async def export_user_data(session: AsyncSession) -> dict:
             })
 
     return {
-        "version": 1,
+        "version": EXPORT_VERSION,
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "favorites": favorites,
         "persons": persons,
@@ -91,12 +142,11 @@ def _match_persons(
     current_person_ids = []
     current_encodings = []
     for face_id, person_id, enc_bytes in current_faces:
-        try:
-            enc = pickle.loads(enc_bytes)
-            current_encodings.append(enc)
-            current_person_ids.append(person_id)
-        except Exception:
+        enc = _encoding_from_db(enc_bytes)
+        if enc is None or enc.size != ENCODING_DIM:
             continue
+        current_encodings.append(enc)
+        current_person_ids.append(person_id)
 
     if not current_encodings:
         return {}
@@ -114,11 +164,9 @@ def _match_persons(
         # Decode exported encodings
         exported_encs = []
         for b64 in person_data.get("encodings", []):
-            try:
-                enc = pickle.loads(base64.b64decode(b64))
+            enc = _encoding_from_export(b64)
+            if enc is not None:
                 exported_encs.append(enc)
-            except Exception:
-                continue
 
         if not exported_encs:
             continue
@@ -194,6 +242,16 @@ async def import_user_data(data: dict, session: AsyncSession) -> dict:
     """Import user data from an export dict. Returns a summary."""
 
     summary = {"favorites_restored": 0, "persons_restored": 0, "persons_pending": 0}
+
+    # Refuse anything that is not the current format. Version 1 stored pickled
+    # numpy arrays, and reading one means unpickling a file a stranger uploaded;
+    # there is no safe way to accept it, so it is rejected rather than migrated.
+    version = data.get("version")
+    if version != EXPORT_VERSION:
+        raise ValueError(
+            f"Unsupported export version {version!r}; this build reads version "
+            f"{EXPORT_VERSION} only. Re-export from the instance that holds the data."
+        )
 
     # --- Favorites (immediate) ---
     fav_hashes = data.get("favorites", [])

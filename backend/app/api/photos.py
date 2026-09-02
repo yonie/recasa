@@ -5,6 +5,8 @@ from datetime import datetime
 # Content addressed by file_hash is immutable — cache for 1 year.
 _IMMUTABLE_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
 
+import asyncio
+import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -49,7 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.config import settings
-from backend.app.database import get_session
+from backend.app.database import async_session, get_session
 from backend.app.models import Photo, Face, Person, Caption, PhotoTag, Tag
 from backend.app.schemas.photo import (
     FaceSummary,
@@ -60,7 +62,15 @@ from backend.app.schemas.photo import (
     PhotoSummary,
     LibraryStats,
 )
+from backend.app.services.preview import (
+    needs_preview,
+    preview_path,
+    render_gate,
+    render_preview,
+)
 from backend.app.services.thumbnail import get_thumbnail_path, generate_thumbnails
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/photos", tags=["photos"])
 
@@ -492,6 +502,54 @@ async def get_original(file_hash: str, session: AsyncSession = Depends(get_sessi
         raise HTTPException(status_code=404, detail="File not found on disk")
 
     return FileResponse(filepath, media_type=photo.mime_type or "application/octet-stream", headers=_IMMUTABLE_CACHE)
+
+
+@router.get("/{file_hash}/preview")
+async def get_preview(file_hash: str):
+    """Serve a browser-viewable full view of a photo.
+
+    For formats a browser can decode this is the original file, byte for byte.
+    For RAW (ORF) and HEIC it's a JPEG rendered on demand and cached — without
+    it the viewer's <img> gets bytes no browser can decode.
+
+    Takes no ``Depends(get_session)`` session on purpose. The cache path is
+    derived from the hash alone, so an already-rendered preview is served
+    without touching the database at all; and on the cold path the render can
+    queue for seconds, which is far too long to be parking a pooled connection.
+    """
+    cached = preview_path(file_hash)
+    if cached.exists():
+        return FileResponse(cached, media_type="image/jpeg", headers=_IMMUTABLE_CACHE)
+
+    async with render_gate():
+        # Re-check: a concurrent request may have rendered it while we queued.
+        if cached.exists():
+            return FileResponse(cached, media_type="image/jpeg", headers=_IMMUTABLE_CACHE)
+
+        async with async_session() as session:
+            photo = await session.get(Photo, file_hash)
+            if not photo:
+                raise HTTPException(status_code=404, detail="Photo not found")
+            file_path, mime_type = photo.file_path, photo.mime_type
+
+        filepath = settings.photos_dir / file_path
+        if not filepath.exists():
+            raise HTTPException(status_code=404, detail="File not found on disk")
+
+        if not needs_preview(filepath):
+            return FileResponse(
+                filepath,
+                media_type=mime_type or "application/octet-stream",
+                headers=_IMMUTABLE_CACHE,
+            )
+
+        try:
+            rendered = await asyncio.to_thread(render_preview, filepath, file_hash)
+        except Exception as e:
+            logger.warning("Preview render failed for %s: %s", filepath, type(e).__name__)
+            raise HTTPException(status_code=500, detail="Could not render preview") from e
+
+    return FileResponse(rendered, media_type="image/jpeg", headers=_IMMUTABLE_CACHE)
 
 
 @router.get("/{file_hash}/live")

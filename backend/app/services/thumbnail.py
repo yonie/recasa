@@ -10,17 +10,13 @@ from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.exceptions import PermanentStageError
 from backend.app.models import Photo
+from backend.app.services.image_loader import (
+    HEIF_SUPPORTED,
+    open_image_cm,
+    PermanentReadError,
+)
 
 logger = logging.getLogger(__name__)
-
-# Try to register HEIF support
-try:
-    from pillow_heif import register_heif_opener
-    register_heif_opener()
-    HEIF_SUPPORTED = True
-except ImportError:
-    HEIF_SUPPORTED = False
-    logger.warning("pillow-heif not available, HEIC files won't be supported")
 
 
 def _get_thumbnail_path(file_hash: str, size: int) -> Path:
@@ -49,8 +45,8 @@ def _generate_thumbnail(
             _resize_and_save(img, file_hash, sizes, created)
             return created
 
-        with Image.open(filepath) as img:
-            # Handle EXIF orientation
+        with open_image_cm(filepath) as img:
+            # Handle EXIF orientation (PIL path only - rawpy bakes orientation in)
             try:
                 from PIL import ImageOps
                 img = ImageOps.exif_transpose(img)
@@ -65,6 +61,8 @@ def _generate_thumbnail(
 
     except PermanentStageError:
         raise
+    except PermanentReadError as e:
+        raise PermanentStageError(str(e)) from e
     except Exception as e:
         logger.warning("Skipping corrupted image %s: %s", filepath, type(e).__name__)
         raise PermanentStageError(f"cannot read image ({type(e).__name__})") from e

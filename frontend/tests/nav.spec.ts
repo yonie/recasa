@@ -80,7 +80,9 @@ test("viewer opens from the photo grid", async ({ page }) => {
 
   await page.goto("/", { waitUntil: "networkidle" });
   await page.click(".photo-grid-item >> nth=0");
-  await page.waitForSelector("img[src*='/original']", { timeout: 15000 });
+  // The full view is /original for formats the browser decodes and /preview
+  // for RAW and HEIC, so match the element rather than the URL.
+  await page.waitForSelector('img[data-testid="full-view"]', { timeout: 15000 });
   await page.keyboard.press("Escape");
   expect(errors, errors.join("; ")).toHaveLength(0);
 });
