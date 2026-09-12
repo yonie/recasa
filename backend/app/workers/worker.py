@@ -27,7 +27,10 @@ from backend.app.services.geocoder import geocode_photo
 from backend.app.services.face_detector import detect_faces, cluster_faces
 from backend.app.services.captioner import caption_photo
 from backend.app.services.event_detector import detect_events
-from backend.app.services.user_data import apply_pending_person_imports
+from backend.app.services.user_data import (
+    apply_pending_person_imports,
+    apply_pending_hidden_group_imports,
+)
 from backend.app.services.motion_photo import extract_motion_video
 from backend.app.services.scanner import thumb_exists
 from backend.app.workers.queues import Pipeline, QueueType
@@ -407,6 +410,12 @@ class EventDetectionWorker:
                     await apply_pending_person_imports()
                 except Exception as e:
                     logger.warning(f"Pending person import failed: {type(e).__name__}")
+
+                # Apply pending hidden-group imports (from Export/Import)
+                try:
+                    await apply_pending_hidden_group_imports()
+                except Exception as e:
+                    logger.warning(f"Pending hidden-group import failed: {type(e).__name__}")
 
             # Duplicate detection
             logger.info("Running batch duplicate detection...")

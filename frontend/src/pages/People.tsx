@@ -246,6 +246,7 @@ export function TogetherDetail() {
 export function People() {
   const [ignoredPersons, setIgnoredPersons] = useState<PersonSummary[]>([]);
   const [showIgnored, setShowIgnored] = useState(false);
+  const [showHiddenGroups, setShowHiddenGroups] = useState(false);
   const navigate = useNavigate();
   const { scrollRef, restoreScroll } = useScrollRestore("people");
   const queryClient = useQueryClient();
@@ -260,6 +261,11 @@ export function People() {
   });
   const persons = personsData ?? [];
   const groups = groupsData ?? [];
+  const { data: hiddenGroupsData } = useQuery({
+    queryKey: ["hidden-groups"],
+    queryFn: () => api.getHiddenGroups(),
+  });
+  const hiddenGroups = hiddenGroupsData ?? [];
 
   useEffect(() => {
     if (!loadingPersons && !loadingGroups && persons.length > 0) {
@@ -302,6 +308,20 @@ export function People() {
     queryClient.invalidateQueries({ queryKey: ["persons"] });
   }, [queryClient]);
 
+  // Together tiles: hiding removes just that tile from the section — the
+  // people themselves stay visible on the page and in their photos.
+  const handleHideGroup = useCallback(async (personIds: number[]) => {
+    await api.hideGroup(personIds);
+    queryClient.invalidateQueries({ queryKey: ["person-groups"] });
+    queryClient.invalidateQueries({ queryKey: ["hidden-groups"] });
+  }, [queryClient]);
+
+  const handleUnhideGroup = useCallback(async (personIds: number[]) => {
+    await api.unhideGroup(personIds);
+    queryClient.invalidateQueries({ queryKey: ["hidden-groups"] });
+    queryClient.invalidateQueries({ queryKey: ["person-groups"] });
+  }, [queryClient]);
+
   if (loadingPersons) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -332,7 +352,7 @@ export function People() {
       </div>
 
       {/* Together section — on top */}
-      {(loadingGroups || groups.length > 0) && (
+      {(loadingGroups || groups.length > 0 || hiddenGroups.length > 0) && (
         <>
           <div className="px-4 py-3 border-b border-gray-100">
             <h2 className="text-base font-semibold text-gray-700">
@@ -366,40 +386,86 @@ export function People() {
                 if (group.persons.length < 2) return null;
                 const ids = group.persons.map((p) => p.person_id).join(",");
                 return (
-                  <button
-                    key={i}
-                    onClick={() => navigate(`/people/together/${ids}`)}
-                    className="bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow border border-gray-100 text-left group"
-                  >
-                    <div className="aspect-video bg-gray-100 relative overflow-hidden">
-                      {group.cover_photo ? (
-                        <img
-                          src={thumbnailUrl(group.cover_photo.file_hash, 600)}
-                          alt=""
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <Users className="w-12 h-12 text-gray-300" />
+                  <div key={i} className="relative group">
+                    <button
+                      onClick={() => navigate(`/people/together/${ids}`)}
+                      className="w-full bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow border border-gray-100 text-left"
+                    >
+                      <div className="aspect-video bg-gray-100 relative overflow-hidden">
+                        {group.cover_photo ? (
+                          <img
+                            src={thumbnailUrl(group.cover_photo.file_hash, 600)}
+                            alt=""
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <Users className="w-12 h-12 text-gray-300" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-3 flex items-center gap-3">
+                        <div className="flex -space-x-2">
+                          {group.persons.map((p) => p.face_thumbnail_url && (
+                            <img key={p.person_id} src={p.face_thumbnail_url} alt="" className="w-8 h-8 rounded-full object-cover ring-2 ring-white" />
+                          ))}
                         </div>
-                      )}
-                    </div>
-                    <div className="p-3 flex items-center gap-3">
-                      <div className="flex -space-x-2">
-                        {group.persons.map((p) => p.face_thumbnail_url && (
-                          <img key={p.person_id} src={p.face_thumbnail_url} alt="" className="w-8 h-8 rounded-full object-cover ring-2 ring-white" />
-                        ))}
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">
+                            {groupNames(group.persons)}
+                          </p>
+                          <p className="text-xs text-gray-400">{group.shared_photo_count} photos together</p>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {groupNames(group.persons)}
-                        </p>
-                        <p className="text-xs text-gray-400">{group.shared_photo_count} photos together</p>
-                      </div>
-                    </div>
-                  </button>
+                    </button>
+                    {/* Sits outside the nav button: button-in-button is invalid HTML */}
+                    <button
+                      onClick={() => handleHideGroup(group.persons.map((p) => p.person_id))}
+                      className="absolute top-2 right-2 p-1.5 rounded-full bg-white/90 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:bg-white shadow-sm"
+                      title="Hide this group"
+                    >
+                      <X className="w-4 h-4 text-gray-500" />
+                    </button>
+                  </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Hidden tiles — restore row */}
+          {hiddenGroups.length > 0 && (
+            <div className="px-4 pb-4">
+              <button
+                onClick={() => setShowHiddenGroups((v) => !v)}
+                className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <EyeOff className="w-4 h-4" />
+                {hiddenGroups.length} hidden group{hiddenGroups.length !== 1 ? "s" : ""}
+                <ChevronDown className={`w-4 h-4 transition-transform ${showHiddenGroups ? "rotate-180" : ""}`} />
+              </button>
+              {showHiddenGroups && (
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {hiddenGroups.map((g) => (
+                    <div key={g.group_key} className="flex items-center gap-2 pl-1.5 pr-2 py-1 rounded-full border border-gray-200 bg-white">
+                      <div className="flex -space-x-1.5">
+                        {g.persons.map((p) => p.face_thumbnail_url && (
+                          <img key={p.person_id} src={p.face_thumbnail_url} alt="" className="w-6 h-6 rounded-full object-cover ring-1 ring-white" />
+                        ))}
+                      </div>
+                      <span className="text-xs text-gray-600">
+                        {g.persons.length ? groupNames(g.persons) : g.group_key}
+                      </span>
+                      <button
+                        onClick={() => handleUnhideGroup(g.persons.map((p) => p.person_id))}
+                        className="p-0.5 rounded-full hover:bg-gray-100 transition-colors"
+                        title="Show this group again"
+                      >
+                        <Eye className="w-3.5 h-3.5 text-gray-400" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </>

@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 _IMMUTABLE_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
 from sqlalchemy import func, select
@@ -9,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import settings
 from backend.app.database import get_session
-from backend.app.models import Person, Face, Photo
+from backend.app.models import Person, Face, Photo, HiddenPersonGroup
+from backend.app.models.face import group_key_from_ids as _group_key
 from backend.app.schemas.photo import (
     PersonSummary,
     PersonUpdate,
@@ -19,6 +21,15 @@ from backend.app.schemas.photo import (
 )
 
 router = APIRouter(prefix="/api/persons", tags=["persons"])
+
+
+def _person_info(p: Person) -> dict:
+    return {
+        "person_id": p.person_id,
+        "name": p.name,
+        "photo_count": p.photo_count,
+        "face_thumbnail_url": f"/api/persons/{p.person_id}/thumbnail" if p.representative_face_id else None,
+    }
 
 
 def _photo_to_summary(photo: Photo) -> PhotoSummary:
@@ -285,10 +296,15 @@ async def list_person_groups(
         if key not in group_photos:
             group_photos[key] = file_hash
 
+    # Drop tiles the user hid from the Together section before slicing to
+    # page_size, so hiding tiles makes room for the next-best groups.
+    hidden_result = await session.execute(select(HiddenPersonGroup.group_key))
+    hidden_keys = {row[0] for row in hidden_result}
+
     # Filter and sort
     top_groups = [
         (group, count) for group, count in group_counts.most_common()
-        if count >= min_photos
+        if count >= min_photos and _group_key(group) not in hidden_keys
     ][:page_size]
 
     if not top_groups:
@@ -314,14 +330,6 @@ async def list_person_groups(
     )
     photos_map = {p.file_hash: p for p in photos_result.scalars().all()}
 
-    def _person_info(p: Person) -> dict:
-        return {
-            "person_id": p.person_id,
-            "name": p.name,
-            "photo_count": p.photo_count,
-            "face_thumbnail_url": f"/api/persons/{p.person_id}/thumbnail" if p.representative_face_id else None,
-        }
-
     results = []
     for group, count in top_groups:
         persons_in_group = [persons_map.get(pid) for pid in group]
@@ -339,6 +347,74 @@ async def list_person_groups(
         })
 
     return results
+
+
+class PersonIdsRequest(BaseModel):
+    person_ids: list[int]
+
+
+@router.get("/groups/hidden")
+async def list_hidden_person_groups(session: AsyncSession = Depends(get_session)):
+    """Together-section tiles the user hid, for the restore row on the people page."""
+    result = await session.execute(
+        select(HiddenPersonGroup.group_key).order_by(HiddenPersonGroup.group_key)
+    )
+
+    parsed: list[tuple[str, list[int]]] = []
+    all_ids: set[int] = set()
+    for (key,) in result:
+        try:
+            ids = [int(x) for x in key.split(",") if x]
+        except ValueError:
+            continue  # not a key this app wrote; skip rather than 500
+        parsed.append((key, ids))
+        all_ids.update(ids)
+
+    if not parsed:
+        return []
+
+    # Person details for the restore chips. A person may be gone after a
+    # recluster, in which case it is simply left out of the chip.
+    persons_result = await session.execute(
+        select(Person).where(Person.person_id.in_(all_ids), Person.ignored == False)  # noqa: E712
+    )
+    persons_map = {p.person_id: p for p in persons_result.scalars().all()}
+
+    results = []
+    for _key, ids in parsed:
+        persons_in_group = [persons_map[pid] for pid in ids if pid in persons_map]
+        results.append({
+            "group_key": _key,
+            "persons": [_person_info(p) for p in persons_in_group],
+        })
+    return results
+
+
+@router.post("/groups/hide")
+async def hide_person_group(body: PersonIdsRequest, session: AsyncSession = Depends(get_session)):
+    """Hide one Together tile (the people that appear together in photos).
+
+    This only removes the tile from the Together section — the people
+    themselves stay on the people page and in their photos.
+    """
+    if len(body.person_ids) < 2:
+        raise HTTPException(status_code=400, detail="A group needs at least two person_ids")
+    key = _group_key(body.person_ids)
+    if await session.get(HiddenPersonGroup, key) is None:
+        session.add(HiddenPersonGroup(group_key=key))
+        await session.commit()
+    return {"status": "hidden", "group_key": key}
+
+
+@router.post("/groups/unhide")
+async def unhide_person_group(body: PersonIdsRequest, session: AsyncSession = Depends(get_session)):
+    """Restore a hidden Together tile."""
+    key = _group_key(body.person_ids)
+    row = await session.get(HiddenPersonGroup, key)
+    if row is not None:
+        await session.delete(row)
+        await session.commit()
+    return {"status": "unhidden", "group_key": key}
 
 
 @router.get("/groups/together/{person_a_id}/{person_b_id}/photos", response_model=PhotoPage)

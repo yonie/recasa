@@ -54,6 +54,12 @@ export function ExportImport() {
           parts.push(
             `${data.persons_pending} people will be restored after face detection completes`
           );
+        if (data.hidden_groups_restored > 0)
+          parts.push(`${data.hidden_groups_restored} hidden tiles restored`);
+        if (data.hidden_groups_pending > 0)
+          parts.push(
+            `${data.hidden_groups_pending} hidden tiles will be restored after face detection completes`
+          );
         setResult({
           type: "success",
           message: parts.length > 0 ? parts.join(". ") : "Nothing to restore",
@@ -75,16 +81,17 @@ export function ExportImport() {
 
       <div className="p-6 max-w-xl space-y-8">
         <p className="text-sm text-gray-500">
-          Export your favorites and named people to a JSON file. Use import to
-          restore them after rebuilding the index.
+          Export your favorites, named people and the Together tiles you hid
+          to a JSON file. Use import to restore them after rebuilding the index.
         </p>
 
         {/* Export */}
         <section className="space-y-3">
           <h2 className="text-base font-semibold text-gray-700">Export</h2>
           <p className="text-sm text-gray-400">
-            Downloads a file containing your favorited photos and all named /
-            ignored people with their face signatures.
+            Downloads a file containing your favorited photos, all named /
+            ignored people with their face signatures, and the Together tiles
+            you hid (as their members' face signatures).
           </p>
           <button
             onClick={handleExport}
@@ -104,8 +111,9 @@ export function ExportImport() {
         <section className="space-y-3">
           <h2 className="text-base font-semibold text-gray-700">Import</h2>
           <p className="text-sm text-gray-400">
-            Restore favorites and person names from a previous export. For best
-            results, import after face detection and clustering have completed.
+            Restore favorites, person names and hidden tiles from a previous
+            export. For best results, import after face detection and
+            clustering have completed.
           </p>
           <label
             className={`flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors w-fit ${

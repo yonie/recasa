@@ -4,6 +4,16 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.models.base import Base
 
 
+def group_key_from_ids(person_ids) -> str:
+    """Canonical identity of a together-group: its sorted person ids, joined.
+
+    The single source of truth for what "the same group" means everywhere a
+    group is named or compared: hidden_person_groups rows, the together listing
+    and the export/import round-trip all build their keys through this.
+    """
+    return ",".join(str(pid) for pid in sorted(person_ids))
+
+
 class Person(Base):
     """A recognized person (face cluster)."""
 
@@ -48,3 +58,17 @@ class Face(Base):
 
     photo: Mapped["Photo"] = relationship(back_populates="faces")  # noqa: F821
     person: Mapped["Person | None"] = relationship(back_populates="faces")
+
+
+class HiddenPersonGroup(Base):
+    """A Together-section tile the user hid from the people page.
+
+    Together groups are computed on the fly from co-occurring faces, so there
+    is no persistent group entity to flag. Instead we persist a canonical key
+    of the group's sorted person_ids, e.g. "25,28". Keys that no longer match
+    anything (person ids changed after a recluster) are simply inert.
+    """
+
+    __tablename__ = "hidden_person_groups"
+
+    group_key: Mapped[str] = mapped_column(String(255), primary_key=True)

@@ -283,6 +283,11 @@ export interface PersonGroup {
   cover_photo: PhotoSummary | null;
 }
 
+export interface HiddenGroup {
+  group_key: string;
+  persons: PersonSummary[];
+}
+
 export interface EventSummary {
   event_id: number;
   name: string | null;
@@ -439,6 +444,21 @@ export const api = {
 
   getPersonGroups: (params?: Record<string, string | number>) =>
     request<PersonGroup[]>(`/persons/groups/together${buildQuery(params)}`),
+
+  getHiddenGroups: () =>
+    request<HiddenGroup[]>("/persons/groups/hidden"),
+
+  hideGroup: (personIds: number[]) =>
+    request<{ status: string; group_key: string }>("/persons/groups/hide", {
+      method: "POST",
+      body: JSON.stringify({ person_ids: personIds }),
+    }),
+
+  unhideGroup: (personIds: number[]) =>
+    request<{ status: string; group_key: string }>("/persons/groups/unhide", {
+      method: "POST",
+      body: JSON.stringify({ person_ids: personIds }),
+    }),
 
   getSharedPhotos: (personAId: number, personBId: number, params?: Record<string, string | number>) =>
     request<PhotoPage>(`/persons/groups/together/${personAId}/${personBId}/photos${buildQuery(params)}`),
