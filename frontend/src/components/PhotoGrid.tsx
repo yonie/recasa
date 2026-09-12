@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Star, Play, Printer, Flag, Grid2x2, Grid3x3, LayoutGrid, Crop, Expand } from "lucide-react";
+import { Star, Play, Printer, Flag, Grid2x2, Grid3x3, LayoutGrid, Crop, Expand, Loader2 } from "lucide-react";
 import { clsx } from "clsx";
 import type { PhotoSummary } from "../api/client";
 import { api, thumbnailUrl, livePhotoUrl, formatDuration } from "../api/client";
@@ -150,6 +150,9 @@ function PhotoGridItem({
   const [isHovering, setIsHovering] = useState(false);
   const [isFavorite, setIsFavorite] = useState(photo.is_favorite);
   const [isMarkedForPrint, setIsMarkedForPrint] = useState(photo.marked_for_print);
+  const [isFlagging, setIsFlagging] = useState(false);
+  const [isFavoriting, setIsFavoriting] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
   const setStats = useStore((s) => s.setStats);
   const queryClient = useQueryClient();
   const gridFit = useStore((s) => s.gridFit);
@@ -159,6 +162,12 @@ function PhotoGridItem({
   const handleFavorite = useCallback(
     async (e: React.MouseEvent) => {
       e.stopPropagation();
+      if (isFavoriting) return;
+      // The tile stays put here, so the spinner only has to cover the POST:
+      // the filled star is the acknowledgement from the moment it lands. Not
+      // awaited past that, or it would spin on through the blanket refetch
+      // long after the answer is on screen.
+      setIsFavoriting(true);
       try {
         const result = await api.toggleFavorite(photo.file_hash);
         setIsFavorite(result.is_favorite);
@@ -167,14 +176,18 @@ function PhotoGridItem({
         queryClient.invalidateQueries();
       } catch {
         // ignore
+      } finally {
+        setIsFavoriting(false);
       }
     },
-    [photo, onFavoriteToggle, queryClient]
+    [photo, isFavoriting, onFavoriteToggle, queryClient]
   );
 
   const handlePrint = useCallback(
     async (e: React.MouseEvent) => {
       e.stopPropagation();
+      if (isPrinting) return;
+      setIsPrinting(true);
       try {
         const result = await api.togglePrint(photo.file_hash);
         setIsMarkedForPrint(result.marked_for_print);
@@ -183,24 +196,33 @@ function PhotoGridItem({
         queryClient.invalidateQueries();
       } catch {
         // ignore
+      } finally {
+        setIsPrinting(false);
       }
     },
-    [photo, onPrintToggle, setStats, queryClient]
+    [photo, isPrinting, onPrintToggle, setStats, queryClient]
   );
 
   const handleFlag = useCallback(
     async (e: React.MouseEvent) => {
       e.stopPropagation();
+      if (isFlagging) return;
+      // The tile only disappears once the refetch lands, which is a beat or two
+      // after the click. Show the spinner for that whole window — stopping it
+      // when the POST returns would just restore the unresponsive-looking gap.
+      setIsFlagging(true);
       try {
         await api.toggleFlag(photo.file_hash);
         // Flagged photos leave normal views; refetch removes the tile.
         api.getStats().then(setStats).catch(() => {});
-        queryClient.invalidateQueries();
+        await queryClient.invalidateQueries();
       } catch {
         // ignore
+      } finally {
+        setIsFlagging(false);
       }
     },
-    [photo, setStats, queryClient]
+    [photo, isFlagging, setStats, queryClient]
   );
 
 
@@ -304,42 +326,57 @@ function PhotoGridItem({
         <div className="absolute top-2 right-2 flex gap-1">
           <button
             onClick={handleFavorite}
-            className="p-1 rounded-full hover:bg-white/20 transition-colors"
+            disabled={isFavoriting}
+            className="p-1 rounded-full hover:bg-white/20 transition-colors disabled:hover:bg-transparent"
           >
-            <Star
-              className={clsx(
-                "w-5 h-5",
-                isFavorite ? "fill-yellow-400 text-yellow-400" : "text-white"
-              )}
-            />
+            {isFavoriting ? (
+              <Loader2 className="w-5 h-5 animate-spin text-white" />
+            ) : (
+              <Star
+                className={clsx(
+                  "w-5 h-5",
+                  isFavorite ? "fill-yellow-400 text-yellow-400" : "text-white"
+                )}
+              />
+            )}
           </button>
 
           <button
             onClick={handleFlag}
-            className="p-1 rounded-full hover:bg-white/20 transition-colors"
+            disabled={isFlagging}
+            className="p-1 rounded-full hover:bg-white/20 transition-colors disabled:hover:bg-transparent"
             title={photo.flagged_for_removal ? "Unflag" : "Flag for removal"}
           >
-            <Flag
-              className={clsx(
-                "w-5 h-5",
-                photo.flagged_for_removal ? "fill-red-400 text-red-400" : "text-white"
-              )}
-            />
+            {isFlagging ? (
+              <Loader2 className="w-5 h-5 animate-spin text-white" />
+            ) : (
+              <Flag
+                className={clsx(
+                  "w-5 h-5",
+                  photo.flagged_for_removal ? "fill-red-400 text-red-400" : "text-white"
+                )}
+              />
+            )}
           </button>
 
           {/* Photos only — videos can't be printed */}
           {!photo.is_video && (
             <button
               onClick={handlePrint}
-              className="p-1 rounded-full hover:bg-white/20 transition-colors"
+              disabled={isPrinting}
+              className="p-1 rounded-full hover:bg-white/20 transition-colors disabled:hover:bg-transparent"
               title={isMarkedForPrint ? "Remove from To Print" : "Add to To Print"}
             >
-              <Printer
-                className={clsx(
-                  "w-5 h-5",
-                  isMarkedForPrint ? "fill-sky-400 text-sky-400" : "text-white"
-                )}
-              />
+              {isPrinting ? (
+                <Loader2 className="w-5 h-5 animate-spin text-white" />
+              ) : (
+                <Printer
+                  className={clsx(
+                    "w-5 h-5",
+                    isMarkedForPrint ? "fill-sky-400 text-sky-400" : "text-white"
+                  )}
+                />
+              )}
             </button>
           )}
         </div>
