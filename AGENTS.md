@@ -2,88 +2,42 @@
 
 ## Running the Application
 
-**This app runs in Docker.** Do not attempt to run backend/frontend directly with uvicorn/npm commands.
+**This app runs in Docker, from the single `docker-compose.yml`.** Do not run backend/frontend directly with uvicorn/npm, and do not add extra compose files for hosts or dev modes: per-host values go in `.env`.
 
-### Common Commands
+It runs on **velvet** (Raspberry Pi 5), in `~/code/recasa`, container `recasa-recasa-1`, UI on port 7000.
 
 ```bash
-# Build and start all services
-docker-compose up --build
-
-# View logs
-docker-compose logs -f
-
-# View specific service logs
-docker-compose logs -f backend
-docker-compose logs -f frontend
-
-# Restart services
-docker-compose restart
-
-# Stop services
-docker-compose down
+docker compose up -d --build     # apply any change (backend, frontend, deps)
+docker compose logs -f recasa    # logs
+docker compose restart recasa    # restart without rebuilding
 ```
 
-### On velvet (the Raspberry Pi) - read before any docker compose command
+### The index is precious
 
-Recasa on velvet runs from **`docker-compose.pi.yml`**, never the default `docker-compose.yml` + `docker-compose.override.yml`. The Pi file bind-mounts the real index at **`/mnt/ssd/recasa/data`** (40k photos with captions, faces, tags and person names - weeks of processing). The default files mount an empty named volume instead; Recasa then silently builds a fresh index and starts captioning the whole library again on the desktop GPU. That happened on 2026-10-22 and went unnoticed for two weeks.
+`RECASA_DATA_PATH` in `.env` (on velvet `/mnt/ssd/recasa/data`) holds the database with ~40k photos' captions, faces, tags and person names - weeks of processing. Compose refuses to start without `PHOTOS_PATH` and `RECASA_DATA_PATH`; keep it that way. On 2026-10-22 a rebuild with a since-removed desktop compose file mounted an empty volume instead, and Recasa silently re-indexed and re-captioned the whole library for two weeks.
 
-- velvet's `.env` sets `COMPOSE_FILE=docker-compose.pi.yml`, so a plain `docker compose ...` already uses the Pi file there. Do not remove that line.
-- The Pi file does not mount `./backend`: backend changes need `docker compose up -d --build`, not a restart.
-- Never `docker compose down -v`, and never delete `/mnt/ssd/recasa/data`. Nightly snapshots are in `/mnt/ssd/recasa/backups`.
-- After any recreate, check it is the real index: `docker inspect` must show `/mnt/ssd/recasa/data` mounted on `/data`, and the captions table must hold ~40k rows.
+- Never `docker compose down -v`, and never delete the data directory. Nightly snapshots are in `/mnt/ssd/recasa/backups`.
+- After any recreate, check it is the real index: `docker inspect recasa-recasa-1` must show `/mnt/ssd/recasa/data` on `/data`, and the startup log must not report tens of thousands of photos "needing captioning".
 
 ### Architecture
 
 - **Backend**: Python FastAPI app in `backend/`
 - **Frontend**: React/Vite/TypeScript app in `frontend/`
-- **Services**: Defined in `docker-compose.yml`
+- **Container**: one container with nginx (port 8080) reverse-proxying `/api/` to uvicorn (port 8000) and serving the frontend from `/app/frontend/dist`. The Dockerfile builds the frontend itself, so no host `npm run build` is needed.
 
-### How Deployment Works
+### Making changes
 
-The app runs as a **single Docker container** (`recasa`) with nginx (port 8080) reverse-proxying to uvicorn (port 8000). Nginx serves the frontend static files from `/app/frontend/dist` and proxies `/api/` to uvicorn.
+Source code is baked into the image, not mounted. Any change - Python, React, dependencies, Dockerfile, nginx, `start.sh` - goes live with `docker compose up -d --build`. A plain restart does not pick up code changes. `UVICORN_RELOAD` stays `false` (auto-reload hurts performance a lot).
 
-**Dev mode** (`docker-compose.override.yml`) volume-mounts source code into the container:
-- `./backend` → `/app/backend` (Python code)
-- `./frontend/dist` → `/app/frontend/dist` (built frontend assets)
-
-This means:
-
-#### Backend changes (Python)
-Run `docker compose restart recasa` after changing Python code. `UVICORN_RELOAD` is deliberately set to `false` (auto-reload hurts performance a lot) — do not turn it on. The volume mount makes host changes visible inside the container immediately, but uvicorn only picks them up on restart.
-
-#### Frontend changes (React/TypeScript)
-1. Rebuild on the host: `cd frontend && npm run build`
-2. Refresh browser — the new `dist/` files are already visible inside the container via the volume mount.
-
-**IMPORTANT:** Always run `npm run build` after frontend changes. The user tests on localhost:7000 (Docker/nginx), NOT the Vite dev server on port 3000. Without building, changes are invisible. Type-checking (`tsc --noEmit`) alone is not enough.
-
-Frontend changes need no restart; backend changes need `docker compose restart recasa` (but never `docker compose up --build`).
-
-#### When to rebuild the Docker image
-Only needed when:
-- Dependencies change (`pyproject.toml` or `package.json`)
-- Dockerfile, nginx config, or `start.sh` changes
-- Starting fresh (no dev override)
-
-```bash
-docker compose up --build -d
-```
+Test in the browser on port 7000 (nginx), not on a Vite dev server.
 
 ### Verifying Changes Are Live
 
 ```bash
-# Check frontend: look for the latest Vite asset hash in the container
-MSYS_NO_PATHCONV=1 docker exec recasa-recasa-1 cat /app/frontend/dist/index.html
-
-# Check backend: verify new code is present
-MSYS_NO_PATHCONV=1 docker exec recasa-recasa-1 grep "function_name" /app/backend/app/api/some_file.py
-
-# Test an API endpoint directly
+docker exec recasa-recasa-1 cat /app/frontend/dist/index.html          # latest Vite asset hash
+docker exec recasa-recasa-1 grep "function_name" /app/backend/app/api/some_file.py
 curl -s http://localhost:7000/api/health
 ```
-
-Note: On Git Bash for Windows, prefix docker exec commands with `MSYS_NO_PATHCONV=1` to prevent path mangling.
 
 ### Testing
 

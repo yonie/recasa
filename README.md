@@ -69,10 +69,12 @@ cd recasa
 cp .env.example .env
 ```
 
-Edit `.env` and set `PHOTOS_PATH` to your photo directory:
+Edit `.env` and set `PHOTOS_PATH` to your photo directory and `RECASA_DATA_PATH`
+to where Recasa keeps its index (a directory on a disk with room to grow):
 
 ```
 PHOTOS_PATH=/path/to/your/photos
+RECASA_DATA_PATH=/path/to/recasa-data
 ```
 
 Then start the container:
@@ -122,6 +124,7 @@ All settings go in `.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PHOTOS_PATH` | *(required)* | Path to your photo directory on the host |
+| `RECASA_DATA_PATH` | *(required)* | Host directory for the index: database, thumbnails, previews, face models |
 | `RECASA_PORT` | `8080` | Port for the web UI |
 | `OLLAMA_URL` | `http://ollama:11434` | URL for the Ollama API (optional) |
 | `WATCH_INTERVAL` | `300` | How often to check for new files (seconds, `0` disables) |

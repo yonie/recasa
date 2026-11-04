@@ -1,33 +1,55 @@
+# Recasa — one compose file for every host. Per-host values live in .env.
+#
+#   docker compose up -d --build
+#
+# PHOTOS_PATH and RECASA_DATA_PATH have no defaults on purpose: compose refuses
+# to start without them. A missing data path used to fall back to an empty
+# named volume, and Recasa then silently built a fresh index and re-ran every
+# stage (captions included) over the whole library.
+
 services:
   recasa:
     build: .
     ports:
-      - "${RECASA_PORT}:8080"
+      - "${RECASA_PORT:-8080}:8080"
+
     volumes:
-      - "${PHOTOS_PATH}:/photos:ro"
-      - recasa_data:/data
+      # The photo library, read-only so Recasa can never write into it.
+      - "${PHOTOS_PATH:?set PHOTOS_PATH in .env}:/photos:ro"
+
+      # The index: database, thumbnails, previews and face models. A bind mount
+      # on a disk you choose, not a named volume — it is gigabytes and grows,
+      # and it holds work that takes days to redo.
+      - "${RECASA_DATA_PATH:?set RECASA_DATA_PATH in .env}:/data"
+
     environment:
       - PHOTOS_DIR=/photos
       - DATA_DIR=/data
-      - OLLAMA_URL=${OLLAMA_URL}
-      - OLLAMA_MODEL=${OLLAMA_MODEL}
-      - WATCH_INTERVAL=${WATCH_INTERVAL}
-      - LOG_LEVEL=${LOG_LEVEL}
-      - MAX_CONCURRENT=${MAX_CONCURRENT}
-      - ENABLE_EXIF_EXTRACTION=${ENABLE_EXIF_EXTRACTION}
-      - ENABLE_GEOCODING=${ENABLE_GEOCODING}
-      - ENABLE_THUMBNAILS=${ENABLE_THUMBNAILS}
-      - ENABLE_MOTION_PHOTOS=${ENABLE_MOTION_PHOTOS}
-      - ENABLE_HASHING=${ENABLE_HASHING}
-      - ENABLE_FACE_DETECTION=${ENABLE_FACE_DETECTION}
-      - ENABLE_CAPTIONING=${ENABLE_CAPTIONING}
+
+      # Captioning runs on any Ollama reachable on the LAN. If that machine is
+      # not always on, captions simply arrive late; see caption_photo() in
+      # services/captioner.py, which writes no marker row when Ollama is
+      # unreachable so the photo is retried later.
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3.8:latest}
+
+      - WATCH_INTERVAL=${WATCH_INTERVAL:-300}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+
+      # Lower this on a small box that also serves (2 on a Raspberry Pi 5);
+      # face detection is CPU-bound. See docs/RASPBERRY-PI.md.
+      - MAX_CONCURRENT=${MAX_CONCURRENT:-4}
+      - UVICORN_RELOAD=false
+
+      - ENABLE_EXIF_EXTRACTION=${ENABLE_EXIF_EXTRACTION:-true}
+      - ENABLE_GEOCODING=${ENABLE_GEOCODING:-true}
+      - ENABLE_THUMBNAILS=${ENABLE_THUMBNAILS:-true}
+      - ENABLE_MOTION_PHOTOS=${ENABLE_MOTION_PHOTOS:-true}
+      - ENABLE_HASHING=${ENABLE_HASHING:-true}
+      - ENABLE_FACE_DETECTION=${ENABLE_FACE_DETECTION:-true}
+      - ENABLE_CAPTIONING=${ENABLE_CAPTIONING:-true}
+
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 12G
 
-volumes:
-  recasa_data:
+    restart: unless-stopped

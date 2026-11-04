@@ -49,12 +49,12 @@ in your compose file.
 A Pi's root filesystem is usually small. Docker named volumes live under
 `/var/lib/docker` on that root disk, and Recasa's `/data` — index, thumbnails,
 previews, face models — starts in the gigabytes and grows with the library. Use
-a bind mount onto whatever large disk holds the photos instead. The supplied
-`docker-compose.pi.yml` does this.
+a bind mount onto whatever large disk holds the photos instead: point
+`RECASA_DATA_PATH` in `.env` there.
 
 ### Tune concurrency down
 
-`MAX_CONCURRENT=2` rather than 4. Face detection is CPU-bound and the Pi has
+Set `MAX_CONCURRENT=2` in `.env` rather than the default 4. Face detection is CPU-bound and the Pi has
 four cores; leaving headroom is what keeps the API responsive while the pipeline
 runs. On a box that serves as well as processes, responsiveness beats throughput.
 
@@ -97,7 +97,8 @@ docker run --rm -v <data-volume>:/data:ro alpine tar czf - -C /data . \
   | ssh <pi> 'mkdir -p /path/to/data && tar xzf - -C /path/to/data'
 ```
 
-Then start the Pi with `docker-compose.pi.yml` and confirm the counts match
+Then point `RECASA_DATA_PATH` at the copied directory, start the Pi with
+`docker compose up -d`, and confirm the counts match
 before retiring the old instance.
 
 ## Run only one instance
