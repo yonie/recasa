@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # Ollama
     ollama_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3-vl:30b-a3b-instruct"
+    # How long Ollama keeps the model loaded after a caption request. Sent per
+    # request so it overrides the server default: a backlog stays warm, but the
+    # GPU is freed an hour after the last photo.
+    ollama_keep_alive: str = "1h"
 
     # Processing stages (enable/disable per stage)
     # EXIF, Thumbnails, and Hashing are always enabled (core functionality)

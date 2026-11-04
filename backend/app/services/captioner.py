@@ -92,6 +92,7 @@ async def _generate_caption_and_tags(image_base64: str) -> tuple[str | None, lis
                     "prompt": COMBINED_PROMPT,
                     "images": [image_base64],
                     "stream": False,
+                    "keep_alive": settings.ollama_keep_alive,
                     "options": {
                         "temperature": 0.3,
                         "num_predict": 300,

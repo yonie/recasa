@@ -24,6 +24,15 @@ docker-compose restart
 docker-compose down
 ```
 
+### On velvet (the Raspberry Pi) - read before any docker compose command
+
+Recasa on velvet runs from **`docker-compose.pi.yml`**, never the default `docker-compose.yml` + `docker-compose.override.yml`. The Pi file bind-mounts the real index at **`/mnt/ssd/recasa/data`** (40k photos with captions, faces, tags and person names - weeks of processing). The default files mount an empty named volume instead; Recasa then silently builds a fresh index and starts captioning the whole library again on the desktop GPU. That happened on 2026-10-22 and went unnoticed for two weeks.
+
+- velvet's `.env` sets `COMPOSE_FILE=docker-compose.pi.yml`, so a plain `docker compose ...` already uses the Pi file there. Do not remove that line.
+- The Pi file does not mount `./backend`: backend changes need `docker compose up -d --build`, not a restart.
+- Never `docker compose down -v`, and never delete `/mnt/ssd/recasa/data`. Nightly snapshots are in `/mnt/ssd/recasa/backups`.
+- After any recreate, check it is the real index: `docker inspect` must show `/mnt/ssd/recasa/data` mounted on `/data`, and the captions table must hold ~40k rows.
+
 ### Architecture
 
 - **Backend**: Python FastAPI app in `backend/`
