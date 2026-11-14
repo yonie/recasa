@@ -4,7 +4,8 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from backend.app.api import (
     config,
@@ -20,6 +21,7 @@ from backend.app.api import (
     timeline,
     user_data,
 )
+from backend.app.api.limits import BodySizeLimitMiddleware
 from backend.app.config import settings
 from backend.app.database import init_db
 from backend.app.workers.pipeline import resume_incomplete_processing, start_file_watcher
@@ -100,6 +102,8 @@ app = FastAPI(
 # used to send let any website the owner visited read the whole photo API
 # with the browser's cached nginx basic-auth credentials.
 
+app.add_middleware(BodySizeLimitMiddleware)
+
 for module in (
     photos,
     directories,
@@ -115,6 +119,13 @@ for module in (
     user_data,
 ):
     app.include_router(module.router)
+
+
+@app.exception_handler(OverflowError)
+async def _number_out_of_range(request: Request, exc: OverflowError) -> JSONResponse:
+    # An integer parameter too large for SQLite (a page, id or year past
+    # 2**63) used to surface as a bare 500 from the database driver.
+    return JSONResponse(status_code=422, content={"detail": "Number out of range"})
 
 
 @app.get("/api/health")

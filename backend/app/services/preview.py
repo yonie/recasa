@@ -55,7 +55,7 @@ def render_preview(filepath: Path, file_hash: str) -> Path:
         # any non-RAW format that later needs a preview.
         try:
             img = ImageOps.exif_transpose(img)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - a broken EXIF block just means no rotation
             pass
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")

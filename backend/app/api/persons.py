@@ -1,14 +1,15 @@
 """Person/People API endpoints."""
 
+import re
 from collections import Counter
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import Select, delete, func, intersect, select, update
 
-from backend.app.api.deps import IMMUTABLE_CACHE, CollageGrid, Page, PageSize, SessionDep
+from backend.app.api.deps import CollageGrid, Page, PageSize, SessionDep
+from backend.app.api.files import REVALIDATE, contained_path, file_response
 from backend.app.api.responses import collage_response
 from backend.app.config import settings
 from backend.app.models import Face, HiddenPersonGroup, Person, Photo, PhotoHash
@@ -26,6 +27,12 @@ from backend.app.schemas.photo import PersonMerge, PersonSummary, PersonUpdate, 
 router = APIRouter(prefix="/api/persons", tags=["persons"])
 
 PersonIds = Annotated[str, Query(description="Comma-separated person IDs")]
+
+# A together group is a handful of people. The bound keeps a crafted list
+# from turning into an INTERSECT of thousands of subqueries.
+MAX_GROUP_SIZE = 50
+# ASCII digits only, at most 18 so the value fits an SQLite INTEGER.
+_PERSON_ID = re.compile(r"[0-9]{1,18}")
 
 # Most photos first. Thousands of people share a count, and SQLite returned
 # those in id order; the tiebreak makes that explicit so pages stay stable.
@@ -58,9 +65,12 @@ def _summary(person: Person, face_thumbnail_url: str | None) -> PersonSummary:
 
 
 def _parse_person_ids(person_ids: str) -> list[int]:
-    ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
+    """The ids in a comma-separated list; anything that is not one is skipped."""
+    ids = [int(token) for x in person_ids.split(",") if _PERSON_ID.fullmatch(token := x.strip())]
     if len(ids) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 person IDs")
+    if len(ids) > MAX_GROUP_SIZE:
+        raise HTTPException(status_code=400, detail="Too many person IDs")
     return ids
 
 
@@ -155,8 +165,13 @@ async def get_person_photos(
 
 
 @router.get("/{person_id}/thumbnail")
-async def get_person_thumbnail(person_id: int, session: SessionDep):
-    """Serve the representative face thumbnail for a person."""
+async def get_person_thumbnail(person_id: int, request: Request, session: SessionDep):
+    """Serve the representative face thumbnail for a person.
+
+    Revalidated rather than cached for good: the URL names a person, and a
+    merge, a recluster or a new representative face changes the picture
+    behind it.
+    """
     person = await session.get(Person, person_id)
     if not person or not person.representative_face_id:
         raise HTTPException(status_code=404, detail="Person not found")
@@ -165,11 +180,11 @@ async def get_person_thumbnail(person_id: int, session: SessionDep):
     if not face or not face.face_thumbnail:
         raise HTTPException(status_code=404, detail="Face thumbnail not found")
 
-    thumb_path = settings.data_dir / face.face_thumbnail
-    if not thumb_path.exists():
+    thumb_path = contained_path(settings.data_dir, face.face_thumbnail)
+    if thumb_path is None or not thumb_path.exists():
         raise HTTPException(status_code=404, detail="Thumbnail file not found")
 
-    return FileResponse(thumb_path, media_type="image/webp", headers=IMMUTABLE_CACHE)
+    return file_response(request, thumb_path, "image/webp", cache_control=REVALIDATE)
 
 
 @router.put("/{person_id}", response_model=PersonSummary)
@@ -311,7 +326,9 @@ async def list_person_groups(
 
 
 class PersonIdsRequest(BaseModel):
-    person_ids: list[int]
+    person_ids: Annotated[
+        list[Annotated[int, Field(ge=0, le=2**63 - 1)]], Field(max_length=MAX_GROUP_SIZE)
+    ]
 
 
 @router.get("/groups/hidden")
@@ -440,6 +457,7 @@ async def _get_together_photos(
 @router.get("/{person_id}/collage")
 async def get_person_collage(
     person_id: int,
+    request: Request,
     session: SessionDep,
     grid: CollageGrid = 0,
     seed: int = 0,
@@ -455,33 +473,37 @@ async def get_person_collage(
             .order_by(*OLDEST_FIRST)
         )
     ).all()
-    return await collage_response(session, rows, grid, seed)
+    return await collage_response(request, session, rows, grid, seed)
 
 
 @router.get("/groups/together/{person_a_id}/{person_b_id}/collage")
 async def get_together_collage(
     person_a_id: int,
     person_b_id: int,
+    request: Request,
     session: SessionDep,
     grid: CollageGrid = 0,
     seed: int = 0,
 ):
     """Generate a square photo collage for two people together."""
-    return await _together_collage([person_a_id, person_b_id], grid, seed, session)
+    return await _together_collage(request, [person_a_id, person_b_id], grid, seed, session)
 
 
 @router.get("/groups/together-n/collage")
 async def get_together_collage_n(
     person_ids: PersonIds,
+    request: Request,
     session: SessionDep,
     grid: CollageGrid = 0,
     seed: int = 0,
 ):
     """Generate a square photo collage for N people together."""
-    return await _together_collage(_parse_person_ids(person_ids), grid, seed, session)
+    return await _together_collage(request, _parse_person_ids(person_ids), grid, seed, session)
 
 
-async def _together_collage(person_ids: list[int], grid: int, seed: int, session):
+async def _together_collage(
+    request: Request, person_ids: list[int], grid: int, seed: int, session
+):
     rows = (
         await session.execute(
             select(Photo.file_hash, PhotoHash.phash, Photo.date_taken)
@@ -490,7 +512,7 @@ async def _together_collage(person_ids: list[int], grid: int, seed: int, session
             .order_by(*OLDEST_FIRST)
         )
     ).all()
-    return await collage_response(session, rows, grid, seed)
+    return await collage_response(request, session, rows, grid, seed)
 
 
 @router.post("/recluster")

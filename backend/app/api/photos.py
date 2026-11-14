@@ -3,21 +3,22 @@
 import asyncio
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import extract, func, select, update
 from sqlalchemy.orm import selectinload
 
 from backend.app.api.deps import (
-    IMMUTABLE_CACHE,
     CollageGrid,
     Page,
     PageSize,
     SessionDep,
     require_file_hash,
 )
+from backend.app.api.files import contained_path, file_response
 from backend.app.api.responses import collage_response
 from backend.app.config import settings
 from backend.app.database import async_session
@@ -145,6 +146,7 @@ async def get_stats(session: SessionDep):
 
 @router.get("/collage")
 async def get_photos_collage(
+    request: Request,
     session: SessionDep,
     favorite: bool | None = None,
     year: int | None = None,
@@ -169,7 +171,7 @@ async def get_photos_collage(
             .where(Tag.name == tag)
         )
     rows = (await session.execute(stmt.order_by(*OLDEST_FIRST))).all()
-    return await collage_response(session, rows, grid, seed)
+    return await collage_response(request, session, rows, grid, seed)
 
 
 @router.get("/print/export")
@@ -203,8 +205,11 @@ async def export_print_zip(session: SessionDep):
     # so it must not keep a pooled connection checked out meanwhile.
     await session.close()
 
+    # A path that would lie outside the library is left out like a missing file.
     entries = [
-        (settings.photos_dir / r.file_path, r.file_name, r.mime_type, r.date_taken) for r in rows
+        (path, r.file_name, r.mime_type, r.date_taken)
+        for r in rows
+        if (path := contained_path(settings.photos_dir, r.file_path)) is not None
     ]
     return StreamingResponse(
         build_print_zip(entries),
@@ -237,6 +242,7 @@ def _safe_int(val) -> int | None:
 @router.get("/{file_hash}", response_model=PhotoDetail)
 async def get_photo(file_hash: str, session: SessionDep):
     """Get detailed photo information."""
+    require_file_hash(file_hash, "Photo not found")
     photo = await session.get(Photo, file_hash)
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
@@ -323,42 +329,67 @@ async def get_photo(file_hash: str, session: SessionDep):
     )
 
 
+# On-demand thumbnail renders at once. A grid of a hundred photos the
+# pipeline has not reached yet would otherwise start a hundred decodes and
+# starve the Pi; the rest wait their turn instead.
+_THUMBNAIL_RENDERS = 2
+_thumbnail_gate: asyncio.Semaphore | None = None
+
+
+def _thumbnail_render_gate() -> asyncio.Semaphore:
+    global _thumbnail_gate
+    if _thumbnail_gate is None:
+        _thumbnail_gate = asyncio.Semaphore(_THUMBNAIL_RENDERS)
+    return _thumbnail_gate
+
+
 @router.get("/{file_hash}/thumbnail/{size}")
-async def get_thumbnail(file_hash: str, size: int = 600):
+async def get_thumbnail(file_hash: str, request: Request, size: int = 600):
     """Serve a photo thumbnail, generating on-demand if needed."""
     require_file_hash(file_hash, "Thumbnail not found")
     thumb_path = get_thumbnail_path(file_hash, size)
     if not thumb_path:
-        try:
-            await generate_thumbnails(file_hash)
-        except Exception:  # noqa: BLE001 - any decode failure is just "no thumbnail"
-            raise HTTPException(status_code=404, detail="Thumbnail not found") from None
+        async with _thumbnail_render_gate():
+            try:
+                # Re-checks for the file first, so a render finished while
+                # this request queued is not repeated.
+                await generate_thumbnails(file_hash)
+            except Exception:  # noqa: BLE001 - any decode failure is just "no thumbnail"
+                raise HTTPException(status_code=404, detail="Thumbnail not found") from None
         thumb_path = get_thumbnail_path(file_hash, size)
         if not thumb_path:
             raise HTTPException(status_code=404, detail="Thumbnail not found")
-    return FileResponse(thumb_path, media_type="image/webp", headers=IMMUTABLE_CACHE)
+    return file_response(request, thumb_path, "image/webp")
+
+
+async def _photo_file(session, relative: str) -> Path:
+    """The library file at ``relative``, after releasing the session.
+
+    Raises the endpoints' usual 404 when it is missing (or would lie outside
+    the library). The session goes back to the pool first because the file
+    may be a long video download.
+    """
+    await session.close()
+    filepath = contained_path(settings.photos_dir, relative)
+    if filepath is None or not filepath.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    return filepath
 
 
 @router.get("/{file_hash}/original")
-async def get_original(file_hash: str, session: SessionDep):
+async def get_original(file_hash: str, request: Request, session: SessionDep):
     """Serve the original photo file."""
+    require_file_hash(file_hash, "Photo not found")
     photo = await session.get(Photo, file_hash)
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
-
-    filepath = settings.photos_dir / photo.file_path
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="File not found on disk")
-
-    return FileResponse(
-        filepath,
-        media_type=photo.mime_type or "application/octet-stream",
-        headers=IMMUTABLE_CACHE,
-    )
+    mime_type = photo.mime_type or "application/octet-stream"
+    filepath = await _photo_file(session, photo.file_path)
+    return file_response(request, filepath, mime_type)
 
 
 @router.get("/{file_hash}/preview")
-async def get_preview(file_hash: str):
+async def get_preview(file_hash: str, request: Request):
     """Serve a browser-viewable full view of a photo.
 
     For formats a browser can decode this is the original file, byte for byte.
@@ -373,12 +404,12 @@ async def get_preview(file_hash: str):
     require_file_hash(file_hash, "Photo not found")
     cached = preview_path(file_hash)
     if cached.exists():
-        return FileResponse(cached, media_type="image/jpeg", headers=IMMUTABLE_CACHE)
+        return file_response(request, cached, "image/jpeg")
 
     async with render_gate():
         # Re-check: a concurrent request may have rendered it while we queued.
         if cached.exists():
-            return FileResponse(cached, media_type="image/jpeg", headers=IMMUTABLE_CACHE)
+            return file_response(request, cached, "image/jpeg")
 
         async with async_session() as session:
             photo = await session.get(Photo, file_hash)
@@ -386,16 +417,12 @@ async def get_preview(file_hash: str):
                 raise HTTPException(status_code=404, detail="Photo not found")
             file_path, mime_type = photo.file_path, photo.mime_type
 
-        filepath = settings.photos_dir / file_path
-        if not filepath.exists():
+        filepath = contained_path(settings.photos_dir, file_path)
+        if filepath is None or not filepath.exists():
             raise HTTPException(status_code=404, detail="File not found on disk")
 
         if not needs_preview(filepath):
-            return FileResponse(
-                filepath,
-                media_type=mime_type or "application/octet-stream",
-                headers=IMMUTABLE_CACHE,
-            )
+            return file_response(request, filepath, mime_type or "application/octet-stream")
 
         try:
             rendered = await asyncio.to_thread(render_preview, filepath, file_hash)
@@ -403,24 +430,25 @@ async def get_preview(file_hash: str):
             logger.warning("Preview render failed for %s: %s", filepath, type(e).__name__)
             raise HTTPException(status_code=500, detail="Could not render preview") from e
 
-    return FileResponse(rendered, media_type="image/jpeg", headers=IMMUTABLE_CACHE)
+    return file_response(request, rendered, "image/jpeg")
 
 
 @router.get("/{file_hash}/live")
-async def get_live_photo_video(file_hash: str, session: SessionDep):
+async def get_live_photo_video(file_hash: str, request: Request, session: SessionDep):
     """Serve the Live Photo video."""
+    require_file_hash(file_hash, "Live photo video not found")
     photo = await session.get(Photo, file_hash)
     if not photo or not photo.live_photo_video:
         raise HTTPException(status_code=404, detail="Live photo video not found")
-
-    video_path = settings.photos_dir / photo.live_photo_video
-    if not video_path.exists():
-        raise HTTPException(status_code=404, detail="Video file not found on disk")
-
-    return FileResponse(video_path, media_type="video/quicktime", headers=IMMUTABLE_CACHE)
+    try:
+        video_path = await _photo_file(session, photo.live_photo_video)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Video file not found on disk") from None
+    return file_response(request, video_path, "video/quicktime")
 
 
 async def _toggle(session, file_hash: str, field: str) -> dict:
+    require_file_hash(file_hash, "Photo not found")
     photo = await session.get(Photo, file_hash)
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")

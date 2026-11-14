@@ -80,7 +80,7 @@ def _encoding_from_db(enc_bytes: bytes) -> np.ndarray | None:
     """
     try:
         return np.asarray(pickle.loads(enc_bytes), dtype=np.float32)
-    except Exception:
+    except Exception:  # noqa: BLE001 - an undecodable row is skipped, whatever the cause
         return None
 
 
@@ -92,7 +92,7 @@ def _encoding_from_export(b64: str) -> np.ndarray | None:
     """
     try:
         raw = base64.b64decode(b64, validate=True)
-    except Exception:
+    except Exception:  # noqa: BLE001 - not base64, or not even a string
         return None
     if len(raw) != ENCODING_NBYTES:
         return None

@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
 
 from backend.app.api.deps import CollageGrid, Page, PageSize, SessionDep
@@ -105,6 +105,7 @@ async def get_event_photos(
 @router.get("/{event_id}/collage")
 async def get_event_collage(
     event_id: int,
+    request: Request,
     session: SessionDep,
     grid: CollageGrid = 0,
     seed: int = 0,
@@ -123,4 +124,4 @@ async def get_event_collage(
             .order_by(*OLDEST_FIRST)
         )
     ).all()
-    return await collage_response(session, rows, grid, seed)
+    return await collage_response(request, session, rows, grid, seed)

@@ -14,9 +14,6 @@ Page = Annotated[int, Query(ge=1)]
 PageSize = Annotated[int, Query(ge=1, le=200)]
 CollageGrid = Annotated[int, Query(ge=0, le=6)]
 
-# Content addressed by file_hash is immutable, so it may be cached for a year.
-IMMUTABLE_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
-
 _FILE_HASH = re.compile(r"[0-9a-f]{64}")
 
 

@@ -74,7 +74,7 @@ def _convert_heic_to_jpeg(filepath: Path) -> bytes | None:
             out = io.BytesIO()
             img.save(out, "JPEG", quality=95)
             return out.getvalue()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - a file that will not convert ships as is
         logger.warning("HEIC conversion failed for %s: %s", filepath, type(e).__name__)
         return None
 
@@ -90,7 +90,7 @@ def _convert_raw_to_jpeg(filepath: Path) -> bytes | None:
             out = io.BytesIO()
             img.save(out, "JPEG", quality=95)
             return out.getvalue()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - a file that will not convert ships as is
         logger.warning("RAW conversion failed for %s: %s", filepath, type(e).__name__)
         return None
 

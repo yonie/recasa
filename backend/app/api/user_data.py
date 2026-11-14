@@ -38,6 +38,9 @@ async def import_data(file: Annotated[UploadFile, File()], session: SessionDep):
         data = await asyncio.to_thread(json.loads, contents)
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         return {"status": "error", "message": f"Invalid JSON file: {e}"}
+    except RecursionError:
+        # Nesting thousands of levels deep; no export looks like that.
+        return {"status": "error", "message": "Invalid JSON file: nested too deeply"}
 
     if not isinstance(data, dict) or "version" not in data:
         return {"status": "error", "message": "Not a valid recasa export file"}
