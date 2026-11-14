@@ -8,7 +8,7 @@ import { formatGroupDate, plural } from "../lib/format";
 
 export function Home() {
   const { data: groups, isLoading, error } = useQuery({
-    queryKey: queryKeys.timeline("month", 24, "photos-only"),
+    queryKey: queryKeys.homeTimeline,
     queryFn: () => api.getTimeline({ group_by: "month", limit: 24, video: false }),
   });
 

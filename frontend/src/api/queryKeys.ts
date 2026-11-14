@@ -15,6 +15,8 @@ export const queryKeys = {
   duplicates: ["duplicates"] as const,
 
   timeline: (...parts: unknown[]) => ["timeline", ...parts] as const,
+  /** The Photos page: last 24 months, photos only. Persisted across loads. */
+  homeTimeline: ["timeline", "month", 24, "photos-only"] as const,
   years: ["years"] as const,
   directoryTree: ["directory-tree"] as const,
   directoryPhotos: (path: string | null) => ["directory-photos", path] as const,
