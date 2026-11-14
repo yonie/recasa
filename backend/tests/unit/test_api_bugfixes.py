@@ -3,6 +3,7 @@
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -117,3 +118,29 @@ def test_underscore_folders_are_listed_and_browsable():
     assert [n["name"] for n in tree] == ["2020", "_private", "videos"]
     assert tree[1]["photo_count"] == 1 and tree[1]["path"] == "_private"
     assert [p["file_hash"] for p in grid["items"]] == [h(8)]
+
+
+# --- folder grids match the folder exactly -----------------------------------
+
+
+def test_directory_photos_match_the_exact_folder():
+    rows = _seeded(
+        p1={"file_path": "2026/2026_09/a.jpg"},
+        p2={"file_path": "2026/2026-09/b.jpg"},  # "_" used to match "-"
+        p3={"file_path": "2026/2026_09x/c.jpg"},  # sibling sharing the prefix
+        p6={"file_path": "2026/2026_09/deeper/d.jpg"},
+        p7={"file_path": "2026/2026_09.jpg"},  # a file, not the folder
+        p10={"file_path": "Trips/x.jpg"},
+    )
+    rows.append(Photo(file_hash=h(11), file_path="trips/y.jpg", file_name="y.jpg",
+                      file_size=1, motion_photo=False))
+
+    async def body(client):
+        async def grid(path):
+            page = (await client.get(f"/api/directories/{quote(path)}")).json()
+            return sorted(int(p["file_hash"], 16) for p in page["items"])
+
+        return {p: await grid(p) for p in ("2026/2026_09", "2026/2026%09", "Trips", "trips")}
+
+    found = run_with_client(body, rows)
+    assert found == {"2026/2026_09": [1, 6], "2026/2026%09": [], "Trips": [10], "trips": [11]}
