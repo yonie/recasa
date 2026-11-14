@@ -94,27 +94,26 @@ def test_search_by_date_words():
     assert _matching(search="eva 2020") == {1, 2, 3}
 
 
-def test_search_keeps_like_wildcards():
-    # "_" and "%" have always been LIKE wildcards in the search box.
+def test_search_takes_wildcards_literally():
     assert _matching(search="IMG_000") == {1, 2, 3, 6, 7, 8}
-    assert _matching(search="%") == _matching()
+    assert _matching(search="IMG%000") == set()
+    assert _matching(search="%") == set()
+    assert _matching(search="G_0") == {1, 2, 3, 6, 7, 8, 10}
 
 
 # --- summaries and paging -------------------------------------------------
 
 
-def test_to_summary_full_and_short():
+def test_to_summary_carries_every_tile_field():
     async def body(session):
         row = (await session.execute(summary_select().where(Photo.file_hash == h(5)))).one()
-        return to_summary(row), to_summary(row, full=False)
+        return to_summary(row)
 
-    full, short = run_with_session(body)
-    assert full.is_video is True and full.duration == 4.5
-    assert full.thumbnail_url == f"/api/photos/{h(5)}/thumbnail/600"
-    # The short form leaves these at their defaults, as those grids always did.
-    assert short.is_video is False and short.duration is None
-    assert short.marked_for_print is False and short.flagged_for_removal is False
-    assert short.file_name == full.file_name == "clip.mp4"
+    summary = run_with_session(body)
+    assert summary.is_video is True and summary.duration == 4.5
+    assert summary.marked_for_print is False and summary.flagged_for_removal is False
+    assert summary.thumbnail_url == f"/api/photos/{h(5)}/thumbnail/600"
+    assert summary.file_name == "clip.mp4"
 
 
 def test_to_summary_live_photo():
@@ -209,13 +208,17 @@ def test_tag_listing_endpoint():
 # --- directories ----------------------------------------------------------
 
 
-def test_directory_tree_counts_and_skips():
+def test_directory_tree_counts_and_skips_hidden():
     tree = build_directory_tree(
-        ["a/b/1.jpg", "a/b/2.jpg", "a/3.jpg", "a\\c\\4.jpg", "root.jpg", "_hidden/5.jpg",
-         "a/_private/6.jpg"]
+        ["a/b/1.jpg", "a/b/2.jpg", "a/3.jpg", "a\\c\\4.jpg", "root.jpg", "_export/5.jpg",
+         "a/_private/6.jpg", ".stversions/2026/7.jpg", "a/.thumbs/8.jpg"]
     )
-    assert [(n.name, n.path, n.photo_count) for n in tree] == [("a", "a", 5)]
-    assert [(n.name, n.path, n.photo_count) for n in tree[0].children] == [
+    assert [(n.name, n.path, n.photo_count) for n in tree] == [("_export", "_export", 1),
+                                                               ("a", "a", 6)]
+    # A hidden folder is left out, but its photos still count towards the
+    # parent, as /api/directories/a lists them too.
+    assert [(n.name, n.path, n.photo_count) for n in tree[1].children] == [
+        ("_private", "a/_private", 1),
         ("b", "a/b", 2),
         ("c", "a/c", 1),
     ]

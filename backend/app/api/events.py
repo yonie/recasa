@@ -38,7 +38,7 @@ async def _covers(session, hashes: list[str]) -> dict[str, PhotoSummary]:
     if not hashes:
         return {}
     rows = await session.execute(summary_select().where(Photo.file_hash.in_(hashes), VISIBLE))
-    return {row.file_hash: to_summary(row, full=False) for row in rows}
+    return {row.file_hash: to_summary(row) for row in rows}
 
 
 @router.get("", response_model=list[EventSummary])
@@ -98,7 +98,7 @@ async def get_event_photos(
         .where(EventPhoto.event_id == event_id, VISIBLE)
     )
     return await photo_page(
-        session, stmt, order_by=OLDEST_FIRST, page=page, page_size=page_size, full=False
+        session, stmt, order_by=OLDEST_FIRST, page=page, page_size=page_size
     )
 
 

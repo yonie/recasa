@@ -4,12 +4,13 @@ from collections import Counter
 from collections.abc import Iterable
 
 from fastapi import APIRouter
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, and_, select
 
 from backend.app.api.deps import Page, PageSize, SessionDep
 from backend.app.models import Photo
 from backend.app.queries.photos import NEWEST_FIRST, VISIBLE, photo_page, summary_select
 from backend.app.schemas.photo import DirectoryNode, PhotoPage
+from backend.app.services.scanner import is_library_name
 
 router = APIRouter(prefix="/api/directories", tags=["directories"])
 
@@ -17,9 +18,11 @@ router = APIRouter(prefix="/api/directories", tags=["directories"])
 def build_directory_tree(file_paths: Iterable[str]) -> list[DirectoryNode]:
     """Directory tree with recursive photo counts, children sorted by name.
 
-    Files at the root have no directory and are not counted. A directory whose
-    name starts with "_" is left out together with everything below it, as it
-    always has been.
+    Files at the root have no directory and are not counted. A hidden
+    directory (".stversions" and the like) is left out with everything below
+    it, by the scanner's own rule: such paths are never indexed, and one still
+    in an older index is on its way out. A name starting with "_" is an
+    ordinary folder.
     """
     # Count per directory first: a library has a few thousand folders but
     # tens of thousands of files, so the tree is built from far fewer keys.
@@ -42,7 +45,7 @@ def build_directory_tree(file_paths: Iterable[str]) -> list[DirectoryNode]:
     def build(children: dict[str, dict], parent_path: str) -> list[DirectoryNode]:
         nodes = []
         for name, data in sorted(children.items()):
-            if name.startswith("_"):
+            if not is_library_name(name):
                 continue
             path = f"{parent_path}/{name}" if parent_path else name
             nodes.append(
@@ -56,6 +59,18 @@ def build_directory_tree(file_paths: Iterable[str]) -> list[DirectoryNode]:
         return nodes
 
     return build(tree, "")
+
+
+def under_directory(path: str) -> ColumnElement[bool]:
+    """Photos anywhere below directory ``path``, subdirectories included.
+
+    An exact, case-sensitive prefix match on ``path + "/"``, written as a
+    range: every such string sorts from ``path/`` up to just before
+    ``path0`` ("0" being the character after "/"). LIKE treated "_" and "%"
+    in a folder name as wildcards and ignored ASCII case, so 2026_09 also
+    listed 2026-09; a range is also one an index on file_path could serve.
+    """
+    return and_(Photo.file_path >= f"{path}/", Photo.file_path < f"{path}0")
 
 
 @router.get("", response_model=list[DirectoryNode])
@@ -76,10 +91,7 @@ async def get_directory_photos(
     # Normalize path separators
     path = path.replace("\\", "/")
 
-    # Everything under this directory, subdirectories included. LIKE is used
-    # as it always was here, so "_" and "%" in a name act as wildcards and
-    # ASCII case is ignored.
-    stmt = summary_select().where(Photo.file_path.like(f"{path}/%"), VISIBLE)
+    stmt = summary_select().where(under_directory(path), VISIBLE)
     return await photo_page(
-        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size
     )

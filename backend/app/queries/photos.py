@@ -14,9 +14,24 @@ from backend.app.schemas.photo import PhotoPage, PhotoSummary
 # query plans were measured with.
 VISIBLE: ColumnElement[bool] = Photo.flagged_for_removal == False  # noqa: E712
 
+# Every photo order ends in file_hash, so it is total. Thousands of photos
+# share a timestamp (and a thousand have none); without the tiebreak SQLite
+# returns those in whatever order its plan gives, so a page boundary could
+# fall differently from one request to the next and scrolling would repeat
+# or skip photos. The tiebreak runs the same way as the main key, which
+# keeps an ascending order the exact reverse of the descending one.
+def sorted_by(column: Any, *, descending: bool, nulls_last: bool) -> tuple[Any, ...]:
+    """``column`` in the given direction, ties by file_hash the same way."""
+    if descending:
+        key, tiebreak = column.desc(), Photo.file_hash.desc()
+    else:
+        key, tiebreak = column.asc(), Photo.file_hash.asc()
+    return (key.nullslast() if nulls_last else key.nullsfirst(), tiebreak)
+
+
 # Grid orders. Undated photos sort after dated ones either way.
-NEWEST_FIRST = (Photo.date_taken.desc().nullslast(),)
-OLDEST_FIRST = (Photo.date_taken.asc().nullslast(),)
+NEWEST_FIRST = sorted_by(Photo.date_taken, descending=True, nulls_last=True)
+OLDEST_FIRST = sorted_by(Photo.date_taken, descending=False, nulls_last=True)
 
 # Just what a grid tile needs. Selecting these columns instead of whole Photo
 # entities skips the ORM identity map, which on a 40k-photo timeline was most
@@ -50,13 +65,11 @@ def thumbnail_url(file_hash: str, size: int = 600) -> str:
     return f"/api/photos/{file_hash}/thumbnail/{size}"
 
 
-def to_summary(row: Sequence[Any], *, full: bool = True) -> PhotoSummary:
+def to_summary(row: Sequence[Any]) -> PhotoSummary:
     """Grid-tile summary from a row that starts with the SUMMARY_COLUMNS.
 
-    ``full=False`` leaves out marked_for_print, flagged_for_removal, is_video
-    and duration, so they read as their schema defaults. That is what the
-    person, tag, event, place, folder, large-file, duplicate and together
-    grids have always returned; the library and timeline grids are full.
+    Every grid gets the same fields: the tile shows the video badge, the
+    print and flag state from them on every page, not just the library.
 
     Unpacks by position: this runs once per photo, 40k times for a whole
     library timeline, and named access on rows was a third of that request.
@@ -78,24 +91,6 @@ def to_summary(row: Sequence[Any], *, full: bool = True) -> PhotoSummary:
         live_photo_video,
         motion_photo,
     ) = row[:_N_SUMMARY_COLUMNS]
-    if full:
-        return PhotoSummary(
-            file_hash=file_hash,
-            file_path=file_path,
-            file_name=file_name,
-            file_size=file_size,
-            mime_type=mime_type,
-            width=width,
-            height=height,
-            date_taken=date_taken,
-            is_favorite=is_favorite,
-            marked_for_print=marked_for_print,
-            flagged_for_removal=flagged_for_removal,
-            is_video=is_video,
-            duration=duration,
-            thumbnail_url=f"/api/photos/{file_hash}/thumbnail/600",
-            has_live_photo=bool(live_photo_video or motion_photo),
-        )
     return PhotoSummary(
         file_hash=file_hash,
         file_path=file_path,
@@ -106,6 +101,10 @@ def to_summary(row: Sequence[Any], *, full: bool = True) -> PhotoSummary:
         height=height,
         date_taken=date_taken,
         is_favorite=is_favorite,
+        marked_for_print=marked_for_print,
+        flagged_for_removal=flagged_for_removal,
+        is_video=is_video,
+        duration=duration,
         thumbnail_url=f"/api/photos/{file_hash}/thumbnail/600",
         has_live_photo=bool(live_photo_video or motion_photo),
     )
@@ -118,7 +117,6 @@ async def photo_page(
     order_by: Sequence[Any],
     page: int,
     page_size: int,
-    full: bool = True,
 ) -> PhotoPage:
     """Count ``stmt`` and return one page of it as grid summaries.
 
@@ -131,7 +129,7 @@ async def photo_page(
     offset = (page - 1) * page_size
     rows = (await session.execute(stmt.order_by(*order_by).offset(offset).limit(page_size))).all()
     return PhotoPage(
-        items=[to_summary(row, full=full) for row in rows],
+        items=[to_summary(row) for row in rows],
         total=total,
         page=page,
         page_size=page_size,

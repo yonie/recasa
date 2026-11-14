@@ -131,12 +131,15 @@ def run_with_session(body: Callable[[AsyncSession], Awaitable[Any]]) -> Any:
     return asyncio.run(main())
 
 
-def run_with_client(body: Callable[[httpx.AsyncClient], Awaitable[Any]]) -> Any:
-    """Run ``body(client)`` against the app, its sessions on a seeded database."""
+def run_with_client(
+    body: Callable[[httpx.AsyncClient], Awaitable[Any]], rows: list[Any] | None = None
+) -> Any:
+    """Run ``body(client)`` against the app, its sessions on a database seeded
+    with ``rows`` (default :func:`seed_rows`)."""
     from backend.app.main import app
 
     async def main() -> Any:
-        maker = await make_sessionmaker()
+        maker = await make_sessionmaker(rows)
 
         async def session_override():
             async with maker() as session:

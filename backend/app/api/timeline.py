@@ -30,7 +30,7 @@ _YEAR_PREVIEWS_SQL = text(
                CAST(strftime('%Y', COALESCE(date_taken, file_modified)) AS INTEGER) AS year,
                ROW_NUMBER() OVER (
                    PARTITION BY strftime('%Y', COALESCE(date_taken, file_modified))
-                   ORDER BY COALESCE(date_taken, file_modified)
+                   ORDER BY COALESCE(date_taken, file_modified), file_hash
                ) AS rn,
                COUNT(*) OVER (
                    PARTITION BY strftime('%Y', COALESCE(date_taken, file_modified))
@@ -119,7 +119,11 @@ async def get_timeline(
     query = (
         select(Photo.file_hash, Photo.date_taken, Photo.file_modified)
         .where(*conditions)
-        .order_by(Photo.date_taken.desc().nullslast(), Photo.file_modified.desc().nullslast())
+        .order_by(
+            Photo.date_taken.desc().nullslast(),
+            Photo.file_modified.desc().nullslast(),
+            Photo.file_hash.desc(),
+        )
     )
 
     # Group every matching photo by period using only its dates, in timeline

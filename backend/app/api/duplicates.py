@@ -11,6 +11,7 @@ from backend.app.queries.photos import (
     SUMMARY_COLUMNS,
     VISIBLE,
     photo_page,
+    sorted_by,
     summary_select,
     to_summary,
 )
@@ -36,7 +37,7 @@ def _photo_to_duplicate_summary(photo, people_names: list[str]) -> DuplicatePhot
     location_parts = [p for p in [photo.location_city, photo.location_country] if p]
     camera_parts = [p for p in [photo.camera_make, photo.camera_model] if p]
     return DuplicatePhotoSummary(
-        **to_summary(photo, full=False).model_dump(exclude_unset=True),
+        **to_summary(photo).model_dump(exclude_unset=True),
         location=", ".join(location_parts) if location_parts else None,
         camera=" ".join(camera_parts) if camera_parts else None,
         people=people_names,
@@ -53,7 +54,10 @@ async def get_duplicates(
     group_ids = (
         (
             await session.execute(
-                select(DuplicateGroup.group_id).offset((page - 1) * page_size).limit(page_size)
+                select(DuplicateGroup.group_id)
+                .order_by(DuplicateGroup.group_id)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
             )
         )
         .scalars()
@@ -133,8 +137,7 @@ async def get_large_files(
     return await photo_page(
         session,
         stmt,
-        order_by=(Photo.file_size.desc(),),
+        order_by=sorted_by(Photo.file_size, descending=True, nulls_last=True),
         page=page,
         page_size=page_size,
-        full=False,
     )

@@ -74,5 +74,5 @@ async def get_tag_photos(
         .where(PhotoTag.tag_id == tag_id, VISIBLE)
     )
     return await photo_page(
-        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size
     )

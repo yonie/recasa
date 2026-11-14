@@ -16,6 +16,7 @@ from backend.app.api.deps import (
     Page,
     PageSize,
     SessionDep,
+    UntilDatetime,
     require_file_hash,
 )
 from backend.app.api.files import contained_path, file_response
@@ -28,6 +29,7 @@ from backend.app.queries.photos import (
     OLDEST_FIRST,
     VISIBLE,
     photo_page,
+    sorted_by,
     summary_select,
     thumbnail_url,
 )
@@ -68,7 +70,7 @@ async def list_photos(
     flagged: bool | None = None,
     video: bool | None = None,
     date_from: datetime | None = None,
-    date_to: datetime | None = None,
+    date_to: UntilDatetime = None,
     country: str | None = None,
     city: str | None = None,
     search: Annotated[str | None, Query(max_length=500)] = None,
@@ -87,9 +89,11 @@ async def list_photos(
             search=search,
         )
     )
-    sort_col = getattr(Photo, sort)
-    order_by = sort_col.desc().nullslast() if order == "desc" else sort_col.asc().nullsfirst()
-    return await photo_page(session, stmt, order_by=(order_by,), page=page, page_size=page_size)
+    # Undated photos come last newest-first and first oldest-first: the one
+    # order reversed.
+    descending = order == "desc"
+    order_by = sorted_by(getattr(Photo, sort), descending=descending, nulls_last=descending)
+    return await photo_page(session, stmt, order_by=order_by, page=page, page_size=page_size)
 
 
 @router.get("/stats", response_model=LibraryStats)

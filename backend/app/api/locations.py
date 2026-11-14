@@ -1,6 +1,6 @@
 """Locations API endpoints."""
 
-from datetime import date
+from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter
 from sqlalchemy import func, select
@@ -32,7 +32,7 @@ async def list_countries(session: SessionDep):
         select(Photo.location_country, func.count(Photo.file_hash).label("count"))
         .where(Photo.location_country.is_not(None), VISIBLE)
         .group_by(Photo.location_country)
-        .order_by(func.count(Photo.file_hash).desc())
+        .order_by(func.count(Photo.file_hash).desc(), Photo.location_country)
     )
     return [{"country": row.location_country, "count": row.count} for row in result]
 
@@ -48,7 +48,7 @@ async def list_cities(session: SessionDep, country: str | None = None):
         )
         .where(Photo.location_city.is_not(None), VISIBLE)
         .group_by(Photo.location_city, Photo.location_country)
-        .order_by(func.count(Photo.file_hash).desc())
+        .order_by(func.count(Photo.file_hash).desc(), Photo.location_city, Photo.location_country)
     )
     if country:
         query = query.where(Photo.location_country == country)
@@ -129,12 +129,16 @@ async def get_trail(
             Photo.date_taken.is_not(None),
             VISIBLE,
         )
-        .order_by(Photo.date_taken.asc())
+        .order_by(Photo.date_taken.asc(), Photo.file_hash.asc())
     )
+    # Whole days, both ends included. These were string bounds that only
+    # came out right because stored dates have a space where the bound had
+    # a "T"; the datetimes say the same thing on purpose.
     if date_from:
-        query = query.where(Photo.date_taken >= date_from.isoformat())
+        query = query.where(Photo.date_taken >= datetime.combine(date_from, time.min))
     if date_to:
-        query = query.where(Photo.date_taken < (date_to.isoformat() + "T23:59:59"))
+        next_day = datetime.combine(date_to + timedelta(days=1), time.min)
+        query = query.where(Photo.date_taken < next_day)
 
     # Group by day + approximate location
     stops: dict[str, dict] = {}
@@ -176,5 +180,5 @@ async def get_location_photos(
     if city:
         stmt = stmt.where(Photo.location_city == city)
     return await photo_page(
-        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size
     )

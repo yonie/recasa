@@ -2,10 +2,11 @@
 
 import re
 from collections import Counter
+from collections.abc import Iterable
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 from sqlalchemy import Select, delete, func, intersect, select, update
 
 from backend.app.api.deps import CollageGrid, Page, PageSize, SessionDep
@@ -39,63 +40,84 @@ _PERSON_ID = re.compile(r"[0-9]{1,18}")
 _MOST_PHOTOS_FIRST = (Person.photo_count.desc(), Person.person_id)
 
 
-def _thumbnail_url(person: Person) -> str | None:
-    """Face thumbnail URL for a person that has a representative face."""
-    if person.representative_face_id:
+async def _faces_with_crop(session, persons: Iterable[Person]) -> set[int]:
+    """The representative faces of ``persons`` that have a crop on record.
+
+    Only those get a thumbnail URL: for the rest /thumbnail answers 404,
+    and the UI would show a broken image instead of its placeholder.
+    """
+    face_ids = {p.representative_face_id for p in persons if p.representative_face_id}
+    if not face_ids:
+        return set()
+    return set(
+        (
+            await session.execute(
+                select(Face.face_id).where(
+                    Face.face_id.in_(face_ids),
+                    Face.face_thumbnail.is_not(None),
+                    Face.face_thumbnail != "",
+                )
+            )
+        ).scalars()
+    )
+
+
+def _thumbnail_url(person: Person, with_crop: set[int]) -> str | None:
+    """Face thumbnail URL for a person whose representative face has a crop."""
+    if person.representative_face_id in with_crop:
         return f"/api/persons/{person.person_id}/thumbnail"
     return None
 
 
-def _person_info(p: Person) -> dict:
+def _person_info(p: Person, with_crop: set[int]) -> dict:
     return {
         "person_id": p.person_id,
         "name": p.name,
         "photo_count": p.photo_count,
-        "face_thumbnail_url": _thumbnail_url(p),
+        "face_thumbnail_url": _thumbnail_url(p, with_crop),
     }
 
 
-def _summary(person: Person, face_thumbnail_url: str | None) -> PersonSummary:
+def _summary(person: Person, with_crop: set[int]) -> PersonSummary:
     return PersonSummary(
         person_id=person.person_id,
         name=person.name,
         photo_count=person.photo_count,
-        face_thumbnail_url=face_thumbnail_url,
+        face_thumbnail_url=_thumbnail_url(person, with_crop),
     )
+
+
+def _distinct(ids: Iterable[int]) -> list[int]:
+    """``ids`` without repeats, first occurrence kept."""
+    return list(dict.fromkeys(ids))
+
+
+def _group_ids(ids: Iterable[int]) -> list[int]:
+    """The distinct people of a Together group, at least two of them.
+
+    A repeated id is the same person, not a second one: 25,25 used to pass
+    as a pair and list the photos of 25 alone. One distinct person is
+    refused the way a single id always has been.
+    """
+    distinct = _distinct(ids)
+    if len(distinct) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 person IDs")
+    if len(distinct) > MAX_GROUP_SIZE:
+        raise HTTPException(status_code=400, detail="Too many person IDs")
+    return distinct
 
 
 def _parse_person_ids(person_ids: str) -> list[int]:
     """The ids in a comma-separated list; anything that is not one is skipped."""
-    ids = [int(token) for x in person_ids.split(",") if _PERSON_ID.fullmatch(token := x.strip())]
-    if len(ids) < 2:
-        raise HTTPException(status_code=400, detail="Need at least 2 person IDs")
-    if len(ids) > MAX_GROUP_SIZE:
-        raise HTTPException(status_code=400, detail="Too many person IDs")
-    return ids
+    return _group_ids(
+        int(token) for x in person_ids.split(",") if _PERSON_ID.fullmatch(token := x.strip())
+    )
 
 
 async def _list_summaries(session, stmt: Select[Any]) -> list[PersonSummary]:
-    """Person summaries for a listing, linking the thumbnail only where the
-    representative face actually has a crop on record."""
     persons = (await session.execute(stmt)).scalars().all()
-    face_ids = {p.representative_face_id for p in persons if p.representative_face_id}
-    with_crop: set[int] = set()
-    if face_ids:
-        with_crop = set(
-            (
-                await session.execute(
-                    select(Face.face_id).where(
-                        Face.face_id.in_(face_ids),
-                        Face.face_thumbnail.is_not(None),
-                        Face.face_thumbnail != "",
-                    )
-                )
-            ).scalars()
-        )
-    return [
-        _summary(p, _thumbnail_url(p) if p.representative_face_id in with_crop else None)
-        for p in persons
-    ]
+    with_crop = await _faces_with_crop(session, persons)
+    return [_summary(p, with_crop) for p in persons]
 
 
 @router.get("", response_model=list[PersonSummary])
@@ -138,7 +160,7 @@ async def get_person(person_id: int, session: SessionDep):
     person = await session.get(Person, person_id)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
-    return _summary(person, _thumbnail_url(person))
+    return _summary(person, await _faces_with_crop(session, [person]))
 
 
 @router.get("/{person_id}/photos", response_model=PhotoPage)
@@ -160,7 +182,7 @@ async def get_person_photos(
         .distinct()
     )
     return await photo_page(
-        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size
     )
 
 
@@ -196,7 +218,7 @@ async def update_person(person_id: int, update: PersonUpdate, session: SessionDe
 
     person.name = update.name
     await session.commit()
-    return _summary(person, _thumbnail_url(person))
+    return _summary(person, await _faces_with_crop(session, [person]))
 
 
 @router.post("/merge")
@@ -307,6 +329,7 @@ async def list_person_groups(
         )
     }
 
+    with_crop = await _faces_with_crop(session, persons_map.values())
     results = []
     for group, count in top_groups:
         persons_in_group = [persons_map.get(pid) for pid in group]
@@ -316,9 +339,9 @@ async def list_person_groups(
         cover = photos_map.get(group_photos[group])
         results.append(
             {
-                "persons": [_person_info(p) for p in persons_in_group],
+                "persons": [_person_info(p, with_crop) for p in persons_in_group],
                 "shared_photo_count": count,
-                "cover_photo": to_summary(cover, full=False) if cover else None,
+                "cover_photo": to_summary(cover) if cover else None,
             }
         )
 
@@ -326,8 +349,12 @@ async def list_person_groups(
 
 
 class PersonIdsRequest(BaseModel):
+    # Repeats are dropped, so [1, 1] is one person and cannot be hidden as
+    # a tile, and unhiding [1, 2, 2] finds the tile of 1 and 2.
     person_ids: Annotated[
-        list[Annotated[int, Field(ge=0, le=2**63 - 1)]], Field(max_length=MAX_GROUP_SIZE)
+        list[Annotated[int, Field(ge=0, le=2**63 - 1)]],
+        Field(max_length=MAX_GROUP_SIZE),
+        AfterValidator(_distinct),
     ]
 
 
@@ -362,10 +389,13 @@ async def list_hidden_person_groups(session: SessionDep):
         ).scalars()
     }
 
+    with_crop = await _faces_with_crop(session, persons_map.values())
     return [
         {
             "group_key": key,
-            "persons": [_person_info(persons_map[pid]) for pid in ids if pid in persons_map],
+            "persons": [
+                _person_info(persons_map[pid], with_crop) for pid in ids if pid in persons_map
+            ],
         }
         for key, ids in parsed
     ]
@@ -430,7 +460,9 @@ async def get_shared_photos(
     page_size: PageSize = 50,
 ):
     """Get all photos where two specific people appear together."""
-    return await _get_together_photos([person_a_id, person_b_id], page, page_size, session)
+    return await _get_together_photos(
+        _group_ids([person_a_id, person_b_id]), page, page_size, session
+    )
 
 
 @router.get("/groups/together-n/photos", response_model=PhotoPage)
@@ -450,7 +482,7 @@ async def _get_together_photos(
     """Get photos where EXACTLY the listed persons appear (no others)."""
     stmt = summary_select().where(*_together_conditions(person_ids))
     return await photo_page(
-        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size
     )
 
 
@@ -486,7 +518,9 @@ async def get_together_collage(
     seed: int = 0,
 ):
     """Generate a square photo collage for two people together."""
-    return await _together_collage(request, [person_a_id, person_b_id], grid, seed, session)
+    return await _together_collage(
+        request, _group_ids([person_a_id, person_b_id]), grid, seed, session
+    )
 
 
 @router.get("/groups/together-n/collage")
