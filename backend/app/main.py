@@ -1,19 +1,37 @@
 """Recasa - Intelligent Local Photo Explorer."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
+from backend.app.api import (
+    config,
+    directories,
+    duplicates,
+    events,
+    locations,
+    persons,
+    photos,
+    pipeline_api,
+    scan,
+    tags,
+    timeline,
+    user_data,
+)
+from backend.app.api.guards import CrossSiteGuardMiddleware
+from backend.app.api.limits import BodySizeLimitMiddleware
 from backend.app.config import settings
 from backend.app.database import init_db
-from backend.app.api import photos, directories, timeline, scan, duplicates, persons, events, locations, pipeline_api, tags, config, user_data
+from backend.app.workers.pipeline import resume_incomplete_processing, start_file_watcher
 from backend.app.workers.queues import pipeline
 from backend.app.workers.worker import start_pipeline_workers
-from backend.app.workers.pipeline import start_file_watcher, resume_incomplete_processing
 
 logger = logging.getLogger("recasa")
+
+VERSION = "1.7.0"
 
 
 @asynccontextmanager
@@ -39,8 +57,7 @@ async def lifespan(app: FastAPI):
     await init_db()
 
     # Initialize config store (stores photos_path for change detection)
-    from backend.app.api.config import init_config_store
-    await init_config_store()
+    await config.init_config_store()
 
     # Start the pipeline workers (face detection, event detection, etc.)
     workers = await start_pipeline_workers(pipeline)
@@ -56,9 +73,7 @@ async def lifespan(app: FastAPI):
 
     rescan_task = None
     if settings.watch_interval > 0:
-        import asyncio
-        from backend.app.api.scan import periodic_rescan_loop
-        rescan_task = asyncio.create_task(periodic_rescan_loop(settings.watch_interval))
+        rescan_task = asyncio.create_task(scan.periodic_rescan_loop(settings.watch_interval))
     else:
         logger.info("Periodic rescan disabled (WATCH_INTERVAL=0)")
 
@@ -78,34 +93,44 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Recasa",
     description="Intelligent Local Photo Explorer",
-    version="1.7.0",
+    version=VERSION,
     lifespan=lifespan,
 )
 
-# CORS middleware for development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORS middleware, on purpose. The UI is same-origin (nginx serves it and
+# proxies /api), and the Vite dev server proxies /api too, so no browser ever
+# needs a cross-origin grant. The wildcard-with-credentials policy this app
+# used to send let any website the owner visited read the whole photo API
+# with the browser's cached nginx basic-auth credentials. The guard below
+# closes the other direction: other sites making the browser write to it.
 
-# Register routers
-app.include_router(photos.router)
-app.include_router(directories.router)
-app.include_router(timeline.router)
-app.include_router(scan.router)
-app.include_router(duplicates.router)
-app.include_router(persons.router)
-app.include_router(events.router)
-app.include_router(locations.router)
-app.include_router(pipeline_api.router)
-app.include_router(tags.router)
-app.include_router(config.router)
-app.include_router(user_data.router)
+app.add_middleware(BodySizeLimitMiddleware)
+app.add_middleware(CrossSiteGuardMiddleware)
+
+for module in (
+    photos,
+    directories,
+    timeline,
+    scan,
+    duplicates,
+    persons,
+    events,
+    locations,
+    pipeline_api,
+    tags,
+    config,
+    user_data,
+):
+    app.include_router(module.router)
+
+
+@app.exception_handler(OverflowError)
+async def _number_out_of_range(request: Request, exc: OverflowError) -> JSONResponse:
+    # An integer parameter too large for SQLite (a page, id or year past
+    # 2**63) used to surface as a bare 500 from the database driver.
+    return JSONResponse(status_code=422, content={"detail": "Number out of range"})
 
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "app": "recasa", "version": "1.7.0"}
+    return {"status": "ok", "app": "recasa", "version": VERSION}

@@ -1,13 +1,14 @@
 """User data export/import API endpoints."""
 
+import asyncio
 import json
 import logging
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.database import get_session
+from backend.app.api.deps import SessionDep
 from backend.app.services.user_data import export_user_data, import_user_data
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/api/user-data", tags=["user-data"])
 
 
 @router.get("/export")
-async def export_data(session: AsyncSession = Depends(get_session)):
+async def export_data(session: SessionDep):
     """Export user data (favorites, person names) as a JSON download."""
     data = await export_user_data(session)
     return JSONResponse(
@@ -28,16 +29,18 @@ async def export_data(session: AsyncSession = Depends(get_session)):
 
 
 @router.post("/import")
-async def import_data(
-    file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_session),
-):
+async def import_data(file: Annotated[UploadFile, File()], session: SessionDep):
     """Import user data from a previously exported JSON file."""
     try:
         contents = await file.read()
-        data = json.loads(contents)
+        # An export carrying every faceprint of the named people runs to tens
+        # of megabytes; parse it off the event loop.
+        data = await asyncio.to_thread(json.loads, contents)
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         return {"status": "error", "message": f"Invalid JSON file: {e}"}
+    except RecursionError:
+        # Nesting thousands of levels deep; no export looks like that.
+        return {"status": "error", "message": "Invalid JSON file: nested too deeply"}
 
     if not isinstance(data, dict) or "version" not in data:
         return {"status": "error", "message": "Not a valid recasa export file"}

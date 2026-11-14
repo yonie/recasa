@@ -1,26 +1,49 @@
 """Person/People API endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+import re
+from collections import Counter
+from typing import Annotated, Any
 
-_IMMUTABLE_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
+from sqlalchemy import Select, delete, func, intersect, select, update
 
+from backend.app.api.deps import CollageGrid, Page, PageSize, SessionDep
+from backend.app.api.files import REVALIDATE, contained_path, file_response
+from backend.app.api.responses import collage_response
 from backend.app.config import settings
-from backend.app.database import get_session
-from backend.app.models import Person, Face, Photo, HiddenPersonGroup
+from backend.app.models import Face, HiddenPersonGroup, Person, Photo, PhotoHash
 from backend.app.models.face import group_key_from_ids as _group_key
-from backend.app.schemas.photo import (
-    PersonSummary,
-    PersonUpdate,
-    PersonMerge,
-    PhotoPage,
-    PhotoSummary,
+from backend.app.queries.photos import (
+    NEWEST_FIRST,
+    OLDEST_FIRST,
+    VISIBLE,
+    photo_page,
+    summary_select,
+    to_summary,
 )
+from backend.app.schemas.photo import PersonMerge, PersonSummary, PersonUpdate, PhotoPage
 
 router = APIRouter(prefix="/api/persons", tags=["persons"])
+
+PersonIds = Annotated[str, Query(description="Comma-separated person IDs")]
+
+# A together group is a handful of people. The bound keeps a crafted list
+# from turning into an INTERSECT of thousands of subqueries.
+MAX_GROUP_SIZE = 50
+# ASCII digits only, at most 18 so the value fits an SQLite INTEGER.
+_PERSON_ID = re.compile(r"[0-9]{1,18}")
+
+# Most photos first. Thousands of people share a count, and SQLite returned
+# those in id order; the tiebreak makes that explicit so pages stay stable.
+_MOST_PHOTOS_FIRST = (Person.photo_count.desc(), Person.person_id)
+
+
+def _thumbnail_url(person: Person) -> str | None:
+    """Face thumbnail URL for a person that has a representative face."""
+    if person.representative_face_id:
+        return f"/api/persons/{person.person_id}/thumbnail"
+    return None
 
 
 def _person_info(p: Person) -> dict:
@@ -28,153 +51,127 @@ def _person_info(p: Person) -> dict:
         "person_id": p.person_id,
         "name": p.name,
         "photo_count": p.photo_count,
-        "face_thumbnail_url": f"/api/persons/{p.person_id}/thumbnail" if p.representative_face_id else None,
+        "face_thumbnail_url": _thumbnail_url(p),
     }
 
 
-def _photo_to_summary(photo: Photo) -> PhotoSummary:
-    return PhotoSummary(
-        file_hash=photo.file_hash,
-        file_path=photo.file_path,
-        file_name=photo.file_name,
-        file_size=photo.file_size,
-        mime_type=photo.mime_type,
-        width=photo.width,
-        height=photo.height,
-        date_taken=photo.date_taken,
-        is_favorite=photo.is_favorite,
-        thumbnail_url=f"/api/photos/{photo.file_hash}/thumbnail/600",
-        has_live_photo=bool(photo.live_photo_video or photo.motion_photo),
-    )
-
-
-@router.get("", response_model=list[PersonSummary])
-async def list_persons(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(get_session),
-):
-    """List all recognized persons, sorted by photo count descending."""
-    result = await session.execute(
-        select(Person)
-        .where(Person.photo_count > 0, Person.ignored == False)
-        .order_by(Person.photo_count.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    )
-    persons = result.scalars().all()
-
-    summaries = []
-    for person in persons:
-        face_thumb_url = None
-        if person.representative_face_id:
-            face = await session.get(Face, person.representative_face_id)
-            if face and face.face_thumbnail:
-                face_thumb_url = f"/api/persons/{person.person_id}/thumbnail"
-
-        summaries.append(PersonSummary(
-            person_id=person.person_id,
-            name=person.name,
-            photo_count=person.photo_count,
-            face_thumbnail_url=face_thumb_url,
-        ))
-
-    return summaries
-
-
-@router.get("/ignored", response_model=list[PersonSummary])
-async def list_ignored_persons(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(100, ge=1, le=500),
-    session: AsyncSession = Depends(get_session),
-):
-    """List all ignored persons."""
-    result = await session.execute(
-        select(Person)
-        .where(Person.ignored == True)
-        .order_by(Person.photo_count.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    )
-    persons = result.scalars().all()
-
-    summaries = []
-    for person in persons:
-        face_thumb_url = None
-        if person.representative_face_id:
-            face = await session.get(Face, person.representative_face_id)
-            if face and face.face_thumbnail:
-                face_thumb_url = f"/api/persons/{person.person_id}/thumbnail"
-        summaries.append(PersonSummary(
-            person_id=person.person_id,
-            name=person.name,
-            photo_count=person.photo_count,
-            face_thumbnail_url=face_thumb_url,
-        ))
-    return summaries
-
-
-@router.get("/{person_id}", response_model=PersonSummary)
-async def get_person(person_id: int, session: AsyncSession = Depends(get_session)):
-    """Get a person's details."""
-    person = await session.get(Person, person_id)
-    if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
-
-    face_thumb_url = None
-    if person.representative_face_id:
-        face_thumb_url = f"/api/persons/{person.person_id}/thumbnail"
-
+def _summary(person: Person, face_thumbnail_url: str | None) -> PersonSummary:
     return PersonSummary(
         person_id=person.person_id,
         name=person.name,
         photo_count=person.photo_count,
-        face_thumbnail_url=face_thumb_url,
+        face_thumbnail_url=face_thumbnail_url,
     )
+
+
+def _parse_person_ids(person_ids: str) -> list[int]:
+    """The ids in a comma-separated list; anything that is not one is skipped."""
+    ids = [int(token) for x in person_ids.split(",") if _PERSON_ID.fullmatch(token := x.strip())]
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 person IDs")
+    if len(ids) > MAX_GROUP_SIZE:
+        raise HTTPException(status_code=400, detail="Too many person IDs")
+    return ids
+
+
+async def _list_summaries(session, stmt: Select[Any]) -> list[PersonSummary]:
+    """Person summaries for a listing, linking the thumbnail only where the
+    representative face actually has a crop on record."""
+    persons = (await session.execute(stmt)).scalars().all()
+    face_ids = {p.representative_face_id for p in persons if p.representative_face_id}
+    with_crop: set[int] = set()
+    if face_ids:
+        with_crop = set(
+            (
+                await session.execute(
+                    select(Face.face_id).where(
+                        Face.face_id.in_(face_ids),
+                        Face.face_thumbnail.is_not(None),
+                        Face.face_thumbnail != "",
+                    )
+                )
+            ).scalars()
+        )
+    return [
+        _summary(p, _thumbnail_url(p) if p.representative_face_id in with_crop else None)
+        for p in persons
+    ]
+
+
+@router.get("", response_model=list[PersonSummary])
+async def list_persons(
+    session: SessionDep,
+    page: Page = 1,
+    page_size: PageSize = 50,
+):
+    """List all recognized persons, sorted by photo count descending."""
+    return await _list_summaries(
+        session,
+        select(Person)
+        .where(Person.photo_count > 0, Person.ignored == False)  # noqa: E712
+        .order_by(*_MOST_PHOTOS_FIRST)
+        .offset((page - 1) * page_size)
+        .limit(page_size),
+    )
+
+
+@router.get("/ignored", response_model=list[PersonSummary])
+async def list_ignored_persons(
+    session: SessionDep,
+    page: Page = 1,
+    page_size: Annotated[int, Query(ge=1, le=500)] = 100,
+):
+    """List all ignored persons."""
+    return await _list_summaries(
+        session,
+        select(Person)
+        .where(Person.ignored == True)  # noqa: E712
+        .order_by(*_MOST_PHOTOS_FIRST)
+        .offset((page - 1) * page_size)
+        .limit(page_size),
+    )
+
+
+@router.get("/{person_id}", response_model=PersonSummary)
+async def get_person(person_id: int, session: SessionDep):
+    """Get a person's details."""
+    person = await session.get(Person, person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return _summary(person, _thumbnail_url(person))
 
 
 @router.get("/{person_id}/photos", response_model=PhotoPage)
 async def get_person_photos(
     person_id: int,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(get_session),
+    session: SessionDep,
+    page: Page = 1,
+    page_size: PageSize = 50,
 ):
     """Get all photos containing a specific person."""
     person = await session.get(Person, person_id)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
 
-    # Get unique photo hashes for this person
-    query = (
-        select(Photo)
+    stmt = (
+        summary_select()
         .join(Face, Face.file_hash == Photo.file_hash)
-        .where(Face.person_id == person_id)
-        .where(Photo.flagged_for_removal == False)  # noqa: E712
+        .where(Face.person_id == person_id, VISIBLE)
         .distinct()
     )
-
-    count_query = select(func.count()).select_from(query.subquery())
-    total = (await session.execute(count_query)).scalar() or 0
-
-    offset = (page - 1) * page_size
-    query = query.order_by(Photo.date_taken.desc().nullslast()).offset(offset).limit(page_size)
-
-    result = await session.execute(query)
-    photos = result.scalars().all()
-
-    return PhotoPage(
-        items=[_photo_to_summary(p) for p in photos],
-        total=total,
-        page=page,
-        page_size=page_size,
-        has_more=offset + page_size < total,
+    return await photo_page(
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
     )
 
 
 @router.get("/{person_id}/thumbnail")
-async def get_person_thumbnail(person_id: int, session: AsyncSession = Depends(get_session)):
-    """Serve the representative face thumbnail for a person."""
+async def get_person_thumbnail(person_id: int, request: Request, session: SessionDep):
+    """Serve the representative face thumbnail for a person.
+
+    Revalidated rather than cached for good: the URL names a person, and a
+    merge, a recluster or a new representative face changes the picture
+    behind it.
+    """
     person = await session.get(Person, person_id)
     if not person or not person.representative_face_id:
         raise HTTPException(status_code=404, detail="Person not found")
@@ -183,19 +180,15 @@ async def get_person_thumbnail(person_id: int, session: AsyncSession = Depends(g
     if not face or not face.face_thumbnail:
         raise HTTPException(status_code=404, detail="Face thumbnail not found")
 
-    thumb_path = settings.data_dir / face.face_thumbnail
-    if not thumb_path.exists():
+    thumb_path = contained_path(settings.data_dir, face.face_thumbnail)
+    if thumb_path is None or not thumb_path.exists():
         raise HTTPException(status_code=404, detail="Thumbnail file not found")
 
-    return FileResponse(thumb_path, media_type="image/webp", headers=_IMMUTABLE_CACHE)
+    return file_response(request, thumb_path, "image/webp", cache_control=REVALIDATE)
 
 
 @router.put("/{person_id}", response_model=PersonSummary)
-async def update_person(
-    person_id: int,
-    update: PersonUpdate,
-    session: AsyncSession = Depends(get_session),
-):
+async def update_person(person_id: int, update: PersonUpdate, session: SessionDep):
     """Update a person's name."""
     person = await session.get(Person, person_id)
     if not person:
@@ -203,24 +196,11 @@ async def update_person(
 
     person.name = update.name
     await session.commit()
-
-    face_thumb_url = None
-    if person.representative_face_id:
-        face_thumb_url = f"/api/persons/{person.person_id}/thumbnail"
-
-    return PersonSummary(
-        person_id=person.person_id,
-        name=person.name,
-        photo_count=person.photo_count,
-        face_thumbnail_url=face_thumb_url,
-    )
+    return _summary(person, _thumbnail_url(person))
 
 
 @router.post("/merge")
-async def merge_persons(
-    merge: PersonMerge,
-    session: AsyncSession = Depends(get_session),
-):
+async def merge_persons(merge: PersonMerge, session: SessionDep):
     """Merge two persons: move all faces from source to target, then delete source."""
     source = await session.get(Person, merge.source_id)
     target = await session.get(Person, merge.target_id)
@@ -231,23 +211,23 @@ async def merge_persons(
     if merge.source_id == merge.target_id:
         raise HTTPException(status_code=400, detail="Cannot merge a person with themselves")
 
-    # Move all faces from source to target
-    result = await session.execute(
-        select(Face).where(Face.person_id == merge.source_id)
+    faces = (
+        (await session.execute(select(Face).where(Face.person_id == merge.source_id)))
+        .scalars()
+        .all()
     )
-    faces = result.scalars().all()
-
     for face in faces:
         face.person_id = merge.target_id
 
-    # Update target photo count
-    face_count = await session.execute(
-        select(func.count(func.distinct(Face.file_hash)))
-        .where(Face.person_id == merge.target_id)
-    )
-    target.photo_count = face_count.scalar() or 0
+    # Autoflush puts the moved faces in the count.
+    target.photo_count = (
+        await session.execute(
+            select(func.count(func.distinct(Face.file_hash))).where(
+                Face.person_id == merge.target_id
+            )
+        )
+    ).scalar() or 0
 
-    # Delete source person
     await session.delete(source)
     await session.commit()
 
@@ -260,32 +240,30 @@ async def merge_persons(
 
 @router.get("/groups/together")
 async def list_person_groups(
-    min_photos: int = Query(3, ge=2),
-    page_size: int = Query(20, ge=1, le=50),
-    session: AsyncSession = Depends(get_session),
+    session: SessionDep,
+    min_photos: Annotated[int, Query(ge=2)] = 3,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 20,
 ):
     """Find pairs of people who frequently appear together in the same photos.
 
     Uses in-memory aggregation (fast) instead of SQL self-join (slow on large face tables).
     """
-    from collections import Counter
-    from itertools import combinations
-
-    # Get all (file_hash, person_id) pairs — one query, fast
-    result = await session.execute(
+    # In face order: the first photo seen becomes a group's cover and the
+    # first group seen wins a tie in the ranking.
+    rows = await session.execute(
         select(Face.file_hash, Face.person_id)
         .where(Face.person_id.is_not(None))
+        .order_by(Face.face_id)
     )
-    rows = result.all()
 
     # Group person_ids by photo
     photo_persons: dict[str, set[int]] = {}
     for file_hash, person_id in rows:
         photo_persons.setdefault(file_hash, set()).add(person_id)
 
-    # Count how often each group of people appears together.
-    # Use the full set of persons per photo (not just pairs) so that
-    # A+B+C appearing together shows as one group, not three pairs.
+    # Count how often each group of people appears together, using the full
+    # set of persons per photo (not just pairs) so that A+B+C together shows
+    # as one group, not three pairs.
     group_counts: Counter[tuple[int, ...]] = Counter()
     group_photos: dict[tuple[int, ...], str] = {}
     for file_hash, person_ids in photo_persons.items():
@@ -293,42 +271,41 @@ async def list_person_groups(
             continue
         key = tuple(sorted(person_ids))
         group_counts[key] += 1
-        if key not in group_photos:
-            group_photos[key] = file_hash
+        group_photos.setdefault(key, file_hash)
 
     # Drop tiles the user hid from the Together section before slicing to
     # page_size, so hiding tiles makes room for the next-best groups.
-    hidden_result = await session.execute(select(HiddenPersonGroup.group_key))
-    hidden_keys = {row[0] for row in hidden_result}
+    hidden_keys = set((await session.execute(select(HiddenPersonGroup.group_key))).scalars())
 
-    # Filter and sort
     top_groups = [
-        (group, count) for group, count in group_counts.most_common()
+        (group, count)
+        for group, count in group_counts.most_common()
         if count >= min_photos and _group_key(group) not in hidden_keys
     ][:page_size]
 
     if not top_groups:
         return []
 
-    # Fetch person details (exclude ignored)
-    all_person_ids = set()
-    for group, _ in top_groups:
-        all_person_ids.update(group)
+    all_person_ids = {pid for group, _ in top_groups for pid in group}
+    persons_map = {
+        p.person_id: p
+        for p in (
+            await session.execute(
+                select(Person).where(
+                    Person.person_id.in_(all_person_ids),
+                    Person.ignored == False,  # noqa: E712
+                )
+            )
+        ).scalars()
+    }
 
-    persons_result = await session.execute(
-        select(Person).where(Person.person_id.in_(all_person_ids), Person.ignored == False)
-    )
-    persons_map = {p.person_id: p for p in persons_result.scalars().all()}
-
-    # Fetch cover photos
-    cover_hashes = set(group_photos[g] for g, _ in top_groups if g in group_photos)
-    photos_result = await session.execute(
-        select(Photo).where(
-            Photo.file_hash.in_(cover_hashes),
-            Photo.flagged_for_removal == False,  # noqa: E712
+    cover_hashes = {group_photos[g] for g, _ in top_groups}
+    photos_map = {
+        row.file_hash: row
+        for row in await session.execute(
+            summary_select().where(Photo.file_hash.in_(cover_hashes), VISIBLE)
         )
-    )
-    photos_map = {p.file_hash: p for p in photos_result.scalars().all()}
+    }
 
     results = []
     for group, count in top_groups:
@@ -336,33 +313,34 @@ async def list_person_groups(
         # Skip if any person in the group is ignored (filtered out of map)
         if not all(persons_in_group):
             continue
-
-        cover_hash = group_photos.get(group)
-        cover_photo = photos_map.get(cover_hash) if cover_hash else None
-
-        results.append({
-            "persons": [_person_info(p) for p in persons_in_group],
-            "shared_photo_count": count,
-            "cover_photo": _photo_to_summary(cover_photo) if cover_photo else None,
-        })
+        cover = photos_map.get(group_photos[group])
+        results.append(
+            {
+                "persons": [_person_info(p) for p in persons_in_group],
+                "shared_photo_count": count,
+                "cover_photo": to_summary(cover, full=False) if cover else None,
+            }
+        )
 
     return results
 
 
 class PersonIdsRequest(BaseModel):
-    person_ids: list[int]
+    person_ids: Annotated[
+        list[Annotated[int, Field(ge=0, le=2**63 - 1)]], Field(max_length=MAX_GROUP_SIZE)
+    ]
 
 
 @router.get("/groups/hidden")
-async def list_hidden_person_groups(session: AsyncSession = Depends(get_session)):
+async def list_hidden_person_groups(session: SessionDep):
     """Together-section tiles the user hid, for the restore row on the people page."""
-    result = await session.execute(
+    keys = await session.execute(
         select(HiddenPersonGroup.group_key).order_by(HiddenPersonGroup.group_key)
     )
 
     parsed: list[tuple[str, list[int]]] = []
     all_ids: set[int] = set()
-    for (key,) in result:
+    for key in keys.scalars():
         try:
             ids = [int(x) for x in key.split(",") if x]
         except ValueError:
@@ -375,26 +353,29 @@ async def list_hidden_person_groups(session: AsyncSession = Depends(get_session)
 
     # Person details for the restore chips. A person may be gone after a
     # recluster, in which case it is simply left out of the chip.
-    persons_result = await session.execute(
-        select(Person).where(Person.person_id.in_(all_ids), Person.ignored == False)  # noqa: E712
-    )
-    persons_map = {p.person_id: p for p in persons_result.scalars().all()}
+    persons_map = {
+        p.person_id: p
+        for p in (
+            await session.execute(
+                select(Person).where(Person.person_id.in_(all_ids), Person.ignored == False)  # noqa: E712
+            )
+        ).scalars()
+    }
 
-    results = []
-    for _key, ids in parsed:
-        persons_in_group = [persons_map[pid] for pid in ids if pid in persons_map]
-        results.append({
-            "group_key": _key,
-            "persons": [_person_info(p) for p in persons_in_group],
-        })
-    return results
+    return [
+        {
+            "group_key": key,
+            "persons": [_person_info(persons_map[pid]) for pid in ids if pid in persons_map],
+        }
+        for key, ids in parsed
+    ]
 
 
 @router.post("/groups/hide")
-async def hide_person_group(body: PersonIdsRequest, session: AsyncSession = Depends(get_session)):
+async def hide_person_group(body: PersonIdsRequest, session: SessionDep):
     """Hide one Together tile (the people that appear together in photos).
 
-    This only removes the tile from the Together section — the people
+    This only removes the tile from the Together section; the people
     themselves stay on the people page and in their photos.
     """
     if len(body.person_ids) < 2:
@@ -407,7 +388,7 @@ async def hide_person_group(body: PersonIdsRequest, session: AsyncSession = Depe
 
 
 @router.post("/groups/unhide")
-async def unhide_person_group(body: PersonIdsRequest, session: AsyncSession = Depends(get_session)):
+async def unhide_person_group(body: PersonIdsRequest, session: SessionDep):
     """Restore a hidden Together tile."""
     key = _group_key(body.person_ids)
     row = await session.get(HiddenPersonGroup, key)
@@ -417,13 +398,36 @@ async def unhide_person_group(body: PersonIdsRequest, session: AsyncSession = De
     return {"status": "unhidden", "group_key": key}
 
 
+def _together_conditions(person_ids: list[int]) -> list[Any]:
+    """Photos where all the listed persons appear and no other person does.
+
+    "No other person" is checked per candidate photo through the faces
+    file_hash index. The previous NOT IN built the set of every photo with
+    any other recognised face (most of the library) on each request, which
+    was nearly all of its ~0.4 s.
+    """
+    together = intersect(
+        *(select(Face.file_hash).where(Face.person_id == pid).distinct() for pid in person_ids)
+    ).subquery()
+    someone_else = (
+        select(Face.face_id)
+        .where(
+            Face.file_hash == Photo.file_hash,
+            Face.person_id.is_not(None),
+            Face.person_id.not_in(list(set(person_ids))),
+        )
+        .exists()
+    )
+    return [Photo.file_hash.in_(select(together)), ~someone_else, VISIBLE]
+
+
 @router.get("/groups/together/{person_a_id}/{person_b_id}/photos", response_model=PhotoPage)
 async def get_shared_photos(
     person_a_id: int,
     person_b_id: int,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(get_session),
+    session: SessionDep,
+    page: Page = 1,
+    page_size: PageSize = 50,
 ):
     """Get all photos where two specific people appear together."""
     return await _get_together_photos([person_a_id, person_b_id], page, page_size, session)
@@ -431,190 +435,88 @@ async def get_shared_photos(
 
 @router.get("/groups/together-n/photos", response_model=PhotoPage)
 async def get_shared_photos_n(
-    person_ids: str = Query(..., description="Comma-separated person IDs"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(get_session),
+    person_ids: PersonIds,
+    session: SessionDep,
+    page: Page = 1,
+    page_size: PageSize = 50,
 ):
     """Get all photos where ALL specified people appear together."""
-    ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
-    if len(ids) < 2:
-        raise HTTPException(status_code=400, detail="Need at least 2 person IDs")
-    return await _get_together_photos(ids, page, page_size, session)
+    return await _get_together_photos(_parse_person_ids(person_ids), page, page_size, session)
 
 
 async def _get_together_photos(
-    person_ids: list[int], page: int, page_size: int, session: AsyncSession,
+    person_ids: list[int], page: int, page_size: int, session
 ) -> PhotoPage:
     """Get photos where EXACTLY the listed persons appear (no others)."""
-    from sqlalchemy import intersect
-
-    target_set = set(person_ids)
-
-    # Step 1: photos where all listed persons appear
-    sets = [
-        select(Face.file_hash).where(Face.person_id == pid).distinct()
-        for pid in person_ids
-    ]
-    together = intersect(*sets).subquery()
-
-    # Step 2: exclude photos that have faces from OTHER person_ids
-    other_faces = (
-        select(Face.file_hash)
-        .where(
-            Face.person_id.is_not(None),
-            Face.person_id.not_in(list(target_set)),
-        )
-        .distinct()
-        .subquery()
-    )
-
-    query = select(Photo).where(
-        Photo.file_hash.in_(select(together)),
-        Photo.file_hash.not_in(select(other_faces)),
-        Photo.flagged_for_removal == False,  # noqa: E712
-    )
-
-    count_query = select(func.count()).select_from(query.subquery())
-    total = (await session.execute(count_query)).scalar() or 0
-
-    offset = (page - 1) * page_size
-    query = query.order_by(Photo.date_taken.desc().nullslast()).offset(offset).limit(page_size)
-
-    result = await session.execute(query)
-    photos = result.scalars().all()
-
-    return PhotoPage(
-        items=[_photo_to_summary(p) for p in photos],
-        total=total,
-        page=page,
-        page_size=page_size,
-        has_more=offset + page_size < total,
+    stmt = summary_select().where(*_together_conditions(person_ids))
+    return await photo_page(
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
     )
 
 
 @router.get("/{person_id}/collage")
 async def get_person_collage(
     person_id: int,
-    grid: int = Query(0, ge=0, le=6),
-    seed: int = Query(0),
-    session: AsyncSession = Depends(get_session),
+    request: Request,
+    session: SessionDep,
+    grid: CollageGrid = 0,
+    seed: int = 0,
 ):
     """Generate a square photo collage for a person."""
-    import asyncio
-    from fastapi.responses import Response
-    from backend.app.services.collage import generate_collage
-    from backend.app.models import PhotoHash
-
-    query = (
-        select(Photo.file_hash, PhotoHash.phash, Photo.date_taken)
-        .join(Face, Face.file_hash == Photo.file_hash)
-        .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
-        .where(Face.person_id == person_id)
-        .where(Photo.flagged_for_removal == False)  # noqa: E712
-        .distinct(Photo.file_hash)
-        .order_by(Photo.date_taken.asc().nullslast())
-    )
-    result = await session.execute(query)
-    rows = result.all()
-
-    if not rows:
-        raise HTTPException(status_code=404, detail="No photos found")
-
-    hashes = [r[0] for r in rows]
-    phashes = [r[1] for r in rows]
-    dates = [r[2] for r in rows]
-
-    data = await asyncio.to_thread(generate_collage, hashes, phashes, grid, dates=dates, seed=seed)
-    if not data:
-        raise HTTPException(status_code=404, detail="Could not generate collage")
-
-    return Response(content=data, media_type="image/jpeg")
+    rows = (
+        await session.execute(
+            select(Photo.file_hash, PhotoHash.phash, Photo.date_taken)
+            .join(Face, Face.file_hash == Photo.file_hash)
+            .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
+            .where(Face.person_id == person_id, VISIBLE)
+            .distinct()
+            .order_by(*OLDEST_FIRST)
+        )
+    ).all()
+    return await collage_response(request, session, rows, grid, seed)
 
 
 @router.get("/groups/together/{person_a_id}/{person_b_id}/collage")
 async def get_together_collage(
     person_a_id: int,
     person_b_id: int,
-    grid: int = Query(0, ge=0, le=6),
-    seed: int = Query(0),
-    session: AsyncSession = Depends(get_session),
+    request: Request,
+    session: SessionDep,
+    grid: CollageGrid = 0,
+    seed: int = 0,
 ):
     """Generate a square photo collage for two people together."""
-    return await _together_collage([person_a_id, person_b_id], grid, seed, session)
+    return await _together_collage(request, [person_a_id, person_b_id], grid, seed, session)
 
 
 @router.get("/groups/together-n/collage")
 async def get_together_collage_n(
-    person_ids: str = Query(..., description="Comma-separated person IDs"),
-    grid: int = Query(0, ge=0, le=6),
-    seed: int = Query(0),
-    session: AsyncSession = Depends(get_session),
+    person_ids: PersonIds,
+    request: Request,
+    session: SessionDep,
+    grid: CollageGrid = 0,
+    seed: int = 0,
 ):
     """Generate a square photo collage for N people together."""
-    ids = [int(x) for x in person_ids.split(",") if x.strip().isdigit()]
-    if len(ids) < 2:
-        raise HTTPException(status_code=400, detail="Need at least 2 person IDs")
-    return await _together_collage(ids, grid, seed, session)
+    return await _together_collage(request, _parse_person_ids(person_ids), grid, seed, session)
 
 
-async def _together_collage(person_ids: list[int], grid: int, seed: int, session: AsyncSession):
-    import asyncio
-    from fastapi.responses import Response
-    from backend.app.services.collage import generate_collage
-    from backend.app.models import PhotoHash
-
-    from sqlalchemy import intersect
-
-    target_set = set(person_ids)
-
-    # Photos where all listed persons appear
-    sets = [
-        select(Face.file_hash).where(Face.person_id == pid).distinct()
-        for pid in person_ids
-    ]
-    together = intersect(*sets).subquery()
-
-    # Exclude photos with other person_ids
-    other_faces = (
-        select(Face.file_hash)
-        .where(
-            Face.person_id.is_not(None),
-            Face.person_id.not_in(list(target_set)),
+async def _together_collage(
+    request: Request, person_ids: list[int], grid: int, seed: int, session
+):
+    rows = (
+        await session.execute(
+            select(Photo.file_hash, PhotoHash.phash, Photo.date_taken)
+            .where(*_together_conditions(person_ids))
+            .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
+            .order_by(*OLDEST_FIRST)
         )
-        .distinct()
-        .subquery()
-    )
-
-    query = (
-        select(Photo.file_hash, PhotoHash.phash, Photo.date_taken)
-        .where(
-            Photo.file_hash.in_(select(together)),
-            Photo.file_hash.not_in(select(other_faces)),
-            Photo.flagged_for_removal == False,  # noqa: E712
-        )
-        .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
-        .order_by(Photo.date_taken.asc().nullslast())
-    )
-    result = await session.execute(query)
-    rows = result.all()
-
-    if not rows:
-        raise HTTPException(status_code=404, detail="No photos found")
-
-    hashes = [r[0] for r in rows]
-    phashes = [r[1] for r in rows]
-    dates = [r[2] for r in rows]
-
-    data = await asyncio.to_thread(generate_collage, hashes, phashes, grid, dates=dates, seed=seed)
-    if not data:
-        raise HTTPException(status_code=404, detail="Could not generate collage")
-
-    return Response(content=data, media_type="image/jpeg")
+    ).all()
+    return await collage_response(request, session, rows, grid, seed)
 
 
 @router.post("/recluster")
-async def recluster_persons(session: AsyncSession = Depends(get_session)):
+async def recluster_persons(session: SessionDep):
     """Reset all person assignments and re-cluster faces from scratch.
 
     Preserves person names: after re-clustering, if a new cluster contains
@@ -622,52 +524,48 @@ async def recluster_persons(session: AsyncSession = Depends(get_session)):
     """
     from backend.app.services.face_detector import cluster_faces
 
-    # Collect existing names before reset
-    named_result = await session.execute(
-        select(Person).where(Person.name.is_not(None))
-    )
-    named_persons = named_result.scalars().all()
-
     # Map face_ids to their person's name (so we can restore names after recluster)
-    face_name_map: dict[int, str] = {}
-    for person in named_persons:
-        face_result = await session.execute(
-            select(Face.face_id).where(Face.person_id == person.person_id)
-        )
-        for (face_id,) in face_result.all():
-            face_name_map[face_id] = person.name
-
-    # Clear all person assignments
-    all_faces_result = await session.execute(
-        select(Face).where(Face.person_id.is_not(None))
+    face_name_map: dict[int, str | None] = dict(
+        (
+            await session.execute(
+                select(Face.face_id, Person.name)
+                .join(Person, Person.person_id == Face.person_id)
+                .where(Person.name.is_not(None))
+            )
+        ).tuples()
     )
-    for face in all_faces_result.scalars().all():
-        face.person_id = None
-    await session.commit()
 
-    # Delete all person records
-    all_persons_result = await session.execute(select(Person))
-    for person in all_persons_result.scalars().all():
-        await session.delete(person)
+    # Clear all person assignments, then every person record. Bulk statements:
+    # deleting persons one ORM object at a time lazy-loaded each one's faces
+    # first, tens of thousands of queries for an identical end state.
+    await session.execute(
+        update(Face).where(Face.person_id.is_not(None)).values(person_id=None)
+    )
+    await session.commit()
+    await session.execute(delete(Person))
     await session.commit()
 
     # Re-cluster from scratch
     new_persons = await cluster_faces()
 
-    # Restore names: for each new person, check if any of its faces had a name
+    # Restore names: each new person gets the most common old name among its faces
     names_restored = 0
     if face_name_map:
-        persons_result = await session.execute(select(Person))
-        for person in persons_result.scalars().all():
+        faces_by_person: dict[int, list[int]] = {}
+        for face_id, person_id in await session.execute(
+            select(Face.face_id, Face.person_id)
+            .where(Face.person_id.is_not(None))
+            .order_by(Face.face_id)
+        ):
+            faces_by_person.setdefault(person_id, []).append(face_id)
+        for person in (await session.execute(select(Person))).scalars():
             if person.name:
                 continue
-            face_result = await session.execute(
-                select(Face.face_id).where(Face.person_id == person.person_id)
-            )
-            face_ids = [fid for (fid,) in face_result.all()]
-            # Find the most common name among this person's faces
-            from collections import Counter
-            names = [face_name_map[fid] for fid in face_ids if fid in face_name_map]
+            names = [
+                face_name_map[fid]
+                for fid in faces_by_person.get(person.person_id, [])
+                if fid in face_name_map
+            ]
             if names:
                 person.name = Counter(names).most_common(1)[0][0]
                 names_restored += 1
@@ -680,23 +578,23 @@ async def recluster_persons(session: AsyncSession = Depends(get_session)):
     }
 
 
-@router.post("/{person_id}/ignore")
-async def ignore_person(person_id: int, session: AsyncSession = Depends(get_session)):
-    """Ignore a person — hides them from the people list and together view."""
+async def _set_ignored(session, person_id: int, ignored: bool) -> None:
     person = await session.get(Person, person_id)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
-    person.ignored = True
+    person.ignored = ignored
     await session.commit()
+
+
+@router.post("/{person_id}/ignore")
+async def ignore_person(person_id: int, session: SessionDep):
+    """Ignore a person: hides them from the people list and together view."""
+    await _set_ignored(session, person_id, True)
     return {"status": "ignored", "person_id": person_id}
 
 
 @router.post("/{person_id}/unignore")
-async def unignore_person(person_id: int, session: AsyncSession = Depends(get_session)):
-    """Un-ignore a person — restores them to the people list."""
-    person = await session.get(Person, person_id)
-    if not person:
-        raise HTTPException(status_code=404, detail="Person not found")
-    person.ignored = False
-    await session.commit()
+async def unignore_person(person_id: int, session: SessionDep):
+    """Un-ignore a person: restores them to the people list."""
+    await _set_ignored(session, person_id, False)
     return {"status": "unignored", "person_id": person_id}

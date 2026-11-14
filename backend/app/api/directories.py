@@ -1,54 +1,45 @@
 """Directory browsing API endpoints."""
 
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from collections import Counter
+from collections.abc import Iterable
 
-from backend.app.database import get_session
+from fastapi import APIRouter
+from sqlalchemy import select
+
+from backend.app.api.deps import Page, PageSize, SessionDep
 from backend.app.models import Photo
-from backend.app.schemas.photo import DirectoryNode, PhotoPage, PhotoSummary
+from backend.app.queries.photos import NEWEST_FIRST, VISIBLE, photo_page, summary_select
+from backend.app.schemas.photo import DirectoryNode, PhotoPage
 
 router = APIRouter(prefix="/api/directories", tags=["directories"])
 
 
-def _photo_to_summary(photo: Photo) -> PhotoSummary:
-    return PhotoSummary(
-        file_hash=photo.file_hash,
-        file_path=photo.file_path,
-        file_name=photo.file_name,
-        file_size=photo.file_size,
-        mime_type=photo.mime_type,
-        width=photo.width,
-        height=photo.height,
-        date_taken=photo.date_taken,
-        is_favorite=photo.is_favorite,
-        thumbnail_url=f"/api/photos/{photo.file_hash}/thumbnail/600",
-        has_live_photo=bool(photo.live_photo_video or photo.motion_photo),
-    )
+def build_directory_tree(file_paths: Iterable[str]) -> list[DirectoryNode]:
+    """Directory tree with recursive photo counts, children sorted by name.
 
+    Files at the root have no directory and are not counted. A directory whose
+    name starts with "_" is left out together with everything below it, as it
+    always has been.
+    """
+    # Count per directory first: a library has a few thousand folders but
+    # tens of thousands of files, so the tree is built from far fewer keys.
+    per_dir: Counter[str] = Counter()
+    for file_path in file_paths:
+        head, sep, _ = file_path.replace("\\", "/").rpartition("/")
+        if sep:
+            per_dir[head] += 1
 
-@router.get("", response_model=list[DirectoryNode])
-async def get_directory_tree(session: AsyncSession = Depends(get_session)):
-    """Get the full directory tree structure with photo counts."""
-    result = await session.execute(
-        select(Photo.file_path).where(Photo.flagged_for_removal == False)  # noqa: E712
-    )
-    paths = result.scalars().all()
+    tree: dict[str, dict] = {}
+    for directory, count in per_dir.items():
+        children = tree
+        for part in directory.split("/"):
+            node = children.get(part)
+            if node is None:
+                node = children[part] = {"count": 0, "children": {}}
+            node["count"] += count
+            children = node["children"]
 
-    # Build tree structure
-    root_children: dict[str, dict] = {}
-
-    for file_path in paths:
-        parts = file_path.replace("\\", "/").split("/")
-        # Navigate/create directory nodes (all parts except filename)
-        current = root_children
-        for part in parts[:-1]:
-            if part not in current:
-                current[part] = {"_count": 0, "_children": {}}
-            current[part]["_count"] += 1
-            current = current[part]["_children"]
-
-    def build_nodes(children: dict, parent_path: str = "") -> list[DirectoryNode]:
+    def build(children: dict[str, dict], parent_path: str) -> list[DirectoryNode]:
         nodes = []
         for name, data in sorted(children.items()):
             if name.startswith("_"):
@@ -58,47 +49,37 @@ async def get_directory_tree(session: AsyncSession = Depends(get_session)):
                 DirectoryNode(
                     name=name,
                     path=path,
-                    photo_count=data["_count"],
-                    children=build_nodes(data["_children"], path),
+                    photo_count=data["count"],
+                    children=build(data["children"], path),
                 )
             )
         return nodes
 
-    return build_nodes(root_children)
+    return build(tree, "")
+
+
+@router.get("", response_model=list[DirectoryNode])
+async def get_directory_tree(session: SessionDep):
+    """Get the full directory tree structure with photo counts."""
+    paths = await session.execute(select(Photo.file_path).where(VISIBLE))
+    return build_directory_tree(paths.scalars())
 
 
 @router.get("/{path:path}", response_model=PhotoPage)
 async def get_directory_photos(
     path: str,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(get_session),
+    session: SessionDep,
+    page: Page = 1,
+    page_size: PageSize = 50,
 ):
     """Get photos in a specific directory."""
     # Normalize path separators
     path = path.replace("\\", "/")
 
-    # Match photos in this directory (not subdirectories for direct listing)
-    query = select(Photo).where(
-        Photo.file_path.like(f"{path}/%"),
-        Photo.flagged_for_removal == False,  # noqa: E712
-    )
-
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
-    total = (await session.execute(count_query)).scalar() or 0
-
-    # Paginate
-    offset = (page - 1) * page_size
-    query = query.order_by(Photo.date_taken.desc().nullslast()).offset(offset).limit(page_size)
-
-    result = await session.execute(query)
-    photos = result.scalars().all()
-
-    return PhotoPage(
-        items=[_photo_to_summary(p) for p in photos],
-        total=total,
-        page=page,
-        page_size=page_size,
-        has_more=offset + page_size < total,
+    # Everything under this directory, subdirectories included. LIKE is used
+    # as it always was here, so "_" and "%" in a name act as wildcards and
+    # ASCII case is ignored.
+    stmt = summary_select().where(Photo.file_path.like(f"{path}/%"), VISIBLE)
+    return await photo_page(
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
     )

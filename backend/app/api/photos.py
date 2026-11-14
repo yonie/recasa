@@ -1,66 +1,43 @@
 """Photo API endpoints."""
 
-from datetime import datetime
-
-# Content addressed by file_hash is immutable — cache for 1 year.
-_IMMUTABLE_CACHE = {"Cache-Control": "public, max-age=31536000, immutable"}
-
 import asyncio
 import logging
-import re
+from datetime import datetime
+from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
-from sqlalchemy import func, select, or_, and_, exists, extract
-
-_MONTHS = {
-    m: i
-    for i, names in enumerate(
-        [
-            ("january", "jan"),
-            ("february", "feb"),
-            ("march", "mar"),
-            ("april", "apr"),
-            ("may",),
-            ("june", "jun"),
-            ("july", "jul"),
-            ("august", "aug"),
-            ("september", "sep", "sept"),
-            ("october", "oct"),
-            ("november", "nov"),
-            ("december", "dec"),
-        ],
-        start=1,
-    )
-    for m in names
-}
-
-
-def _date_search_condition(search: str):
-    """Build a date filter from year and/or month-name tokens in the query
-    (e.g. "2013 august", "august 2013", "2013"), or None if none are present."""
-    tokens = re.findall(r"[a-z]+|\d{4}", search.lower())
-    parts = []
-    for tok in tokens:
-        if tok.isdigit() and 1900 <= int(tok) <= 2100:
-            parts.append(extract("year", Photo.date_taken) == int(tok))
-        elif tok in _MONTHS:
-            parts.append(extract("month", Photo.date_taken) == _MONTHS[tok])
-    return and_(*parts) if parts else None
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
+from sqlalchemy import extract, func, select, update
 from sqlalchemy.orm import selectinload
 
+from backend.app.api.deps import (
+    CollageGrid,
+    Page,
+    PageSize,
+    SessionDep,
+    require_file_hash,
+)
+from backend.app.api.files import contained_path, file_response
+from backend.app.api.responses import collage_response
 from backend.app.config import settings
-from backend.app.database import async_session, get_session
-from backend.app.models import Photo, Face, Person, Caption, PhotoTag, Tag
+from backend.app.database import async_session
+from backend.app.models import Caption, Face, Person, Photo, PhotoHash, PhotoTag, Tag
+from backend.app.queries.filters import library_conditions
+from backend.app.queries.photos import (
+    OLDEST_FIRST,
+    VISIBLE,
+    photo_page,
+    summary_select,
+    thumbnail_url,
+)
 from backend.app.schemas.photo import (
     FaceSummary,
+    LibraryStats,
     PhotoDetail,
     PhotoExif,
     PhotoLocation,
     PhotoPage,
-    PhotoSummary,
-    LibraryStats,
 )
 from backend.app.services.preview import (
     needs_preview,
@@ -68,39 +45,24 @@ from backend.app.services.preview import (
     render_gate,
     render_preview,
 )
-from backend.app.services.thumbnail import get_thumbnail_path, generate_thumbnails
+from backend.app.services.print_export import build_print_zip
+from backend.app.services.thumbnail import generate_thumbnails, get_thumbnail_path
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/photos", tags=["photos"])
 
-
-def _photo_to_summary(photo: Photo) -> PhotoSummary:
-    return PhotoSummary(
-        file_hash=photo.file_hash,
-        file_path=photo.file_path,
-        file_name=photo.file_name,
-        file_size=photo.file_size,
-        mime_type=photo.mime_type,
-        width=photo.width,
-        height=photo.height,
-        date_taken=photo.date_taken,
-        is_favorite=photo.is_favorite,
-        marked_for_print=photo.marked_for_print,
-        flagged_for_removal=photo.flagged_for_removal,
-        is_video=photo.is_video,
-        duration=photo.duration,
-        thumbnail_url=f"/api/photos/{photo.file_hash}/thumbnail/600",
-        has_live_photo=bool(photo.live_photo_video or photo.motion_photo),
-    )
+SortColumn = Annotated[str, Query(pattern="^(date_taken|file_name|file_size|indexed_at)$")]
+SortOrder = Annotated[str, Query(pattern="^(asc|desc)$")]
 
 
 @router.get("", response_model=PhotoPage)
 async def list_photos(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    sort: str = Query("date_taken", pattern="^(date_taken|file_name|file_size|indexed_at)$"),
-    order: str = Query("desc", pattern="^(asc|desc)$"),
+    session: SessionDep,
+    page: Page = 1,
+    page_size: PageSize = 50,
+    sort: SortColumn = "date_taken",
+    order: SortOrder = "desc",
     favorite: bool | None = None,
     marked_for_print: bool | None = None,
     flagged: bool | None = None,
@@ -109,264 +71,156 @@ async def list_photos(
     date_to: datetime | None = None,
     country: str | None = None,
     city: str | None = None,
-    search: str | None = None,
-    session: AsyncSession = Depends(get_session),
+    search: Annotated[str | None, Query(max_length=500)] = None,
 ):
     """List photos with pagination and filtering."""
-    query = select(Photo)
-
-    # Apply filters
-    # Flagged-for-removal photos are hidden everywhere except the Flagged page.
-    if flagged:
-        query = query.where(Photo.flagged_for_removal == True)  # noqa: E712
-    else:
-        query = query.where(Photo.flagged_for_removal == False)  # noqa: E712
-    if favorite is not None:
-        query = query.where(Photo.is_favorite == favorite)
-    if marked_for_print is not None:
-        query = query.where(Photo.marked_for_print == marked_for_print)
-    if video is not None:
-        query = query.where(Photo.is_video == video)
-    if date_from:
-        query = query.where(Photo.date_taken >= date_from)
-    if date_to:
-        query = query.where(Photo.date_taken <= date_to)
-    if country:
-        query = query.where(Photo.location_country == country)
-    if city:
-        query = query.where(Photo.location_city == city)
-    if search:
-        search_term = f"%{search}%"
-        # Search across file name, location, captions, and people
-        caption_match = (
-            select(Caption.file_hash)
-            .where(Caption.caption.ilike(search_term))
-            .where(Caption.file_hash == Photo.file_hash)
-            .correlate(Photo)
+    stmt = summary_select().where(
+        *library_conditions(
+            flagged=flagged,
+            favorite=favorite,
+            marked_for_print=marked_for_print,
+            video=video,
+            date_from=date_from,
+            date_to=date_to,
+            country=country,
+            city=city,
+            search=search,
         )
-        person_match = (
-            select(Face.file_hash)
-            .join(Person, Person.person_id == Face.person_id)
-            .where(Person.name.ilike(search_term))
-            .where(Face.file_hash == Photo.file_hash)
-            .correlate(Photo)
-        )
-        tag_match = (
-            select(PhotoTag.file_hash)
-            .join(Tag, Tag.tag_id == PhotoTag.tag_id)
-            .where(Tag.name.ilike(search_term))
-            .where(PhotoTag.file_hash == Photo.file_hash)
-            .exists()
-        )
-        conditions = [
-            Photo.file_name.ilike(search_term),
-            Photo.file_path.ilike(search_term),
-            Photo.location_city.ilike(search_term),
-            Photo.location_country.ilike(search_term),
-            Photo.location_address.ilike(search_term),
-            exists(caption_match),
-            exists(person_match),
-            tag_match,
-        ]
-        # Also match year / month-name terms against the capture date.
-        date_condition = _date_search_condition(search)
-        if date_condition is not None:
-            conditions.append(date_condition)
-        query = query.where(or_(*conditions))
-
-    # Count total
-    count_query = select(func.count()).select_from(query.subquery())
-    total = (await session.execute(count_query)).scalar() or 0
-
-    # Apply sorting
-    sort_col = getattr(Photo, sort, Photo.date_taken)
-    if order == "desc":
-        query = query.order_by(sort_col.desc().nullslast())
-    else:
-        query = query.order_by(sort_col.asc().nullsfirst())
-
-    # Paginate
-    offset = (page - 1) * page_size
-    query = query.offset(offset).limit(page_size)
-
-    result = await session.execute(query)
-    photos = result.scalars().all()
-
-    return PhotoPage(
-        items=[_photo_to_summary(p) for p in photos],
-        total=total,
-        page=page,
-        page_size=page_size,
-        has_more=offset + page_size < total,
     )
+    sort_col = getattr(Photo, sort)
+    order_by = sort_col.desc().nullslast() if order == "desc" else sort_col.asc().nullsfirst()
+    return await photo_page(session, stmt, order_by=(order_by,), page=page, page_size=page_size)
 
 
 @router.get("/stats", response_model=LibraryStats)
-async def get_stats(session: AsyncSession = Depends(get_session)):
+async def get_stats(session: SessionDep):
     """Get library statistics."""
-    visible = Photo.flagged_for_removal == False  # noqa: E712
-    total = (
+    # Every per-photo figure in one pass over photos instead of nine queries.
+    # Oldest, newest and the place count include flagged photos, as they
+    # always have.
+    (total, total_size, favorites, to_print, flagged, videos, oldest, newest, locations) = (
         await session.execute(
-            select(func.count(Photo.file_hash)).where(visible, Photo.is_video == False)  # noqa: E712
+            select(
+                func.count().filter(VISIBLE, Photo.is_video == False),  # noqa: E712
+                func.sum(Photo.file_size).filter(VISIBLE),
+                func.count().filter(Photo.is_favorite == True, VISIBLE),  # noqa: E712
+                func.count().filter(Photo.marked_for_print == True, VISIBLE),  # noqa: E712
+                func.count().filter(Photo.flagged_for_removal == True),  # noqa: E712
+                func.count().filter(Photo.is_video == True, VISIBLE),  # noqa: E712
+                func.min(Photo.date_taken),
+                func.max(Photo.date_taken),
+                func.count(func.distinct(Photo.location_city)),
+            )
         )
-    ).scalar() or 0
-    total_size = (await session.execute(select(func.sum(Photo.file_size)).where(visible))).scalar() or 0
+    ).one()
+
     total_faces = (await session.execute(select(func.count(Face.face_id)))).scalar() or 0
-    # Only user-named people count as "people" — unnamed rows are automatic
+    # Only user-named people count as "people": unnamed rows are automatic
     # face clusters (mostly single-face noise), not verified identities.
     total_persons = (
         await session.execute(
             select(func.count(Person.person_id)).where(
-                Person.name.is_not(None), Person.name != "", Person.ignored == False  # noqa: E712
+                Person.name.is_not(None),
+                Person.name != "",
+                Person.ignored == False,  # noqa: E712
             )
         )
     ).scalar() or 0
     total_tags = (await session.execute(select(func.count(Tag.tag_id)))).scalar() or 0
-    favorites = (
-        await session.execute(
-            select(func.count(Photo.file_hash)).where(Photo.is_favorite == True, visible)  # noqa: E712
-        )
-    ).scalar() or 0
-    to_print = (
-        await session.execute(
-            select(func.count(Photo.file_hash)).where(Photo.marked_for_print == True, visible)  # noqa: E712
-        )
-    ).scalar() or 0
-    flagged = (
-        await session.execute(
-            select(func.count(Photo.file_hash)).where(Photo.flagged_for_removal == True)  # noqa: E712
-        )
-    ).scalar() or 0
-    videos = (
-        await session.execute(
-            select(func.count(Photo.file_hash)).where(Photo.is_video == True, visible)  # noqa: E712
-        )
-    ).scalar() or 0
-
-    oldest = (
-        await session.execute(
-            select(func.min(Photo.date_taken)).where(Photo.date_taken.is_not(None))
-        )
-    ).scalar()
-    newest = (
-        await session.execute(
-            select(func.max(Photo.date_taken)).where(Photo.date_taken.is_not(None))
-        )
-    ).scalar()
-
-    locations = (
-        await session.execute(
-            select(func.count(func.distinct(Photo.location_city))).where(
-                Photo.location_city.is_not(None)
-            )
-        )
-    ).scalar() or 0
 
     return LibraryStats(
-        total_photos=total,
-        total_size_bytes=total_size,
+        total_photos=total or 0,
+        total_size_bytes=total_size or 0,
         total_faces=total_faces,
         total_persons=total_persons,
         total_tags=total_tags,
         oldest_photo=oldest,
         newest_photo=newest,
-        locations_count=locations,
-        favorites_count=favorites,
-        to_print_count=to_print,
-        flagged_count=flagged,
-        videos_count=videos,
+        locations_count=locations or 0,
+        favorites_count=favorites or 0,
+        to_print_count=to_print or 0,
+        flagged_count=flagged or 0,
+        videos_count=videos or 0,
     )
 
 
 @router.get("/collage")
 async def get_photos_collage(
+    request: Request,
+    session: SessionDep,
     favorite: bool | None = None,
     year: int | None = None,
     tag: str | None = None,
-    grid: int = Query(0, ge=0, le=6),
-    seed: int = Query(0),
-    session: AsyncSession = Depends(get_session),
+    grid: CollageGrid = 0,
+    seed: int = 0,
 ):
     """Generate a square collage from filtered photos (favorites, year, tag, etc)."""
-    import asyncio
-    from fastapi.responses import Response
-    from backend.app.models import PhotoHash
-    from backend.app.services.collage import generate_collage
-
-    query = (
+    stmt = (
         select(Photo.file_hash, PhotoHash.phash)
         .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
-        .where(Photo.flagged_for_removal == False)  # noqa: E712
+        .where(VISIBLE)
     )
     if favorite is not None:
-        query = query.where(Photo.is_favorite == favorite)
+        stmt = stmt.where(Photo.is_favorite == favorite)
     if year is not None:
-        from sqlalchemy import extract
-        query = query.where(extract("year", Photo.date_taken) == year)
+        stmt = stmt.where(extract("year", Photo.date_taken) == year)
     if tag is not None:
-        query = query.join(PhotoTag, PhotoTag.file_hash == Photo.file_hash).join(
-            Tag, Tag.tag_id == PhotoTag.tag_id
-        ).where(Tag.name == tag)
-
-    query = query.order_by(Photo.date_taken.asc().nullslast())
-    result = await session.execute(query)
-    rows = result.all()
-
-    if not rows:
-        raise HTTPException(status_code=404, detail="No photos found")
-
-    hashes = [r[0] for r in rows]
-    phashes = [r[1] for r in rows]
-
-    data = await asyncio.to_thread(generate_collage, hashes, phashes, grid, seed=seed)
-    if not data:
-        raise HTTPException(status_code=404, detail="Could not generate collage")
-
-    return Response(content=data, media_type="image/jpeg")
+        stmt = (
+            stmt.join(PhotoTag, PhotoTag.file_hash == Photo.file_hash)
+            .join(Tag, Tag.tag_id == PhotoTag.tag_id)
+            .where(Tag.name == tag)
+        )
+    rows = (await session.execute(stmt.order_by(*OLDEST_FIRST))).all()
+    return await collage_response(request, session, rows, grid, seed)
 
 
 @router.get("/print/export")
-async def export_print_zip(session: AsyncSession = Depends(get_session)):
+async def export_print_zip(session: SessionDep):
     """Stream all photos marked for print as a flat zip (HEIC converted to JPEG)."""
-    from fastapi.responses import StreamingResponse
-    from backend.app.services.print_export import build_print_zip
-
-    result = await session.execute(
-        select(Photo)
-        .where(
-            Photo.marked_for_print == True,  # noqa: E712
-            Photo.flagged_for_removal == False,  # noqa: E712
+    rows = (
+        await session.execute(
+            select(
+                Photo.file_hash,
+                Photo.file_path,
+                Photo.file_name,
+                Photo.mime_type,
+                Photo.date_taken,
+            )
+            .where(Photo.marked_for_print == True, VISIBLE)  # noqa: E712
+            .order_by(*OLDEST_FIRST)
         )
-        .order_by(Photo.date_taken.asc().nullslast())
-    )
-    photos = result.scalars().all()
-    if not photos:
+    ).all()
+    if not rows:
         raise HTTPException(status_code=404, detail="No photos marked for print")
-
-    entries = [
-        (settings.photos_dir / p.file_path, p.file_name, p.mime_type, p.date_taken)
-        for p in photos
-    ]
 
     # Downloading is the closest signal we have to "this went to a printer".
     now = datetime.now()
-    for p in photos:
-        p.exported_at = now
+    await session.execute(
+        update(Photo)
+        .where(Photo.file_hash.in_([r.file_hash for r in rows]))
+        .values(exported_at=now)
+    )
     await session.commit()
+    # The zip streams for as long as the download takes; it reads files only,
+    # so it must not keep a pooled connection checked out meanwhile.
+    await session.close()
 
-    filename = f"to-print-{now:%Y-%m-%d}.zip"
+    # A path that would lie outside the library is left out like a missing file.
+    entries = [
+        (path, r.file_name, r.mime_type, r.date_taken)
+        for r in rows
+        if (path := contained_path(settings.photos_dir, r.file_path)) is not None
+    ]
     return StreamingResponse(
         build_print_zip(entries),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="to-print-{now:%Y-%m-%d}.zip"'},
     )
 
 
 @router.post("/print/clear")
-async def clear_print_list(session: AsyncSession = Depends(get_session)):
+async def clear_print_list(session: SessionDep):
     """Remove all photos from the print list."""
-    from sqlalchemy import update
-
     result = await session.execute(
         update(Photo)
         .where(Photo.marked_for_print == True)  # noqa: E712
@@ -376,39 +230,41 @@ async def clear_print_list(session: AsyncSession = Depends(get_session)):
     return {"removed": result.rowcount}
 
 
+def _safe_int(val) -> int | None:
+    """Convert a value to int, handling numpy int64 stored as bytes in SQLite."""
+    if val is None:
+        return None
+    if isinstance(val, bytes):
+        return int.from_bytes(val, byteorder="little", signed=True)
+    return int(val)
+
+
 @router.get("/{file_hash}", response_model=PhotoDetail)
-async def get_photo(file_hash: str, session: AsyncSession = Depends(get_session)):
+async def get_photo(file_hash: str, session: SessionDep):
     """Get detailed photo information."""
+    require_file_hash(file_hash, "Photo not found")
     photo = await session.get(Photo, file_hash)
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
 
-    # Load tags
-    tags_result = await session.execute(
+    # Explicit orders below are the ones these lookups have always come back
+    # in (index order), pinned so a new index cannot reshuffle the response.
+    tag_rows = await session.execute(
         select(Tag.tag_id, Tag.name, Tag.category)
         .join(PhotoTag, PhotoTag.tag_id == Tag.tag_id)
         .where(PhotoTag.file_hash == file_hash)
+        .order_by(PhotoTag.tag_id)
     )
-    tag_rows = tags_result.all()
-    tag_list = [
-        {"tag_id": t.tag_id, "name": t.name, "category": t.category}
-        for t in tag_rows
-    ]
+    tags = [{"tag_id": t.tag_id, "name": t.name, "category": t.category} for t in tag_rows]
 
-    # Load faces with person info
-    faces_result = await session.execute(
-        select(Face).where(Face.file_hash == file_hash).options(selectinload(Face.person))
-    )
-    faces = faces_result.scalars().all()
-
-    def _safe_int(val) -> int | None:
-        """Convert a value to int, handling numpy int64 stored as bytes in SQLite."""
-        if val is None:
-            return None
-        if isinstance(val, bytes):
-            return int.from_bytes(val, byteorder="little", signed=True)
-        return int(val)
-
+    faces = (
+        await session.execute(
+            select(Face)
+            .where(Face.file_hash == file_hash)
+            .options(selectinload(Face.person))
+            .order_by(Face.face_id)
+        )
+    ).scalars()
     face_summaries = [
         FaceSummary(
             face_id=f.face_id,
@@ -422,9 +278,7 @@ async def get_photo(file_hash: str, session: AsyncSession = Depends(get_session)
         for f in faces
     ]
 
-    # Load caption
-    caption_obj = await session.get(Caption, file_hash)
-    caption_text = caption_obj.caption if caption_obj else None
+    caption = await session.get(Caption, file_hash)
 
     location = None
     if photo.gps_latitude is not None:
@@ -466,65 +320,96 @@ async def get_photo(file_hash: str, session: AsyncSession = Depends(get_session)
         location=location,
         exif=exif,
         faces=face_summaries,
-        tags=tag_list,
-        caption=caption_text,
+        tags=tags,
+        caption=caption.caption if caption else None,
         live_photo_video=photo.live_photo_video,
         motion_photo=photo.motion_photo,
-        thumbnail_url=f"/api/photos/{photo.file_hash}/thumbnail/600",
+        thumbnail_url=thumbnail_url(photo.file_hash),
         indexed_at=photo.indexed_at,
     )
 
 
+# On-demand thumbnail renders at once. A grid of a hundred photos the
+# pipeline has not reached yet would otherwise start a hundred decodes and
+# starve the Pi; the rest wait their turn instead.
+_THUMBNAIL_RENDERS = 2
+_thumbnail_gate: asyncio.Semaphore | None = None
+
+
+def _thumbnail_render_gate() -> asyncio.Semaphore:
+    global _thumbnail_gate
+    if _thumbnail_gate is None:
+        _thumbnail_gate = asyncio.Semaphore(_THUMBNAIL_RENDERS)
+    return _thumbnail_gate
+
+
 @router.get("/{file_hash}/thumbnail/{size}")
-async def get_thumbnail(file_hash: str, size: int = 600):
+async def get_thumbnail(file_hash: str, request: Request, size: int = 600):
     """Serve a photo thumbnail, generating on-demand if needed."""
+    require_file_hash(file_hash, "Thumbnail not found")
     thumb_path = get_thumbnail_path(file_hash, size)
     if not thumb_path:
-        try:
-            await generate_thumbnails(file_hash)
-        except Exception:
-            raise HTTPException(status_code=404, detail="Thumbnail not found")
+        async with _thumbnail_render_gate():
+            try:
+                # Re-checks for the file first, so a render finished while
+                # this request queued is not repeated.
+                await generate_thumbnails(file_hash)
+            except Exception:  # noqa: BLE001 - any decode failure is just "no thumbnail"
+                raise HTTPException(status_code=404, detail="Thumbnail not found") from None
         thumb_path = get_thumbnail_path(file_hash, size)
         if not thumb_path:
             raise HTTPException(status_code=404, detail="Thumbnail not found")
-    return FileResponse(thumb_path, media_type="image/webp", headers=_IMMUTABLE_CACHE)
+    return file_response(request, thumb_path, "image/webp")
+
+
+async def _photo_file(session, relative: str) -> Path:
+    """The library file at ``relative``, after releasing the session.
+
+    Raises the endpoints' usual 404 when it is missing (or would lie outside
+    the library). The session goes back to the pool first because the file
+    may be a long video download.
+    """
+    await session.close()
+    filepath = contained_path(settings.photos_dir, relative)
+    if filepath is None or not filepath.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    return filepath
 
 
 @router.get("/{file_hash}/original")
-async def get_original(file_hash: str, session: AsyncSession = Depends(get_session)):
+async def get_original(file_hash: str, request: Request, session: SessionDep):
     """Serve the original photo file."""
+    require_file_hash(file_hash, "Photo not found")
     photo = await session.get(Photo, file_hash)
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
-
-    filepath = settings.photos_dir / photo.file_path
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="File not found on disk")
-
-    return FileResponse(filepath, media_type=photo.mime_type or "application/octet-stream", headers=_IMMUTABLE_CACHE)
+    mime_type = photo.mime_type or "application/octet-stream"
+    filepath = await _photo_file(session, photo.file_path)
+    return file_response(request, filepath, mime_type)
 
 
 @router.get("/{file_hash}/preview")
-async def get_preview(file_hash: str):
+async def get_preview(file_hash: str, request: Request):
     """Serve a browser-viewable full view of a photo.
 
     For formats a browser can decode this is the original file, byte for byte.
-    For RAW (ORF) and HEIC it's a JPEG rendered on demand and cached — without
+    For RAW (ORF) and HEIC it's a JPEG rendered on demand and cached; without
     it the viewer's <img> gets bytes no browser can decode.
 
-    Takes no ``Depends(get_session)`` session on purpose. The cache path is
-    derived from the hash alone, so an already-rendered preview is served
-    without touching the database at all; and on the cold path the render can
-    queue for seconds, which is far too long to be parking a pooled connection.
+    Takes no ``SessionDep`` session on purpose. The cache path is derived from
+    the hash alone, so an already-rendered preview is served without touching
+    the database at all; and on the cold path the render can queue for
+    seconds, which is far too long to be parking a pooled connection.
     """
+    require_file_hash(file_hash, "Photo not found")
     cached = preview_path(file_hash)
     if cached.exists():
-        return FileResponse(cached, media_type="image/jpeg", headers=_IMMUTABLE_CACHE)
+        return file_response(request, cached, "image/jpeg")
 
     async with render_gate():
         # Re-check: a concurrent request may have rendered it while we queued.
         if cached.exists():
-            return FileResponse(cached, media_type="image/jpeg", headers=_IMMUTABLE_CACHE)
+            return file_response(request, cached, "image/jpeg")
 
         async with async_session() as session:
             photo = await session.get(Photo, file_hash)
@@ -532,78 +417,63 @@ async def get_preview(file_hash: str):
                 raise HTTPException(status_code=404, detail="Photo not found")
             file_path, mime_type = photo.file_path, photo.mime_type
 
-        filepath = settings.photos_dir / file_path
-        if not filepath.exists():
+        filepath = contained_path(settings.photos_dir, file_path)
+        if filepath is None or not filepath.exists():
             raise HTTPException(status_code=404, detail="File not found on disk")
 
         if not needs_preview(filepath):
-            return FileResponse(
-                filepath,
-                media_type=mime_type or "application/octet-stream",
-                headers=_IMMUTABLE_CACHE,
-            )
+            return file_response(request, filepath, mime_type or "application/octet-stream")
 
         try:
             rendered = await asyncio.to_thread(render_preview, filepath, file_hash)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - decoders raise anything on bad files
             logger.warning("Preview render failed for %s: %s", filepath, type(e).__name__)
             raise HTTPException(status_code=500, detail="Could not render preview") from e
 
-    return FileResponse(rendered, media_type="image/jpeg", headers=_IMMUTABLE_CACHE)
+    return file_response(request, rendered, "image/jpeg")
 
 
 @router.get("/{file_hash}/live")
-async def get_live_photo_video(file_hash: str, session: AsyncSession = Depends(get_session)):
+async def get_live_photo_video(file_hash: str, request: Request, session: SessionDep):
     """Serve the Live Photo video."""
+    require_file_hash(file_hash, "Live photo video not found")
     photo = await session.get(Photo, file_hash)
     if not photo or not photo.live_photo_video:
         raise HTTPException(status_code=404, detail="Live photo video not found")
+    try:
+        video_path = await _photo_file(session, photo.live_photo_video)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Video file not found on disk") from None
+    return file_response(request, video_path, "video/quicktime")
 
-    video_path = settings.photos_dir / photo.live_photo_video
-    if not video_path.exists():
-        raise HTTPException(status_code=404, detail="Video file not found on disk")
 
-    return FileResponse(video_path, media_type="video/quicktime", headers=_IMMUTABLE_CACHE)
+async def _toggle(session, file_hash: str, field: str) -> dict:
+    require_file_hash(file_hash, "Photo not found")
+    photo = await session.get(Photo, file_hash)
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    setattr(photo, field, not getattr(photo, field))
+    await session.commit()
+    return {"file_hash": file_hash, field: getattr(photo, field)}
 
 
 @router.post("/{file_hash}/favorite")
-async def toggle_favorite(file_hash: str, session: AsyncSession = Depends(get_session)):
+async def toggle_favorite(file_hash: str, session: SessionDep):
     """Toggle a photo's favorite status."""
-    photo = await session.get(Photo, file_hash)
-    if not photo:
-        raise HTTPException(status_code=404, detail="Photo not found")
-
-    photo.is_favorite = not photo.is_favorite
-    await session.commit()
-
-    return {"file_hash": file_hash, "is_favorite": photo.is_favorite}
+    return await _toggle(session, file_hash, "is_favorite")
 
 
 @router.post("/{file_hash}/print")
-async def toggle_print(file_hash: str, session: AsyncSession = Depends(get_session)):
+async def toggle_print(file_hash: str, session: SessionDep):
     """Toggle a photo's marked-for-print status."""
-    photo = await session.get(Photo, file_hash)
-    if not photo:
-        raise HTTPException(status_code=404, detail="Photo not found")
-
-    photo.marked_for_print = not photo.marked_for_print
-    await session.commit()
-
-    return {"file_hash": file_hash, "marked_for_print": photo.marked_for_print}
+    return await _toggle(session, file_hash, "marked_for_print")
 
 
 @router.post("/{file_hash}/flag")
-async def toggle_flag(file_hash: str, session: AsyncSession = Depends(get_session)):
+async def toggle_flag(file_hash: str, session: SessionDep):
     """Toggle a photo's flagged-for-removal status.
 
     The app never deletes files: flagged photos are hidden from normal views
     and listed on the Flagged page with their paths for manual removal.
     """
-    photo = await session.get(Photo, file_hash)
-    if not photo:
-        raise HTTPException(status_code=404, detail="Photo not found")
-
-    photo.flagged_for_removal = not photo.flagged_for_removal
-    await session.commit()
-
-    return {"file_hash": file_hash, "flagged_for_removal": photo.flagged_for_removal}
+    return await _toggle(session, file_hash, "flagged_for_removal")

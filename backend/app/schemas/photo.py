@@ -149,18 +149,6 @@ class DuplicateGroupSummary(BaseModel):
     photos: list[DuplicatePhotoSummary] = []
 
 
-class ScanStatus(BaseModel):
-    is_scanning: bool = False
-    total_files: int = 0
-    processed_files: int = 0
-    current_file: str | None = None
-    phase: str | None = None
-    phase_progress: int = 0
-    phase_total: int = 0
-    discovery_phase: str | None = None
-    discovery_files_collected: int = 0
-
-
 class LibraryStats(BaseModel):
     total_photos: int = 0
     total_size_bytes: int = 0

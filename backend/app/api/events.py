@@ -1,89 +1,26 @@
 """Events API endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Annotated
 
-from backend.app.database import get_session
-from backend.app.models import Photo, Event, EventPhoto
+from fastapi import APIRouter, HTTPException, Query, Request
+from sqlalchemy import select
+
+from backend.app.api.deps import CollageGrid, Page, PageSize, SessionDep
+from backend.app.api.responses import collage_response
+from backend.app.models import Event, EventPhoto, Photo, PhotoHash
+from backend.app.queries.photos import (
+    OLDEST_FIRST,
+    VISIBLE,
+    photo_page,
+    summary_select,
+    to_summary,
+)
 from backend.app.schemas.photo import EventSummary, PhotoPage, PhotoSummary
 
 router = APIRouter(prefix="/api/events", tags=["events"])
 
 
-def _photo_to_summary(photo: Photo) -> PhotoSummary:
-    return PhotoSummary(
-        file_hash=photo.file_hash,
-        file_path=photo.file_path,
-        file_name=photo.file_name,
-        file_size=photo.file_size,
-        mime_type=photo.mime_type,
-        width=photo.width,
-        height=photo.height,
-        date_taken=photo.date_taken,
-        is_favorite=photo.is_favorite,
-        thumbnail_url=f"/api/photos/{photo.file_hash}/thumbnail/600",
-        has_live_photo=bool(photo.live_photo_video or photo.motion_photo),
-    )
-
-
-@router.get("", response_model=list[EventSummary])
-async def list_events(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=1000),
-    session: AsyncSession = Depends(get_session),
-):
-    """List all events, sorted by start date descending."""
-    result = await session.execute(
-        select(Event)
-        .order_by(Event.start_date.desc().nullslast())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    )
-    events = result.scalars().all()
-
-    # Batch-fetch cover photos
-    cover_hashes = [e.cover_file_hash for e in events if e.cover_file_hash]
-    cover_photos: dict[str, Photo] = {}
-    if cover_hashes:
-        cover_result = await session.execute(
-            select(Photo).where(
-                Photo.file_hash.in_(cover_hashes),
-                Photo.flagged_for_removal == False,  # noqa: E712
-            )
-        )
-        cover_photos = {p.file_hash: p for p in cover_result.scalars().all()}
-
-    summaries = []
-    for event in events:
-        cover_photo = cover_photos.get(event.cover_file_hash) if event.cover_file_hash else None
-        summaries.append(EventSummary(
-            event_id=event.event_id,
-            name=event.name,
-            start_date=event.start_date,
-            end_date=event.end_date,
-            location=event.location,
-            photo_count=event.photo_count,
-            cover_photo=_photo_to_summary(cover_photo) if cover_photo else None,
-            summary=event.summary,
-        ))
-
-    return summaries
-
-
-@router.get("/{event_id}", response_model=EventSummary)
-async def get_event(event_id: int, session: AsyncSession = Depends(get_session)):
-    """Get event details."""
-    event = await session.get(Event, event_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    cover_photo = None
-    if event.cover_file_hash:
-        cover_photo = await session.get(Photo, event.cover_file_hash)
-        if cover_photo and cover_photo.flagged_for_removal:
-            cover_photo = None
-
+def _event_summary(event: Event, cover: PhotoSummary | None) -> EventSummary:
     return EventSummary(
         event_id=event.event_id,
         name=event.name,
@@ -91,85 +28,100 @@ async def get_event(event_id: int, session: AsyncSession = Depends(get_session))
         end_date=event.end_date,
         location=event.location,
         photo_count=event.photo_count,
-        cover_photo=_photo_to_summary(cover_photo) if cover_photo else None,
+        cover_photo=cover,
         summary=event.summary,
     )
+
+
+async def _covers(session, hashes: list[str]) -> dict[str, PhotoSummary]:
+    """Grid summaries of the visible photos among ``hashes``, by hash."""
+    if not hashes:
+        return {}
+    rows = await session.execute(summary_select().where(Photo.file_hash.in_(hashes), VISIBLE))
+    return {row.file_hash: to_summary(row, full=False) for row in rows}
+
+
+@router.get("", response_model=list[EventSummary])
+async def list_events(
+    session: SessionDep,
+    page: Page = 1,
+    page_size: Annotated[int, Query(ge=1, le=1000)] = 50,
+):
+    """List all events, sorted by start date descending."""
+    events = (
+        (
+            await session.execute(
+                select(Event)
+                # Same-day events keep the id order SQLite already gave them.
+                .order_by(Event.start_date.desc().nullslast(), Event.event_id)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    covers = await _covers(session, [e.cover_file_hash for e in events if e.cover_file_hash])
+    return [
+        _event_summary(e, covers.get(e.cover_file_hash) if e.cover_file_hash else None)
+        for e in events
+    ]
+
+
+@router.get("/{event_id}", response_model=EventSummary)
+async def get_event(event_id: int, session: SessionDep):
+    """Get event details."""
+    event = await session.get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    cover = None
+    if event.cover_file_hash:
+        cover = (await _covers(session, [event.cover_file_hash])).get(event.cover_file_hash)
+    return _event_summary(event, cover)
 
 
 @router.get("/{event_id}/photos", response_model=PhotoPage)
 async def get_event_photos(
     event_id: int,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(get_session),
+    session: SessionDep,
+    page: Page = 1,
+    page_size: PageSize = 50,
 ):
     """Get all photos in an event."""
     event = await session.get(Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    query = (
-        select(Photo)
+    stmt = (
+        summary_select()
         .join(EventPhoto, EventPhoto.file_hash == Photo.file_hash)
-        .where(EventPhoto.event_id == event_id)
-        .where(Photo.flagged_for_removal == False)  # noqa: E712
+        .where(EventPhoto.event_id == event_id, VISIBLE)
     )
-
-    count_query = select(func.count()).select_from(query.subquery())
-    total = (await session.execute(count_query)).scalar() or 0
-
-    offset = (page - 1) * page_size
-    query = query.order_by(Photo.date_taken.asc().nullslast()).offset(offset).limit(page_size)
-
-    result = await session.execute(query)
-    photos = result.scalars().all()
-
-    return PhotoPage(
-        items=[_photo_to_summary(p) for p in photos],
-        total=total,
-        page=page,
-        page_size=page_size,
-        has_more=offset + page_size < total,
+    return await photo_page(
+        session, stmt, order_by=OLDEST_FIRST, page=page, page_size=page_size, full=False
     )
 
 
 @router.get("/{event_id}/collage")
 async def get_event_collage(
     event_id: int,
-    grid: int = Query(0, ge=0, le=6),
-    seed: int = Query(0),
-    session: AsyncSession = Depends(get_session),
+    request: Request,
+    session: SessionDep,
+    grid: CollageGrid = 0,
+    seed: int = 0,
 ):
     """Generate a square photo collage for an event."""
-    import asyncio
-    from fastapi.responses import Response
-    from backend.app.services.collage import generate_collage
-    from backend.app.models import PhotoHash
-
     event = await session.get(Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    query = (
-        select(Photo.file_hash, PhotoHash.phash, Photo.date_taken)
-        .join(EventPhoto, EventPhoto.file_hash == Photo.file_hash)
-        .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
-        .where(EventPhoto.event_id == event_id)
-        .where(Photo.flagged_for_removal == False)  # noqa: E712
-        .order_by(Photo.date_taken.asc().nullslast())
-    )
-    result = await session.execute(query)
-    rows = result.all()
-
-    if not rows:
-        raise HTTPException(status_code=404, detail="No photos found")
-
-    hashes = [r[0] for r in rows]
-    phashes = [r[1] for r in rows]
-    dates = [r[2] for r in rows]
-
-    data = await asyncio.to_thread(generate_collage, hashes, phashes, grid, dates=dates, seed=seed)
-    if not data:
-        raise HTTPException(status_code=404, detail="Could not generate collage")
-
-    return Response(content=data, media_type="image/jpeg")
+    rows = (
+        await session.execute(
+            select(Photo.file_hash, PhotoHash.phash, Photo.date_taken)
+            .join(EventPhoto, EventPhoto.file_hash == Photo.file_hash)
+            .outerjoin(PhotoHash, PhotoHash.file_hash == Photo.file_hash)
+            .where(EventPhoto.event_id == event_id, VISIBLE)
+            .order_by(*OLDEST_FIRST)
+        )
+    ).all()
+    return await collage_response(request, session, rows, grid, seed)
