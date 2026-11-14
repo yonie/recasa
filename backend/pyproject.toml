@@ -46,4 +46,10 @@ where = ["."]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+# The image runs python:3.11 (see Dockerfile).
+target-version = "py311"
+
+[tool.ruff.lint.isort]
+# Ruff finds this file in backend/, so it cannot infer that the `backend`
+# package (imported from the repo root) is our own code.
+known-first-party = ["backend"]

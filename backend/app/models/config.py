@@ -1,6 +1,6 @@
 """Configuration store model for persisting app-level settings."""
 
-from sqlalchemy import Column, String, Text
+from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.models.base import Base
