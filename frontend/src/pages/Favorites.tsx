@@ -1,61 +1,52 @@
-import { useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, type PhotoSummary } from "../api/client";
-import { PhotoGrid } from "../components/PhotoGrid";
-import { useOpenPhoto } from "../hooks/useOpenPhoto";
-import { Loader2, Star } from "lucide-react";
+import { Star } from "lucide-react";
+import { api, collageUrl } from "../api/client";
+import { queryKeys } from "../api/queryKeys";
 import { CollageButton } from "../components/CollagePopover";
+import {
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  PageSpinner,
+  PageTitle,
+  PhotoListLayout,
+} from "../components/Page";
+import { plural } from "../lib/format";
 
 export function Favorites() {
-  const openPhoto = useOpenPhoto();
-
-  const { data, isLoading } = useQuery({
-    queryKey: ["photos", { favorite: true }],
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.photoList({ favorite: true }),
     queryFn: () => api.getPhotos({ favorite: true, page_size: 200 }),
   });
   const photos = data?.items ?? [];
 
-  const handlePhotoClick = useCallback(
-    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
-    [openPhoto, photos]
-  );
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-      </div>
-    );
-  }
-
+  if (isLoading) return <PageSpinner />;
+  if (error) return <ErrorState error={error} />;
   if (photos.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-2">
-        <Star className="w-12 h-12 text-gray-300" />
-        <p className="text-lg">No favorites yet</p>
-        <p className="text-sm">Hover over photos and click the star icon, or press F while viewing</p>
-      </div>
+      <EmptyState
+        icon={Star}
+        title="No favorites yet"
+        hint="Hover over photos and click the star icon, or press F while viewing"
+      />
     );
   }
 
   return (
-    <div className="overflow-y-auto h-full">
-      <div className="px-4 py-3 border-b border-gray-100">
-        <h1 className="text-lg font-semibold">
-          Favorites
-          <span className="ml-2 text-gray-400 font-normal text-sm">
-            {photos.length} photo{photos.length !== 1 ? "s" : ""}
-          </span>
-        </h1>
-        <div className="ml-auto">
-          <CollageButton
-            url="/api/photos/collage?favorite=true"
-            label="Favorites — Collage"
-            photoCount={photos.length}
-          />
-        </div>
-      </div>
-      <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
-    </div>
+    <PhotoListLayout
+      photos={photos}
+      header={
+        <PageHeader className="flex items-center gap-3">
+          <PageTitle count={`${photos.length} ${plural(photos.length, "photo")}`}>Favorites</PageTitle>
+          <div className="ml-auto">
+            <CollageButton
+              url={collageUrl.favorites()}
+              label="Favorites: Collage"
+              photoCount={photos.length}
+            />
+          </div>
+        </PageHeader>
+      }
+    />
   );
 }

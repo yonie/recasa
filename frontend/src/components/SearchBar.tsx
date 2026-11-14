@@ -1,31 +1,31 @@
-import { useState, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Search, X, Menu } from "lucide-react";
 import { useStore } from "../store/useStore";
 
 export function SearchBar() {
   const navigate = useNavigate();
-  const searchQuery = useStore((s) => s.searchQuery);
-  const setSearchQuery = useStore((s) => s.setSearchQuery);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
-  const [inputValue, setInputValue] = useState(searchQuery);
+  const location = useLocation();
+  // The bar is mounted for the app's lifetime, so plain state keeps the text
+  // while browsing. On a search page the URL is the truth: a link, a reload
+  // or Back/Forward to /search?q=... shows that query in the box.
+  const urlQuery =
+    location.pathname === "/search" ? new URLSearchParams(location.search).get("q") ?? "" : null;
+  const [inputValue, setInputValue] = useState(urlQuery ?? "");
+  const [seenQuery, setSeenQuery] = useState(urlQuery);
+  if (urlQuery !== seenQuery) {
+    setSeenQuery(urlQuery);
+    if (urlQuery !== null) setInputValue(urlQuery);
+  }
 
-  const handleSubmit = useCallback(
-    (e: React.FormEvent) => {
-      e.preventDefault();
-      const q = inputValue.trim();
-      setSearchQuery(q);
-      if (q) {
-        navigate(`/search?q=${encodeURIComponent(q)}`);
-      }
-    },
-    [inputValue, navigate, setSearchQuery]
-  );
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = inputValue.trim();
+    if (q) navigate(`/search?q=${encodeURIComponent(q)}`);
+  };
 
-  const handleClear = useCallback(() => {
-    setInputValue("");
-    setSearchQuery("");
-  }, [setSearchQuery]);
+  const handleClear = () => setInputValue("");
 
   return (
     <header className="h-14 border-b border-gray-200 bg-white flex items-center px-4 gap-4">

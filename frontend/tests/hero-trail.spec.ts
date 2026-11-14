@@ -23,7 +23,7 @@ test.describe('Hero Trail', () => {
     const popupPhoto = page.locator('.leaflet-popup img').first();
     await expect(popupPhoto).toBeVisible({ timeout: 10000 });
 
-    // 5. Click the photo — viewer should open
+    // 5. Click the photo: viewer should open
     await popupPhoto.click();
     const viewer = page.locator('.fixed.inset-0');
     await expect(viewer).toBeVisible({ timeout: 10000 });

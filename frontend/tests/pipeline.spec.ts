@@ -1,32 +1,26 @@
 import { test, expect } from '@playwright/test';
 
-const BASE_URL = 'http://localhost:7000';
+const BASE_URL = process.env.RECASA_URL || 'http://localhost:7000';
 
+// The status hero's headline once nothing is running.
+const IDLE_TEXT = /Watching for new photos|Automatic detection is off/;
+
+/**
+ * Wait until the pipeline is idle. Read-only: it never starts a scan, so
+ * the browsing tests below can run against an instance that must not be
+ * touched (the old version clicked Rescan and waited for a "Completed in"
+ * line the page no longer shows).
+ */
 async function waitForPipelineComplete(page, timeout = 120000) {
   await page.goto('/pipeline');
-  
-  await page.waitForSelector('h1', { timeout: 30000 });
-  
-  const doneText = page.locator('text=Completed in');
-  const isDone = await doneText.isVisible().catch(() => false);
-  if (isDone) return true;
-  
-  const rescanButton = page.locator('button').filter({ hasText: /Rescan/i });
-  const isIdle = await rescanButton.isVisible().catch(() => false);
-  
-  if (isIdle) {
-    await rescanButton.click();
-    await expect(page.locator('text=Completed in')).toBeVisible({ timeout });
-  }
-  
+  await expect(page.getByText(IDLE_TEXT)).toBeVisible({ timeout });
   return true;
 }
 
 test.describe('Pipeline Page', () => {
   test('shows idle or done state on initial load', async ({ page }) => {
     await page.goto('/pipeline');
-    await page.waitForSelector('h1', { timeout: 30000 });
-    
+
     const rescanButton = page.locator('button').filter({ hasText: /Rescan/i });
     await expect(rescanButton).toBeVisible({ timeout: 10000 });
   });
@@ -35,8 +29,10 @@ test.describe('Pipeline Page', () => {
     await page.goto('/pipeline');
     await page.waitForSelector('table', { timeout: 30000 });
     
+    // Scoped to the table: some names also appear on the rebuild buttons.
+    const table = page.locator('table').first();
     const stages = [
-      'Discovery',
+      'File Discovery',
       'EXIF Extraction',
       'Geocoding',
       'Thumbnails',
@@ -48,7 +44,7 @@ test.describe('Pipeline Page', () => {
     ];
     
     for (const stage of stages) {
-      await expect(page.getByText(stage, { exact: false })).toBeVisible({ timeout: 5000 });
+      await expect(table.getByText(stage, { exact: true })).toBeVisible({ timeout: 5000 });
     }
   });
 
@@ -56,10 +52,10 @@ test.describe('Pipeline Page', () => {
     await page.goto('/pipeline');
     await page.waitForSelector('table', { timeout: 30000 });
     
-    await expect(page.getByText('Stage')).toBeVisible();
-    await expect(page.getByText('Status')).toBeVisible();
-    await expect(page.getByText('Done')).toBeVisible();
-    await expect(page.getByText('Pending')).toBeVisible();
+    for (const column of ['Stage', 'Status', 'Done', 'Issues', 'Progress']) {
+      await expect(page.getByRole('columnheader', { name: column })).toBeVisible();
+    }
+    await expect(page.getByText('Pending', { exact: true })).toBeVisible();
   });
 });
 
@@ -71,11 +67,11 @@ test.describe('Full Indexing Flow', () => {
     const rescanButton = page.locator('button').filter({ hasText: /Rescan/i });
     await rescanButton.click();
     
-    const scanningOrProcessing = page.locator('text=/Scanning|Processing/');
+    // Starts a real scan: only run this against a disposable instance.
+    const scanningOrProcessing = page.getByText(/Checking for new photos|Processing photos/);
     await expect(scanningOrProcessing.first()).toBeVisible({ timeout: 10000 });
-    
-    await expect(page.locator('text=Completed in')).toBeVisible({ timeout: 180000 });
-    await expect(page.locator('text=files processed')).toBeVisible();
+
+    await expect(page.getByText(IDLE_TEXT)).toBeVisible({ timeout: 180000 });
   });
 });
 
@@ -86,11 +82,10 @@ test.describe('Years/Timeline View', () => {
 
   test('shows years on timeline page', async ({ page }) => {
     await page.goto('/');
-    await page.waitForSelector('a, [class*="year"]', { timeout: 30000 });
-    
-    const yearPattern = /20\d{2}/;
-    const yearElements = page.locator(`text=${yearPattern.source}`);
-    const count = await yearElements.count();
+    // Month headings ("October 2026"). The old `text=20\d{2}` selector was
+    // a literal string, not a regex, so it never matched anything.
+    await page.waitForSelector('main h2', { timeout: 30000 });
+    const count = await page.locator('main h2').getByText(/20\d{2}/).count();
     expect(count).toBeGreaterThan(0);
   });
 });

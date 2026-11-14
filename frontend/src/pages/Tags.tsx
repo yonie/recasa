@@ -1,91 +1,77 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
-import { api, type PhotoSummary } from "../api/client";
-import { PhotoGrid } from "../components/PhotoGrid";
-import { useOpenPhoto } from "../hooks/useOpenPhoto";
-import { useScrollRestore } from "../hooks/useScrollRestore";
-import { Loader2, Tag, ArrowLeft, Search, X } from "lucide-react";
+import { Search, Tag, X } from "lucide-react";
+import { api, collageUrl, type TagCount } from "../api/client";
+import { queryKeys } from "../api/queryKeys";
 import { CollageButton } from "../components/CollagePopover";
+import {
+  BackButton,
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  PageSpinner,
+  PageTitle,
+  PhotoListLayout,
+} from "../components/Page";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { useScrollRestore } from "../hooks/useScrollRestore";
+import { plural } from "../lib/format";
+import { getTagColor } from "../lib/tagColor";
 
 // Tag detail view (route: /tags/:tagId)
 export function TagDetail() {
   const { tagId } = useParams<{ tagId: string }>();
   const navigate = useNavigate();
-  const openPhoto = useOpenPhoto();
   const id = Number(tagId);
 
   const { data: tag } = useQuery({
-    queryKey: ["tag", id],
+    queryKey: queryKeys.tag(id),
     queryFn: () => api.getTag(id),
     enabled: !!tagId,
   });
-  const { data: photosPage, isLoading } = useQuery({
-    queryKey: ["tag-photos", id],
+  const { data: photosPage, isLoading, error } = useQuery({
+    queryKey: queryKeys.tagPhotos(id),
     queryFn: () => api.getTagPhotos(id, { page_size: 200 }),
     enabled: !!tagId,
   });
-  const photos = photosPage?.items ?? [];
 
-  const handlePhotoClick = useCallback(
-    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
-    [openPhoto, photos]
-  );
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-      </div>
-    );
-  }
+  if (isLoading) return <PageSpinner />;
+  if (error) return <ErrorState error={error} />;
 
   return (
-    <div className="overflow-y-auto h-full">
-      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-        <button
-          onClick={() => navigate("/tags")}
-          className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5" />
-        </button>
-        <Tag className="w-5 h-5 text-gray-400" />
-        <h1 className="text-lg font-semibold">
-          {tag?.name || "Tag"}
-          <span className="ml-2 text-gray-400 font-normal text-sm">
-            {tag ? `${tag.count} photo${tag.count !== 1 ? "s" : ""}` : ""}
-          </span>
-        </h1>
-        {tag && (
-          <div className="ml-auto">
-            <CollageButton
-              url={`/api/photos/collage?tag=${encodeURIComponent(tag.name)}`}
-              label={`${tag.name} — Collage`}
-              photoCount={tag.count}
-            />
-          </div>
-        )}
-      </div>
-
-      <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
-    </div>
+    <PhotoListLayout
+      photos={photosPage?.items ?? []}
+      header={
+        <PageHeader className="flex items-center gap-3">
+          <BackButton onClick={() => navigate("/tags")} />
+          <Tag className="w-5 h-5 text-gray-400" />
+          <PageTitle count={tag ? `${tag.count} ${plural(tag.count, "photo")}` : ""}>
+            {tag?.name || "Tag"}
+          </PageTitle>
+          {tag && (
+            <div className="ml-auto">
+              <CollageButton
+                url={collageUrl.tag(tag.name)}
+                label={`${tag.name}: Collage`}
+                photoCount={tag.count}
+              />
+            </div>
+          )}
+        </PageHeader>
+      }
+    />
   );
 }
 
 // Tags list view (route: /tags)
 export function Tags() {
-  const navigate = useNavigate();
   const { scrollRef, restoreScroll } = useScrollRestore("tags");
   const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search.trim(), 250);
 
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 250);
-    return () => clearTimeout(timer);
-  }, [search]);
-
-  const { data, isLoading } = useQuery({
-    queryKey: ["tags", debouncedSearch],
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.tags(debouncedSearch),
     queryFn: () => api.getTags({ q: debouncedSearch || undefined }),
     placeholderData: keepPreviousData,
   });
@@ -98,35 +84,30 @@ export function Tags() {
     }
   }, [isLoading, tags.length, debouncedSearch, restoreScroll]);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-      </div>
-    );
-  }
-
+  if (isLoading) return <PageSpinner />;
+  if (error && !data) return <ErrorState error={error} />;
   if (tags.length === 0 && !debouncedSearch) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-2">
-        <Tag className="w-12 h-12 text-gray-300" />
-        <p className="text-lg">No tags yet</p>
-        <p className="text-sm">Tags are generated by the AI vision model during photo processing</p>
-      </div>
+      <EmptyState
+        icon={Tag}
+        title="No tags yet"
+        hint="Tags are generated by the AI vision model during photo processing"
+      />
     );
   }
 
   return (
     <div ref={scrollRef} className="overflow-y-auto h-full">
-      <div className="px-4 py-3 border-b border-gray-100 flex flex-wrap items-center gap-3">
-        <h1 className="text-lg font-semibold">
+      <PageHeader className="flex flex-wrap items-center gap-3">
+        <PageTitle
+          count={
+            debouncedSearch
+              ? `${total.toLocaleString()} ${plural(total, "match", "matches")}`
+              : `showing ${tags.length.toLocaleString()} most used of ${total.toLocaleString()}`
+          }
+        >
           Tags
-          <span className="ml-2 text-gray-400 font-normal text-sm">
-            {debouncedSearch
-              ? `${total.toLocaleString()} match${total !== 1 ? "es" : ""}`
-              : `showing ${tags.length.toLocaleString()} most used of ${total.toLocaleString()}`}
-          </span>
-        </h1>
+        </PageTitle>
         <div className="ml-auto relative">
           <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
@@ -146,7 +127,7 @@ export function Tags() {
             </button>
           )}
         </div>
-      </div>
+      </PageHeader>
 
       {tags.length === 0 ? (
         <div className="flex items-center justify-center h-40 text-gray-400">
@@ -154,48 +135,34 @@ export function Tags() {
         </div>
       ) : (
         <div className="flex flex-wrap gap-2 p-4">
-          {tags.map((tag) => {
-            const color = getTagColor(tag.name);
-            return (
-              <button
-                key={tag.tag_id}
-                onClick={() => navigate(`/tags/${tag.tag_id}`)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors text-sm"
-                style={{
-                  backgroundColor: color.bg,
-                  color: color.text,
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = color.bgHover;
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = color.bg;
-                }}
-              >
-                <span className="font-medium">{tag.name}</span>
-                <span className="text-xs" style={{ opacity: 0.6 }}>{tag.count}</span>
-              </button>
-            );
-          })}
+          {tags.map((tag) => (
+            <TagPill key={tag.tag_id} tag={tag} />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-/**
- * Deterministic string-to-color: hashes the tag name to pick a unique
- * hue, then returns a light background / dark text pair suitable for pills.
- */
-function getTagColor(name: string): { bg: string; bgHover: string; text: string } {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
-  }
-  const hue = ((hash % 360) + 360) % 360;
-  return {
-    bg: `hsl(${hue}, 55%, 93%)`,
-    bgHover: `hsl(${hue}, 55%, 87%)`,
-    text: `hsl(${hue}, 60%, 32%)`,
-  };
+function TagPill({ tag }: { tag: TagCount }) {
+  const navigate = useNavigate();
+  const color = getTagColor(tag.name);
+  return (
+    <button
+      onClick={() => navigate(`/tags/${tag.tag_id}`)}
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-colors text-sm"
+      style={{ backgroundColor: color.bg, color: color.text }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.backgroundColor = color.bgHover;
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.backgroundColor = color.bg;
+      }}
+    >
+      <span className="font-medium">{tag.name}</span>
+      <span className="text-xs" style={{ opacity: 0.6 }}>
+        {tag.count}
+      </span>
+    </button>
+  );
 }

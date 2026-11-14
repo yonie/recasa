@@ -1,46 +1,43 @@
-import { useEffect, useCallback } from "react";
+import { useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api, type PhotoSummary, thumbnailUrl } from "../api/client";
-import { PhotoGrid } from "../components/PhotoGrid";
-import { useOpenPhoto } from "../hooks/useOpenPhoto";
-import { useScrollRestore } from "../hooks/useScrollRestore";
-import { Loader2, CalendarDays, ArrowLeft, MapPin } from "lucide-react";
+import { CalendarDays, MapPin } from "lucide-react";
+import { api, collageUrl, thumbnailUrl, type EventSummary } from "../api/client";
+import { queryKeys } from "../api/queryKeys";
 import { CollageButton } from "../components/CollagePopover";
+import {
+  BackButton,
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  PageSpinner,
+  PageTitle,
+  PhotoListLayout,
+} from "../components/Page";
+import { useScrollRestore } from "../hooks/useScrollRestore";
+import { useCardThumbSize } from "../lib/gridLayout";
+import { plural } from "../lib/format";
 
 // Event detail view (route: /events/:eventId)
 export function EventDetail() {
   const { eventId } = useParams<{ eventId: string }>();
   const navigate = useNavigate();
-  const openPhoto = useOpenPhoto();
   const id = Number(eventId);
 
-  const { data: event, isLoading: eventLoading } = useQuery({
-    queryKey: ["event", id],
+  const eventQuery = useQuery({
+    queryKey: queryKeys.event(id),
     queryFn: () => api.getEvent(id),
     enabled: !!eventId,
   });
-  const { data: photosPage, isLoading: photosLoading } = useQuery({
-    queryKey: ["event-photos", id],
+  const photosQuery = useQuery({
+    queryKey: queryKeys.eventPhotos(id),
     queryFn: () => api.getEventPhotos(id, { page_size: 200 }),
     enabled: !!eventId,
   });
-  const photos = photosPage?.items ?? [];
-  const loading = eventLoading || photosLoading;
+  const event = eventQuery.data;
+  const photos = photosQuery.data?.items ?? [];
 
-  const handlePhotoClick = useCallback(
-    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
-    [openPhoto, photos]
-  );
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-      </div>
-    );
-  }
-
+  if (eventQuery.isLoading || photosQuery.isLoading) return <PageSpinner />;
   if (!event) {
     return (
       <div className="flex items-center justify-center h-64 text-gray-400">
@@ -48,178 +45,150 @@ export function EventDetail() {
       </div>
     );
   }
+  if (photosQuery.error) return <ErrorState error={photosQuery.error} />;
 
   return (
-    <div className="overflow-y-auto h-full">
-      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-        <button
-          onClick={() => navigate("/events")}
-          className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5" />
-        </button>
-        <div>
-          <h1 className="text-lg font-semibold">{event.name}</h1>
-          <div className="flex items-center gap-3 text-xs text-gray-400">
-            {event.location && (
-              <span className="flex items-center gap-1">
-                <MapPin className="w-3 h-3" />
-                {event.location}
+    <PhotoListLayout
+      photos={photos}
+      header={
+        <PageHeader className="flex items-center gap-3">
+          <BackButton onClick={() => navigate("/events")} />
+          <div>
+            <h1 className="text-lg font-semibold">{event.name}</h1>
+            <div className="flex items-center gap-3 text-xs text-gray-400">
+              {event.location && (
+                <span className="flex items-center gap-1">
+                  <MapPin className="w-3 h-3" />
+                  {event.location}
+                </span>
+              )}
+              <span>
+                {event.photo_count} {plural(event.photo_count, "photo")}
               </span>
-            )}
-            <span>
-              {event.photo_count} photo{event.photo_count !== 1 ? "s" : ""}
-            </span>
+            </div>
+            {event.summary && <p className="text-sm text-gray-500 mt-1">{event.summary}</p>}
           </div>
-          {event.summary && (
-            <p className="text-sm text-gray-500 mt-1">{event.summary}</p>
-          )}
-        </div>
-        <div className="ml-auto">
-          <CollageButton
-            url={`/api/events/${event.event_id}/collage`}
-            label={`${event.name} — Collage`}
-            photoCount={photos.length}
-          />
-        </div>
-      </div>
-
-      <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
-    </div>
+          <div className="ml-auto">
+            <CollageButton
+              url={collageUrl.event(event.event_id)}
+              label={`${event.name}: Collage`}
+              photoCount={photos.length}
+            />
+          </div>
+        </PageHeader>
+      }
+    />
   );
 }
 
 // Events list view (route: /events)
 export function Events() {
-  const navigate = useNavigate();
   const { scrollRef, restoreScroll } = useScrollRestore("events");
+  const coverSize = useCardThumbSize(EVENT_COLUMNS, 16, 16);
 
-  const { data, isLoading: loading } = useQuery({
-    queryKey: ["events"],
+  const { data: events = [], isLoading, error } = useQuery({
+    queryKey: queryKeys.events,
     queryFn: () => api.getEvents({ page_size: 1000 }),
   });
-  const events = data ?? [];
 
   // Restore scroll position after events load
   useEffect(() => {
-    if (!loading && events.length > 0) {
+    if (!isLoading && events.length > 0) {
       restoreScroll();
     }
-  }, [loading, events.length, restoreScroll]);
+  }, [isLoading, events.length, restoreScroll]);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-      </div>
-    );
-  }
-
+  if (isLoading) return <PageSpinner />;
+  if (error) return <ErrorState error={error} />;
   if (events.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-2">
-        <CalendarDays className="w-12 h-12 text-gray-300" />
-        <p className="text-lg">No events detected yet</p>
-        <p className="text-sm">Events are auto-detected from photo timestamps and locations</p>
-      </div>
+      <EmptyState
+        icon={CalendarDays}
+        title="No events detected yet"
+        hint="Events are auto-detected from photo timestamps and locations"
+      />
     );
   }
 
   return (
     <div ref={scrollRef} className="overflow-y-auto h-full">
-      <div className="px-4 py-3 border-b border-gray-100">
-        <h1 className="text-lg font-semibold">
-          Events
-          <span className="ml-2 text-gray-400 font-normal text-sm">
-            {events.length} event{events.length !== 1 ? "s" : ""}
-          </span>
-        </h1>
-      </div>
+      <PageHeader>
+        <PageTitle count={`${events.length} ${plural(events.length, "event")}`}>Events</PageTitle>
+      </PageHeader>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
         {events.map((event) => (
-          <button
-            key={event.event_id}
-            onClick={() => navigate(`/events/${event.event_id}`)}
-            className="bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow border border-gray-100 text-left group"
-          >
-            {/* Cover photo */}
-            <div className="aspect-video bg-gray-100 relative overflow-hidden">
-              {event.cover_photo ? (
-                <img
-                  src={thumbnailUrl(event.cover_photo.file_hash, 1200)}
-                  alt=""
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <CalendarDays className="w-12 h-12 text-gray-300" />
-                </div>
-              )}
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-3">
-                <p className="text-white text-sm font-medium">{event.name}</p>
-              </div>
-            </div>
-
-            {/* Info */}
-            <div className="p-3">
-              <div className="flex items-center justify-between text-xs text-gray-500">
-                <div className="flex items-center gap-2">
-                  {event.location && (
-                    <span className="flex items-center gap-1">
-                      <MapPin className="w-3 h-3" />
-                      {event.location}
-                    </span>
-                  )}
-                </div>
-                <span>{event.photo_count} photos</span>
-              </div>
-              {event.summary && (
-                <p className="text-xs text-gray-600 mt-1.5 line-clamp-2">{event.summary}</p>
-              )}
-              {event.start_date && (
-                <p className="text-xs text-gray-400 mt-1">
-                  {formatDateRange(event.start_date, event.end_date)}
-                </p>
-              )}
-            </div>
-          </button>
+          <EventCard key={event.event_id} event={event} coverSize={coverSize} />
         ))}
       </div>
     </div>
   );
 }
 
+// Columns of the card grid below (grid-cols-1 sm:grid-cols-2 lg:grid-cols-3,
+// gap-4 p-4) at base, sm, md, lg and xl, to size the cover thumbnails.
+const EVENT_COLUMNS = [1, 2, 2, 3, 3];
+
+function EventCard({ event, coverSize }: { event: EventSummary; coverSize: number }) {
+  const navigate = useNavigate();
+  return (
+    <button
+      onClick={() => navigate(`/events/${event.event_id}`)}
+      className="bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow border border-gray-100 text-left group"
+    >
+      {/* Cover photo */}
+      <div className="aspect-video bg-gray-100 relative overflow-hidden">
+        {event.cover_photo ? (
+          // Lazy: the list holds every event, and eager covers for all of them
+          // kept the Pi busy for many seconds on each visit. Sized to the card:
+          // 600 px on a standard screen, 1200 px where the density needs it.
+          <img
+            src={thumbnailUrl(event.cover_photo.file_hash, coverSize)}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <CalendarDays className="w-12 h-12 text-gray-300" />
+          </div>
+        )}
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-3">
+          <p className="text-white text-sm font-medium">{event.name}</p>
+        </div>
+      </div>
+
+      {/* Info */}
+      <div className="p-3">
+        <div className="flex items-center justify-between text-xs text-gray-500">
+          <div className="flex items-center gap-2">
+            {event.location && (
+              <span className="flex items-center gap-1">
+                <MapPin className="w-3 h-3" />
+                {event.location}
+              </span>
+            )}
+          </div>
+          <span>{event.photo_count} photos</span>
+        </div>
+        {event.summary && <p className="text-xs text-gray-600 mt-1.5 line-clamp-2">{event.summary}</p>}
+        {event.start_date && (
+          <p className="text-xs text-gray-400 mt-1">{formatDateRange(event.start_date, event.end_date)}</p>
+        )}
+      </div>
+    </button>
+  );
+}
+
 function formatDateRange(start: string, end: string | null): string {
   const startDate = new Date(start);
-  if (!end) {
-    return startDate.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  }
+  const full: Intl.DateTimeFormatOptions = { year: "numeric", month: "short", day: "numeric" };
+  if (!end) return startDate.toLocaleDateString(undefined, full);
 
   const endDate = new Date(end);
-  const sameDay =
-    startDate.getFullYear() === endDate.getFullYear() &&
-    startDate.getMonth() === endDate.getMonth() &&
-    startDate.getDate() === endDate.getDate();
-
-  if (sameDay) {
-    return startDate.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
+  if (startDate.toDateString() === endDate.toDateString()) {
+    return startDate.toLocaleDateString(undefined, full);
   }
-
-  return `${startDate.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  })} - ${endDate.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  })}`;
+  return `${startDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })} - ${endDate.toLocaleDateString(undefined, full)}`;
 }

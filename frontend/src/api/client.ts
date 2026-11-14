@@ -1,6 +1,35 @@
 /**
- * API client for the Recasa backend.
+ * API client for the Recasa backend. Every request the app makes goes
+ * through here, so endpoints and parameters live in one place.
  */
+
+import type {
+  CityCount,
+  CountryCount,
+  DirectoryNode,
+  DuplicateGroup,
+  EventSummary,
+  HiddenGroup,
+  LibraryStats,
+  MapPoint,
+  PersonGroup,
+  PersonSummary,
+  PhotoDetail,
+  PhotoPage,
+  PhotoSummary,
+  PipelineStats,
+  ProcessingStats,
+  StageFailureItem,
+  TagCount,
+  TagList,
+  TimelineGroup,
+  TrailStop,
+  UserDataImportResult,
+  YearCount,
+} from "./types";
+
+export * from "./types";
+export * from "./urls";
 
 const BASE_URL = "/api";
 
@@ -21,75 +50,165 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json();
 }
 
-// Types
+const post = <T>(path: string, body?: unknown) =>
+  request<T>(path, {
+    method: "POST",
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
 
-export interface PhotoSummary {
-  file_hash: string;
-  file_path: string;
-  file_name: string;
-  file_size: number;
-  mime_type: string | null;
-  width: number | null;
-  height: number | null;
-  date_taken: string | null;
-  is_favorite: boolean;
-  marked_for_print: boolean;
-  flagged_for_removal: boolean;
-  is_video: boolean;
-  duration: number | null;
-  thumbnail_url: string | null;
-  has_live_photo: boolean;
-  caption: string | null;
+/** Fetch a binary response (collages, exports) from an absolute /api URL. */
+export async function fetchBlob(url: string): Promise<Blob> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.blob();
 }
 
-export interface PhotoLocation {
-  latitude: number | null;
-  longitude: number | null;
-  altitude: number | null;
-  country: string | null;
-  city: string | null;
-  address: string | null;
+/** A slash-separated path with every segment percent-encoded. */
+export function encodePath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
 }
 
-export interface PhotoExif {
-  camera_make: string | null;
-  camera_model: string | null;
-  lens_model: string | null;
-  focal_length: number | null;
-  aperture: number | null;
-  shutter_speed: string | null;
-  iso: number | null;
-  orientation: number | null;
+/** Query string from the defined entries, in the order given. */
+function buildQuery(params?: object): string {
+  if (!params) return "";
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) {
+      searchParams.set(key, String(value));
+    }
+  }
+  const query = searchParams.toString();
+  return query ? `?${query}` : "";
 }
 
-export interface FaceSummary {
-  face_id: number;
-  person_id: number | null;
-  person_name: string | null;
-  bbox_x: number | null;
-  bbox_y: number | null;
-  bbox_w: number | null;
-  bbox_h: number | null;
+// Query parameters, as the backend declares them
+
+export interface PageParams {
+  page?: number;
+  page_size?: number;
 }
 
-export interface TagCount {
-  tag_id: number;
-  name: string;
-  category: string | null;
-  count: number;
+export interface PhotoListParams extends PageParams {
+  sort?: "date_taken" | "file_name" | "file_size" | "indexed_at";
+  order?: "asc" | "desc";
+  favorite?: boolean;
+  marked_for_print?: boolean;
+  flagged?: boolean;
+  video?: boolean;
+  search?: string;
 }
 
-export interface PhotoDetail extends PhotoSummary {
-  file_modified: string | null;
-  location: PhotoLocation | null;
-  exif: PhotoExif | null;
-  faces: FaceSummary[];
-  tags: { tag_id: number; name: string; category: string | null }[];
-  caption: string | null;
-  live_photo_video: string | null;
-  motion_photo: boolean;
-  indexed_at: string | null;
+export interface TimelineParams {
+  year?: number;
+  month?: number;
+  video?: boolean;
+  group_by?: "year" | "month" | "day";
+  limit?: number;
+  offset?: number;
 }
+
+export interface LocationPhotoParams extends PageParams {
+  country?: string;
+  city?: string;
+}
+
+export interface TrailParams {
+  date_from?: string;
+  date_to?: string;
+}
+
+type Toggle<K extends string> = { file_hash: string } & Record<K, boolean>;
+
+export const api = {
+  // Photos
+  getPhotos: (params?: PhotoListParams) => request<PhotoPage>(`/photos${buildQuery(params)}`),
+  getPhoto: (hash: string) => request<PhotoDetail>(`/photos/${hash}`),
+  toggleFavorite: (hash: string) => post<Toggle<"is_favorite">>(`/photos/${hash}/favorite`),
+  togglePrint: (hash: string) => post<Toggle<"marked_for_print">>(`/photos/${hash}/print`),
+  toggleFlag: (hash: string) => post<Toggle<"flagged_for_removal">>(`/photos/${hash}/flag`),
+  clearPrintList: () => post<{ removed: number }>("/photos/print/clear"),
+  getStats: () => request<LibraryStats>("/photos/stats"),
+
+  // Directories. Each segment is encoded, keeping the slashes the backend's
+  // /{path:path} route expects; a raw "#" or "?" in a folder name would
+  // otherwise cut the URL short.
+  getDirectoryTree: () => request<DirectoryNode[]>("/directories"),
+  getDirectoryPhotos: (path: string, params?: PageParams) =>
+    request<PhotoPage>(`/directories/${encodePath(path)}${buildQuery(params)}`),
+
+  // Timeline
+  getYears: () => request<YearCount[]>("/timeline/years"),
+  getTimeline: (params?: TimelineParams) =>
+    request<TimelineGroup[]>(`/timeline${buildQuery(params)}`),
+
+  // Scan and pipeline
+  triggerScan: () => post<{ status: string }>("/scan/trigger"),
+  stopPipeline: () => post<{ status: string }>("/scan/stop"),
+  clearIndex: () => post<{ status: string }>("/scan/clear-index"),
+  clearStage: (stage: string) => post<{ status: string }>(`/scan/clear-stage/${stage}`),
+  resumeProcessing: () => post<{ status: string; queued: number }>("/scan/resume"),
+  getPipelineStatus: () => request<PipelineStats>("/pipeline/status"),
+  getProcessingStats: () => request<ProcessingStats>("/pipeline/processing-stats"),
+  getPipelineFailures: () => request<StageFailureItem[]>("/pipeline/failures"),
+
+  // Duplicates and large files
+  getDuplicates: (params?: PageParams) =>
+    request<DuplicateGroup[]>(`/duplicates${buildQuery(params)}`),
+  getLargeFiles: (params: PageParams & { min_size?: number }) =>
+    request<PhotoPage>(`/large-files${buildQuery(params)}`),
+
+  // Persons
+  getPersons: (params?: PageParams) => request<PersonSummary[]>(`/persons${buildQuery(params)}`),
+  getPerson: (id: number) => request<PersonSummary>(`/persons/${id}`),
+  getPersonPhotos: (id: number, params?: PageParams) =>
+    request<PhotoPage>(`/persons/${id}/photos${buildQuery(params)}`),
+  updatePerson: (id: number, name: string) =>
+    request<PersonSummary>(`/persons/${id}`, { method: "PUT", body: JSON.stringify({ name }) }),
+  ignorePerson: (id: number) => post<{ status: string }>(`/persons/${id}/ignore`),
+  unignorePerson: (id: number) => post<{ status: string }>(`/persons/${id}/unignore`),
+  getIgnoredPersons: () => request<PersonSummary[]>("/persons/ignored"),
+  getPersonGroups: (params?: { min_photos?: number }) =>
+    request<PersonGroup[]>(`/persons/groups/together${buildQuery(params)}`),
+  getHiddenGroups: () => request<HiddenGroup[]>("/persons/groups/hidden"),
+  hideGroup: (personIds: number[]) =>
+    post<{ status: string; group_key: string }>("/persons/groups/hide", { person_ids: personIds }),
+  unhideGroup: (personIds: number[]) =>
+    post<{ status: string; group_key: string }>("/persons/groups/unhide", { person_ids: personIds }),
+  getSharedPhotosN: (personIds: number[], params?: PageParams) =>
+    request<PhotoPage>(
+      `/persons/groups/together-n/photos${buildQuery({ ...params, person_ids: personIds.join(",") })}`
+    ),
+
+  // Events
+  getEvents: (params?: PageParams) => request<EventSummary[]>(`/events${buildQuery(params)}`),
+  getEvent: (id: number) => request<EventSummary>(`/events/${id}`),
+  getEventPhotos: (id: number, params?: PageParams) =>
+    request<PhotoPage>(`/events/${id}/photos${buildQuery(params)}`),
+
+  // Locations
+  getCountries: () => request<CountryCount[]>("/locations/countries"),
+  getCities: (country?: string) =>
+    request<CityCount[]>(`/locations/cities${country ? `?country=${encodeURIComponent(country)}` : ""}`),
+  getMapPoints: () => request<MapPoint[]>("/locations/map-points"),
+  getTrail: (params?: TrailParams) => request<TrailStop[]>(`/locations/trail${buildQuery(params)}`),
+  getLocationPhotos: (params?: LocationPhotoParams) =>
+    request<PhotoPage>(`/locations/photos${buildQuery(params)}`),
+
+  // Tags
+  getTags: (params?: { limit?: number; q?: string }) => request<TagList>(`/tags${buildQuery(params)}`),
+  getTag: (tagId: number) => request<TagCount>(`/tags/${tagId}`),
+  getTagPhotos: (tagId: number, params?: PageParams) =>
+    request<PhotoPage>(`/tags/${tagId}/photos${buildQuery(params)}`),
+
+  // User data. Export is a file download, import a multipart upload; neither is JSON-in.
+  exportUserData: () => fetchBlob(`${BASE_URL}/user-data/export`),
+  importUserData: async (file: File): Promise<UserDataImportResult> => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch(`${BASE_URL}/user-data/import`, { method: "POST", body: formData });
+    return res.json();
+  },
+};
 
 /**
  * A PhotoDetail renderable right now from a grid list entry. The summary
@@ -109,451 +228,4 @@ export function provisionalDetail(p: PhotoSummary): PhotoDetail {
     motion_photo: false,
     indexed_at: null,
   };
-}
-
-export interface PhotoPage {
-  items: PhotoSummary[];
-  total: number;
-  page: number;
-  page_size: number;
-  has_more: boolean;
-}
-
-export interface DirectoryNode {
-  name: string;
-  path: string;
-  photo_count: number;
-  children: DirectoryNode[];
-}
-
-export interface TimelineGroup {
-  date: string;
-  count: number;
-  photos: PhotoSummary[];
-}
-
-export interface YearCount {
-  year: number;
-  count: number;
-  previews: string[];
-}
-
-export interface ScanStatus {
-  is_scanning: boolean;
-  total_files: number;
-  processed_files: number;
-  current_file: string | null;
-  phase: string | null;
-  phase_progress: number;
-  phase_total: number;
-  discovery_phase: string | null;
-  discovery_files_collected: number;
-}
-
-export interface QueueStats {
-  queue_type: string;
-  pending: number;
-  processing: number;
-  current_file_hash: string | null;
-  current_file_path: string | null;
-}
-
-export interface StageStats {
-  status: string;
-  queued: number;
-  completed: number;
-  total: number;
-  enabled: boolean;
-  failed: number;
-  faces_found?: number;
-  captions_generated?: number;
-  count?: number;
-}
-
-export interface ProcessingStats {
-  total_photos: number;
-  total_videos: number;
-  stages: {
-    discovery: StageStats;
-    exif: StageStats;
-    geocoding: StageStats;
-    thumbnails: StageStats;
-    motion_photos: StageStats;
-    hashing: StageStats;
-    faces: StageStats;
-    captioning: StageStats;
-    events: StageStats;
-  };
-}
-
-export interface StageFailureItem {
-  file_hash: string;
-  file_path: string;
-  file_name: string;
-  stage: string;
-  error: string | null;
-  failed_at: string | null;
-}
-
-export interface WatcherStatus {
-  inotify_active: boolean;
-  sweep_interval: number;
-  last_scan_at: string | null;
-  last_scan_stats: { total: number; new: number; updated: number; errors: number } | null;
-}
-
-export interface PipelineStats {
-  state: "idle" | "scanning" | "processing" | "done";
-  watcher?: WatcherStatus;
-  scan_progress: {
-    is_scanning: boolean;
-    total_files: number;
-    scanned_files: number;
-    current_directory: string | null;
-    discovery_phase: string | null;
-    discovery_files_collected: number;
-  } | null;
-  processing_progress: {
-    files_queued: number;
-    files_processing: number;
-    elapsed_seconds: number;
-  } | null;
-  completion_summary: {
-    files_processed: number;
-    elapsed_seconds: number;
-    completed_at: string | null;
-    scan_stats: {
-      total: number;
-      new: number;
-      updated: number;
-      skipped: number;
-      fully_processed: number;
-      errors: number;
-    } | null;
-  } | null;
-  error_log: Array<{
-    timestamp: string;
-    queue: string;
-    file_hash: string;
-    file_path: string | null;
-    error: string;
-  }>;
-  error_count: number;
-  queues: Record<string, QueueStats>;
-}
-
-export interface LibraryStats {
-  total_photos: number;
-  total_size_bytes: number;
-  total_faces: number;
-  total_persons: number;
-  total_tags: number;
-  total_events: number;
-  total_duplicates: number;
-  oldest_photo: string | null;
-  newest_photo: string | null;
-  locations_count: number;
-  favorites_count: number;
-  to_print_count: number;
-  flagged_count: number;
-  videos_count: number;
-}
-
-export interface DuplicatePhotoSummary extends PhotoSummary {
-  location: string | null;
-  camera: string | null;
-  people: string[];
-}
-
-export interface DuplicateGroup {
-  group_id: number;
-  photos: DuplicatePhotoSummary[];
-}
-
-export interface PersonSummary {
-  person_id: number;
-  name: string | null;
-  photo_count: number;
-  face_thumbnail_url: string | null;
-}
-
-export interface PersonGroup {
-  persons: PersonSummary[];
-  shared_photo_count: number;
-  cover_photo: PhotoSummary | null;
-}
-
-export interface HiddenGroup {
-  group_key: string;
-  persons: PersonSummary[];
-}
-
-export interface EventSummary {
-  event_id: number;
-  name: string | null;
-  start_date: string | null;
-  end_date: string | null;
-  location: string | null;
-  photo_count: number;
-  cover_photo: PhotoSummary | null;
-  summary: string | null;
-}
-
-export interface CountryCount {
-  country: string;
-  count: number;
-}
-
-export interface CityCount {
-  city: string;
-  country: string;
-  count: number;
-}
-
-export interface MapPoint {
-  latitude: number;
-  longitude: number;
-  count: number;
-  representative_hash: string;
-  city: string | null;
-  country: string | null;
-  thumbnail_url: string;
-}
-
-export interface TrailPhoto {
-  file_hash: string;
-  thumbnail_url: string;
-}
-
-export interface TrailStop {
-  date: string;
-  latitude: number;
-  longitude: number;
-  city: string | null;
-  country: string | null;
-  photos: TrailPhoto[];
-  total_count: number;
-}
-
-// API functions
-
-function buildQuery(params?: Record<string, string | number | boolean | undefined>): string {
-  if (!params) return "";
-  const searchParams = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null) {
-      searchParams.set(key, String(value));
-    }
-  }
-  const query = searchParams.toString();
-  return query ? `?${query}` : "";
-}
-
-export const api = {
-  // Photos
-  getPhotos: (params?: Record<string, string | number | boolean>) =>
-    request<PhotoPage>(`/photos${buildQuery(params)}`),
-
-  getPhoto: (hash: string) => request<PhotoDetail>(`/photos/${hash}`),
-
-  toggleFavorite: (hash: string) =>
-    request<{ file_hash: string; is_favorite: boolean }>(`/photos/${hash}/favorite`, {
-      method: "POST",
-    }),
-
-  togglePrint: (hash: string) =>
-    request<{ file_hash: string; marked_for_print: boolean }>(`/photos/${hash}/print`, {
-      method: "POST",
-    }),
-
-  clearPrintList: () =>
-    request<{ removed: number }>("/photos/print/clear", { method: "POST" }),
-
-  toggleFlag: (hash: string) =>
-    request<{ file_hash: string; flagged_for_removal: boolean }>(`/photos/${hash}/flag`, {
-      method: "POST",
-    }),
-
-  getStats: () => request<LibraryStats>("/photos/stats"),
-
-  // Directories
-  getDirectoryTree: () => request<DirectoryNode[]>("/directories"),
-
-  getDirectoryPhotos: (path: string, params?: Record<string, string | number>) =>
-    request<PhotoPage>(`/directories/${path}${buildQuery(params)}`),
-
-  // Timeline
-  getYears: () => request<YearCount[]>("/timeline/years"),
-
-  getTimeline: (params?: Record<string, string | number | boolean>) =>
-    request<TimelineGroup[]>(`/timeline${buildQuery(params)}`),
-
-  // Scan
-  getScanStatus: () => request<ScanStatus>("/scan/status"),
-  triggerScan: () => request<{ status: string }>("/scan/trigger", { method: "POST" }),
-  stopPipeline: () => request<{ status: string }>("/scan/stop", { method: "POST" }),
-  clearIndex: () => request<{ status: string }>("/scan/clear-index", { method: "POST" }),
-  clearStage: (stage: string) => request<{ status: string }>(`/scan/clear-stage/${stage}`, { method: "POST" }),
-
-  // Pipeline
-  getPipelineStatus: () => request<PipelineStats>("/pipeline/status"),
-  getProcessingStats: () => request<ProcessingStats>("/pipeline/processing-stats"),
-  getQueueStatus: () => request<Record<string, QueueStats>>("/pipeline/queues"),
-  getPipelineFlow: () => request<{ stages: { id: string; name: string; next: string[] }[] }>("/pipeline/flow"),
-  getPipelineLogs: () => request<Array<{ timestamp: string; level: string; message: string }>>("/pipeline/logs"),
-  getPipelineFailures: () => request<StageFailureItem[]>("/pipeline/failures"),
-  resumeProcessing: () => request<{ status: string; queued: number }>("/scan/resume", { method: "POST" }),
-
-  // Duplicates
-  getDuplicates: (params?: Record<string, string | number>) =>
-    request<DuplicateGroup[]>(`/duplicates${buildQuery(params)}`),
-
-  // Large files
-  getLargeFiles: (params?: Record<string, string | number>) =>
-    request<PhotoPage>(`/large-files${buildQuery(params)}`),
-
-  // Persons
-  getPersons: (params?: Record<string, string | number>) =>
-    request<PersonSummary[]>(`/persons${buildQuery(params)}`),
-
-  getPerson: (id: number) => request<PersonSummary>(`/persons/${id}`),
-
-  getPersonPhotos: (id: number, params?: Record<string, string | number>) =>
-    request<PhotoPage>(`/persons/${id}/photos${buildQuery(params)}`),
-
-  updatePerson: (id: number, name: string) =>
-    request<PersonSummary>(`/persons/${id}`, {
-      method: "PUT",
-      body: JSON.stringify({ name }),
-    }),
-
-  mergePersons: (sourceId: number, targetId: number) =>
-    request<{ status: string; target_id: number; faces_moved: number }>("/persons/merge", {
-      method: "POST",
-      body: JSON.stringify({ source_id: sourceId, target_id: targetId }),
-    }),
-
-  ignorePerson: (id: number) =>
-    request<{ status: string }>(`/persons/${id}/ignore`, { method: "POST" }),
-
-  unignorePerson: (id: number) =>
-    request<{ status: string }>(`/persons/${id}/unignore`, { method: "POST" }),
-
-  getIgnoredPersons: () =>
-    request<PersonSummary[]>("/persons/ignored"),
-
-  getPersonGroups: (params?: Record<string, string | number>) =>
-    request<PersonGroup[]>(`/persons/groups/together${buildQuery(params)}`),
-
-  getHiddenGroups: () =>
-    request<HiddenGroup[]>("/persons/groups/hidden"),
-
-  hideGroup: (personIds: number[]) =>
-    request<{ status: string; group_key: string }>("/persons/groups/hide", {
-      method: "POST",
-      body: JSON.stringify({ person_ids: personIds }),
-    }),
-
-  unhideGroup: (personIds: number[]) =>
-    request<{ status: string; group_key: string }>("/persons/groups/unhide", {
-      method: "POST",
-      body: JSON.stringify({ person_ids: personIds }),
-    }),
-
-  getSharedPhotos: (personAId: number, personBId: number, params?: Record<string, string | number>) =>
-    request<PhotoPage>(`/persons/groups/together/${personAId}/${personBId}/photos${buildQuery(params)}`),
-
-  getSharedPhotosN: (personIds: number[], params?: Record<string, string | number>) =>
-    request<PhotoPage>(`/persons/groups/together-n/photos${buildQuery({ ...params, person_ids: personIds.join(",") })}`),
-
-  // Events
-  getEvents: (params?: Record<string, string | number>) =>
-    request<EventSummary[]>(`/events${buildQuery(params)}`),
-
-  getEvent: (id: number) => request<EventSummary>(`/events/${id}`),
-
-  getEventPhotos: (id: number, params?: Record<string, string | number>) =>
-    request<PhotoPage>(`/events/${id}/photos${buildQuery(params)}`),
-
-  // Locations
-  getCountries: () => request<CountryCount[]>("/locations/countries"),
-
-  getCities: (country?: string) =>
-    request<CityCount[]>(`/locations/cities${country ? `?country=${encodeURIComponent(country)}` : ""}`),
-
-  getMapPoints: () => request<MapPoint[]>("/locations/map-points"),
-
-  getTrail: (params?: { date_from?: string; date_to?: string }) =>
-    request<TrailStop[]>(`/locations/trail${buildQuery(params)}`),
-
-  getLocationPhotos: (params?: Record<string, string | number>) =>
-    request<PhotoPage>(`/locations/photos${buildQuery(params)}`),
-
-  // Tags
-  getTags: (params?: { limit?: number; q?: string }) =>
-    request<{ items: TagCount[]; total: number }>(`/tags${buildQuery(params)}`),
-
-  getTag: (tagId: number) => request<TagCount>(`/tags/${tagId}`),
-
-  getTagPhotos: (tagId: number, params?: Record<string, string | number>) =>
-    request<PhotoPage>(`/tags/${tagId}/photos${buildQuery(params)}`),
-
-  // Health
-  health: () => request<{ status: string; app: string; version: string }>("/health"),
-};
-
-// URL helpers
-export function thumbnailUrl(hash: string, size: number = 600): string {
-  return `${BASE_URL}/photos/${hash}/thumbnail/${size}`;
-}
-
-export function originalUrl(hash: string): string {
-  return `${BASE_URL}/photos/${hash}/original`;
-}
-
-/**
- * Full view for the photo viewer. Same bytes as the original for formats the
- * browser can decode; a rendered JPEG for RAW (ORF) and HEIC, which it can't.
- */
-export function previewUrl(hash: string): string {
-  return `${BASE_URL}/photos/${hash}/preview`;
-}
-
-/** Formats no browser decodes: ORF has no LibRaw, HEIC only works in Safari. */
-const NEEDS_RENDER = /\.(orf|heic|heif)$/i;
-
-/**
- * Best full-view URL for a photo. Sending decodable formats straight to
- * /original keeps them from queueing behind a RAW decode on the render
- * endpoint. The backend stays the authority — /preview serves the original
- * for anything it doesn't need to convert — so an unrecognised name is safe.
- */
-export function fullViewUrl(photo: { file_hash: string; file_name: string }): string {
-  return NEEDS_RENDER.test(photo.file_name)
-    ? previewUrl(photo.file_hash)
-    : originalUrl(photo.file_hash);
-}
-
-export function livePhotoUrl(hash: string): string {
-  return `${BASE_URL}/photos/${hash}/live`;
-}
-
-/** Standalone videos are served through the same original endpoint (range-enabled). */
-export function videoUrl(hash: string): string {
-  return `${BASE_URL}/photos/${hash}/original`;
-}
-
-export function formatDuration(seconds: number | null): string {
-  if (!seconds || seconds < 0) return "";
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-export function printExportUrl(): string {
-  return `${BASE_URL}/photos/print/export`;
-}
-
-export function personThumbnailUrl(personId: number): string {
-  return `${BASE_URL}/persons/${personId}/thumbnail`;
 }

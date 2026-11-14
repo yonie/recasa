@@ -1,9 +1,13 @@
 import { create } from "zustand";
-import type { PhotoDetail, PhotoSummary, LibraryStats } from "../api/client";
+import type { PhotoDetail, PhotoSummary } from "../api/client";
 
 export type GridSize = "S" | "M" | "L";
 export type GridFit = "square" | "full";
 
+/**
+ * Client-only UI state. Server data (stats, photo lists, pipeline status)
+ * lives in react-query, not here.
+ */
 interface AppStore {
   // Viewer
   viewerPhoto: PhotoDetail | null;
@@ -15,14 +19,6 @@ interface AppStore {
   setViewerPhoto: (photo: PhotoDetail) => void;
   setViewerIndex: (index: number) => void;
 
-  // Stats
-  stats: LibraryStats | null;
-  setStats: (stats: LibraryStats) => void;
-
-  // Search
-  searchQuery: string;
-  setSearchQuery: (query: string) => void;
-
   // Grid size
   gridSize: GridSize;
   setGridSize: (size: GridSize) => void;
@@ -33,9 +29,26 @@ interface AppStore {
 
   // Mobile sidebar
   sidebarOpen: boolean;
-  openSidebar: () => void;
   closeSidebar: () => void;
   toggleSidebar: () => void;
+}
+
+/** A persisted preference, falling back when storage is unavailable or holds junk. */
+function loadPref<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  try {
+    const value = localStorage.getItem(key);
+    return allowed.includes(value as T) ? (value as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function savePref(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Private browsing or a full quota: the preference just won't persist.
+  }
 }
 
 export const useStore = create<AppStore>((set) => ({
@@ -51,31 +64,20 @@ export const useStore = create<AppStore>((set) => ({
   setViewerPhoto: (photo) => set({ viewerPhoto: photo }),
   setViewerIndex: (index) => set({ viewerIndex: index }),
 
-  // Stats
-  stats: null,
-  setStats: (stats) => set({ stats }),
-
-  // Search
-  searchQuery: "",
-  setSearchQuery: (query) => set({ searchQuery: query }),
-
-  // Grid size (persist in localStorage)
-  gridSize: (localStorage.getItem("gridSize") as GridSize) || "M",
+  gridSize: loadPref<GridSize>("gridSize", ["S", "M", "L"], "M"),
   setGridSize: (size) => {
-    localStorage.setItem("gridSize", size);
+    savePref("gridSize", size);
     set({ gridSize: size });
   },
 
-  // Grid fit (persist in localStorage)
-  gridFit: (localStorage.getItem("gridFit") as GridFit) || "square",
+  gridFit: loadPref<GridFit>("gridFit", ["square", "full"], "square"),
   setGridFit: (fit) => {
-    localStorage.setItem("gridFit", fit);
+    savePref("gridFit", fit);
     set({ gridFit: fit });
   },
 
   // Mobile sidebar
   sidebarOpen: false,
-  openSidebar: () => set({ sidebarOpen: true }),
   closeSidebar: () => set({ sidebarOpen: false }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
 }));

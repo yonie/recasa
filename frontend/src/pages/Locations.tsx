@@ -1,294 +1,282 @@
-import { useCallback } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { api, type PhotoSummary } from "../api/client";
-import { PhotoGrid } from "../components/PhotoGrid";
-import { MapView } from "./MapView";
-import { useOpenPhoto } from "../hooks/useOpenPhoto";
-import { Loader2, MapPin, ArrowLeft, Globe, Map, List } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Globe, List, Map, MapPin } from "lucide-react";
+import { api } from "../api/client";
+import { queryKeys } from "../api/queryKeys";
+import {
+  BackButton,
+  EmptyState,
+  ErrorState,
+  PageHeader,
+  PageSpinner,
+  PageTitle,
+  PhotoListLayout,
+} from "../components/Page";
+import { usePipelineStatus } from "../hooks/useServerState";
+import { plural } from "../lib/format";
+
+// Leaflet is the largest dependency and only this page needs it.
+const MapView = lazy(() => import("./map/MapView").then((m) => ({ default: m.MapView })));
+
+// While geocoding runs, location lists poll so new places appear as they
+// are resolved.
+const LOCATION_POLL_MS = 10_000;
+
+/**
+ * Poll interval for location queries: every 10 s while the geocoding queue
+ * has work, otherwise none (the map-points list alone is ~900 points, and the
+ * page used to re-request it every 10 s for as long as it was open). When
+ * geocoding finishes, one last refresh picks up its final results. The
+ * pipeline status this reads is the sidebar's poll, so it costs nothing extra.
+ */
+function useLocationPolling(): number | false {
+  const status = usePipelineStatus();
+  const queue = status?.queues?.geocoding;
+  const active = !!queue && queue.pending + queue.processing > 0;
+  const queryClient = useQueryClient();
+  const wasActive = useRef(active);
+
+  useEffect(() => {
+    if (wasActive.current && !active) {
+      for (const queryKey of [
+        queryKeys.countries,
+        queryKeys.mapPoints,
+        queryKeys.citiesAll,
+        queryKeys.locationPhotosAll,
+      ]) {
+        void queryClient.invalidateQueries({ queryKey });
+      }
+    }
+    wasActive.current = active;
+  }, [active, queryClient]);
+
+  return active ? LOCATION_POLL_MS : false;
+}
+
+/** Route segments arrive percent-encoded; titles and API calls want plain text. */
+const decoded = (segment: string | undefined) => (segment ? decodeURIComponent(segment) : "");
+
+function locationPath(country: string, city?: string | null) {
+  return `/locations/${encodeURIComponent(country)}${city ? `/${encodeURIComponent(city)}` : ""}`;
+}
 
 // Location city photos view (route: /locations/:country/:city)
 export function LocationCityPhotos() {
-  const { country, city } = useParams<{ country: string; city: string }>();
+  const poll = useLocationPolling();
+  const params = useParams<{ country: string; city: string }>();
   const navigate = useNavigate();
-  const openPhoto = useOpenPhoto();
+  const country = decoded(params.country);
+  const city = decoded(params.city);
 
-  const { data, isLoading: loading } = useQuery({
-    queryKey: ["location-photos", country, city],
-    queryFn: () =>
-      api.getLocationPhotos({
-        page_size: 200,
-        country: decodeURIComponent(country!),
-        city: decodeURIComponent(city!),
-      }),
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.locationPhotos(params.country, params.city),
+    queryFn: () => api.getLocationPhotos({ page_size: 200, country, city }),
     enabled: !!country && !!city,
-    refetchInterval: 10000,
+    refetchInterval: poll,
   });
-  const photos = data?.items ?? [];
+
+  if (isLoading) return <PageSpinner />;
+  if (error && !data) return <ErrorState error={error} />;
+
   const total = data?.total ?? 0;
-
-  const handlePhotoClick = useCallback(
-    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
-    [openPhoto, photos]
-  );
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-      </div>
-    );
-  }
-
-  const decodedCountry = country ? decodeURIComponent(country) : "";
-  const decodedCity = city ? decodeURIComponent(city) : "";
-
   return (
-    <div className="overflow-y-auto h-full">
-      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-        <button
-          onClick={() => navigate(-1)}
-          className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5" />
-        </button>
-        <MapPin className="w-5 h-5 text-gray-400" />
-        <h1 className="text-lg font-semibold">
-          {decodedCity}{decodedCountry ? `, ${decodedCountry}` : ""}
-          <span className="ml-2 text-gray-400 font-normal text-sm">
-            {total} photo{total !== 1 ? "s" : ""}
-          </span>
-        </h1>
-      </div>
-      <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
-    </div>
+    <PhotoListLayout
+      photos={data?.items ?? []}
+      header={
+        <PageHeader className="flex items-center gap-3">
+          <BackButton onClick={() => navigate(-1)} />
+          <MapPin className="w-5 h-5 text-gray-400" />
+          <PageTitle count={`${total} ${plural(total, "photo")}`}>
+            {city}
+            {country ? `, ${country}` : ""}
+          </PageTitle>
+        </PageHeader>
+      }
+    />
   );
 }
 
 // Location country cities view (route: /locations/:country)
 export function LocationCountryCities() {
-  const { country } = useParams<{ country: string }>();
+  const poll = useLocationPolling();
+  const params = useParams<{ country: string }>();
   const navigate = useNavigate();
+  const country = decoded(params.country);
 
-  const { data, isLoading: loading } = useQuery({
-    queryKey: ["cities", country],
-    queryFn: () => api.getCities(decodeURIComponent(country!)),
+  const { data: cities = [], isLoading, error } = useQuery({
+    queryKey: queryKeys.cities(params.country),
+    queryFn: () => api.getCities(country),
     enabled: !!country,
-    refetchInterval: 10000,
+    refetchInterval: poll,
   });
-  const cities = data ?? [];
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-      </div>
-    );
-  }
-
-  const decodedCountry = country ? decodeURIComponent(country) : "";
+  if (isLoading) return <PageSpinner />;
+  if (error && !cities.length) return <ErrorState error={error} />;
 
   return (
     <div className="overflow-y-auto h-full">
-      <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-        <button
-          onClick={() => navigate(-1)}
-          className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5" />
-        </button>
+      <PageHeader className="flex items-center gap-3">
+        <BackButton onClick={() => navigate(-1)} />
         <Globe className="w-5 h-5 text-gray-400" />
-        <h1 className="text-lg font-semibold">
-          {decodedCountry}
-          <span className="ml-2 text-gray-400 font-normal text-sm">
-            {cities.length} cit{cities.length !== 1 ? "ies" : "y"}
-          </span>
-        </h1>
-      </div>
+        <PageTitle count={`${cities.length} ${plural(cities.length, "city", "cities")}`}>{country}</PageTitle>
+      </PageHeader>
 
       <div className="divide-y divide-gray-50">
         {cities.map((city) => (
-          <button
+          <LocationRow
             key={`${city.city}-${city.country}`}
-            onClick={() => navigate(`/locations/${encodeURIComponent(decodedCountry)}/${encodeURIComponent(city.city)}`)}
-            className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
-          >
-            <div className="flex items-center gap-3">
-              <MapPin className="w-4 h-4 text-gray-400" />
-              <span className="text-sm font-medium">{city.city}</span>
-            </div>
-            <span className="text-sm text-gray-400">
-              {city.count} photo{city.count !== 1 ? "s" : ""}
-            </span>
-          </button>
+            icon={MapPin}
+            label={city.city}
+            count={city.count}
+            onClick={() => navigate(locationPath(country, city.city))}
+          />
         ))}
       </div>
     </div>
   );
 }
 
+function LocationRow({
+  icon: Icon,
+  label,
+  count,
+  onClick,
+}: {
+  icon: typeof Globe;
+  label: string;
+  count: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
+    >
+      <div className="flex items-center gap-3">
+        <Icon className="w-4 h-4 text-gray-400" />
+        <span className="text-sm font-medium">{label}</span>
+      </div>
+      <span className="text-sm text-gray-400">
+        {count} {plural(count, "photo")}
+      </span>
+    </button>
+  );
+}
+
+type ViewMode = "map" | "countries";
+
+/** List/map switch. The active side is highlighted and does nothing when clicked. */
+function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (mode: ViewMode) => void }) {
+  const button = (target: ViewMode, title: string, Icon: typeof Map) => {
+    const active = mode === target;
+    return (
+      <button
+        onClick={active ? undefined : () => onChange(target)}
+        className={active ? "p-2 rounded-lg bg-gray-100 transition-colors" : "p-2 rounded-lg hover:bg-gray-100 transition-colors"}
+        title={title}
+      >
+        <Icon className={active ? "w-5 h-5" : "w-5 h-5 text-gray-400"} />
+      </button>
+    );
+  };
+  return (
+    <div className="flex gap-1">
+      {button("countries", "List view", List)}
+      {button("map", "Map view", Map)}
+    </div>
+  );
+}
+
 // Locations main view with map/countries toggle (route: /locations)
 export function Locations() {
+  const poll = useLocationPolling();
   const [searchParams, setSearchParams] = useSearchParams();
-  const viewMode = (searchParams.get("view") as "map" | "countries") || "map";
+  const viewMode: ViewMode = (searchParams.get("view") || "map") === "map" ? "map" : "countries";
   const navigate = useNavigate();
 
-  const { data: countriesData, isLoading: countriesLoading } = useQuery({
-    queryKey: ["countries"],
-    queryFn: () => api.getCountries(),
-    refetchInterval: 10000,
+  const countriesQuery = useQuery({
+    queryKey: queryKeys.countries,
+    queryFn: api.getCountries,
+    refetchInterval: poll,
   });
-  const { data: mapData, isLoading: mapLoading } = useQuery({
-    queryKey: ["map-points"],
-    queryFn: () => api.getMapPoints(),
-    refetchInterval: 10000,
+  const mapQuery = useQuery({
+    queryKey: queryKeys.mapPoints,
+    queryFn: api.getMapPoints,
+    refetchInterval: poll,
   });
-  const countries = countriesData ?? [];
-  const mapPoints = mapData ?? [];
-  const loading = countriesLoading || mapLoading;
+  const countries = countriesQuery.data ?? [];
+  const mapPoints = mapQuery.data ?? [];
 
-  const setViewMode = (mode: "map" | "countries") => {
-    setSearchParams({ view: mode });
-  };
+  const setViewMode = (mode: ViewMode) => setSearchParams({ view: mode });
 
-  const handleMarkerClick = useCallback(
+  // Stable, so the map's memoized markers survive this page's re-renders.
+  const handleLocationClick = useCallback(
     (city: string | null, country: string | null) => {
-      if (city && country) {
-        navigate(`/locations/${encodeURIComponent(country)}/${encodeURIComponent(city)}`);
-      } else if (country) {
-        navigate(`/locations/${encodeURIComponent(country)}`);
-      }
+      if (country) navigate(locationPath(country, city));
     },
     [navigate]
   );
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-      </div>
-    );
-  }
+  if (countriesQuery.isLoading || mapQuery.isLoading) return <PageSpinner />;
 
-  // Map view
   if (viewMode === "map") {
-    if (mapPoints.length === 0) {
-      return (
-        <div className="h-full flex flex-col">
-          <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Map className="w-5 h-5 text-gray-400" />
-              <h1 className="text-lg font-semibold">Map</h1>
-            </div>
-            <div className="flex gap-1">
-              <button
-                onClick={() => setViewMode("countries")}
-                className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-                title="List view"
-              >
-                <List className="w-5 h-5 text-gray-400" />
-              </button>
-              <button
-                className="p-2 rounded-lg bg-gray-100 transition-colors"
-                title="Map view"
-              >
-                <Map className="w-5 h-5" />
-              </button>
-            </div>
+    if (mapQuery.error && !mapQuery.data) return <ErrorState error={mapQuery.error} />;
+    return (
+      <div className="h-full flex flex-col">
+        <PageHeader className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Map className="w-5 h-5 text-gray-400" />
+            <h1 className="text-lg font-semibold">Map</h1>
           </div>
+          <ViewToggle mode="map" onChange={setViewMode} />
+        </PageHeader>
+        {mapPoints.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-2">
             <Map className="w-12 h-12 text-gray-300" />
             <p className="text-lg">No geotagged photos</p>
             <p className="text-sm">Photos with GPS data will appear on the map</p>
           </div>
-        </div>
-      );
-    }
-
-    return (
-      <div className="h-full flex flex-col">
-        <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Map className="w-5 h-5 text-gray-400" />
-            <h1 className="text-lg font-semibold">Map</h1>
+        ) : (
+          <div className="flex-1">
+            <Suspense fallback={<PageSpinner />}>
+              <MapView points={mapPoints} onLocationClick={handleLocationClick} />
+            </Suspense>
           </div>
-          <div className="flex gap-1">
-            <button
-              onClick={() => setViewMode("countries")}
-              className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-              title="List view"
-            >
-              <List className="w-5 h-5 text-gray-400" />
-            </button>
-            <button
-              className="p-2 rounded-lg bg-gray-100 transition-colors"
-              title="Map view"
-            >
-              <Map className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
-        <div className="flex-1">
-          <MapView onLocationClick={handleMarkerClick} />
-        </div>
+        )}
       </div>
     );
   }
 
-  // Countries list
+  if (countriesQuery.error && !countriesQuery.data) return <ErrorState error={countriesQuery.error} />;
   if (countries.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-2">
-        <Globe className="w-12 h-12 text-gray-300" />
-        <p className="text-lg">No locations found</p>
-        <p className="text-sm">Photos with GPS data will be grouped by location</p>
-      </div>
+      <EmptyState
+        icon={Globe}
+        title="No locations found"
+        hint="Photos with GPS data will be grouped by location"
+      />
     );
   }
 
   return (
     <div className="overflow-y-auto h-full">
-      <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-        <h1 className="text-lg font-semibold">
+      <PageHeader className="flex items-center justify-between">
+        <PageTitle count={`${countries.length} ${plural(countries.length, "country", "countries")}`}>
           Locations
-          <span className="ml-2 text-gray-400 font-normal text-sm">
-            {countries.length} countr{countries.length !== 1 ? "ies" : "y"}
-          </span>
-        </h1>
-        {mapPoints.length > 0 && (
-          <div className="flex gap-1">
-            <button
-              className="p-2 rounded-lg bg-gray-100 transition-colors"
-              title="List view"
-            >
-              <List className="w-5 h-5" />
-            </button>
-            <button
-              onClick={() => setViewMode("map")}
-              className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-              title="Map view"
-            >
-              <Map className="w-5 h-5 text-gray-400" />
-            </button>
-          </div>
-        )}
-      </div>
+        </PageTitle>
+        {mapPoints.length > 0 && <ViewToggle mode="countries" onChange={setViewMode} />}
+      </PageHeader>
 
       <div className="divide-y divide-gray-50">
         {countries.map((country) => (
-          <button
+          <LocationRow
             key={country.country}
-            onClick={() => navigate(`/locations/${encodeURIComponent(country.country)}`)}
-            className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
-          >
-            <div className="flex items-center gap-3">
-              <Globe className="w-4 h-4 text-gray-400" />
-              <span className="text-sm font-medium">{country.country}</span>
-            </div>
-            <span className="text-sm text-gray-400">
-              {country.count} photo{country.count !== 1 ? "s" : ""}
-            </span>
-          </button>
+            icon={Globe}
+            label={country.country}
+            count={country.count}
+            onClick={() => navigate(locationPath(country.country))}
+          />
         ))}
       </div>
     </div>

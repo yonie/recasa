@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-const BASE = "http://localhost:7000";
+const BASE = process.env.RECASA_URL || "http://localhost:7000";
 const FULL = 'img[data-testid="full-view"]';
 
 /**
@@ -51,7 +51,7 @@ test("a video still opens in a player, not the image path", async ({ page }) => 
 });
 
 /**
- * Once the full view has decoded, the stand-in must be gone — otherwise a
+ * Once the full view has decoded, the stand-in must be gone, otherwise a
  * static thumbnail sits behind the image and shows through when zooming.
  */
 test("the placeholder is cleared once the full view has decoded", async ({ page }) => {

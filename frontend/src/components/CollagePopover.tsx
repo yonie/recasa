@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Share2, X, Download, Loader2, RefreshCw } from "lucide-react";
+import { fetchBlob } from "../api/client";
 
 interface CollagePopoverProps {
   /** API URL that returns JPEG collage bytes (grid param appended automatically) */
   url: string;
   label?: string;
-  /** Total number of photos available — used to disable grid sizes that need more */
+  /** Total number of photos available, used to disable grid sizes that need more */
   photoCount: number;
 }
 
@@ -21,20 +22,34 @@ export function CollageButton({ url, label = "Collage", photoCount }: CollagePop
   // Largest grid the photo count can fill
   const maxGrid = GRID_OPTIONS.find((s) => photoCount >= s * s) ?? 2;
 
+  // Only the latest request may set the image: a slow earlier collage must
+  // not replace the one picked after it.
+  const requestId = useRef(0);
+  const currentSrc = useRef<string | null>(null);
+
+  const showImage = (src: string | null) => {
+    if (currentSrc.current) URL.revokeObjectURL(currentSrc.current);
+    currentSrc.current = src;
+    setImgSrc(src);
+  };
+
+  // Free the last blob if the page goes away with the popover open.
+  useEffect(() => () => {
+    if (currentSrc.current) URL.revokeObjectURL(currentSrc.current);
+  }, []);
+
   const fetchCollage = async (gridSize: number, s: number = seed) => {
+    const id = ++requestId.current;
     setLoading(true);
-    if (imgSrc) URL.revokeObjectURL(imgSrc);
-    setImgSrc(null);
+    showImage(null);
     try {
       const sep = url.includes("?") ? "&" : "?";
-      const res = await fetch(`${url}${sep}grid=${gridSize}&seed=${s}`);
-      if (!res.ok) throw new Error();
-      const blob = await res.blob();
-      setImgSrc(URL.createObjectURL(blob));
+      const blob = await fetchBlob(`${url}${sep}grid=${gridSize}&seed=${s}`);
+      if (id === requestId.current) showImage(URL.createObjectURL(blob));
     } catch {
-      setImgSrc(null);
+      if (id === requestId.current) showImage(null);
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
   };
 
@@ -52,10 +67,9 @@ export function CollageButton({ url, label = "Collage", photoCount }: CollagePop
 
   const handleClose = () => {
     setOpen(false);
-    if (imgSrc) {
-      URL.revokeObjectURL(imgSrc);
-      setImgSrc(null);
-    }
+    requestId.current++;
+    setLoading(false);
+    showImage(null);
   };
 
   const handleDownload = () => {
@@ -101,7 +115,7 @@ export function CollageButton({ url, label = "Collage", photoCount }: CollagePop
                   }}
                   disabled={loading}
                   className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50"
-                  title="Shuffle — different combination"
+                  title="Shuffle (different combination)"
                 >
                   <RefreshCw className={`w-4 h-4 text-gray-500 ${loading ? "animate-spin" : ""}`} />
                 </button>
@@ -136,7 +150,7 @@ export function CollageButton({ url, label = "Collage", photoCount }: CollagePop
                     title={
                       available
                         ? `${size}x${size} (${size * size} photos)`
-                        : `Not enough photos — need ${size * size}, have ${photoCount}`
+                        : `Not enough photos: need ${size * size}, have ${photoCount}`
                     }
                     className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
                       !available

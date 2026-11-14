@@ -16,6 +16,53 @@
   border: none !important;
 }
 
+/* Map markers. Styled here rather than inline in the marker HTML, which a
+   Content-Security-Policy without 'unsafe-inline' would block. */
+.cluster-badge {
+  background: #3b82f6;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  border: 2px solid white;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+.cluster-badge-30 {
+  width: 30px;
+  height: 30px;
+}
+.cluster-badge-40 {
+  width: 40px;
+  height: 40px;
+}
+.cluster-badge-50 {
+  width: 50px;
+  height: 50px;
+  font-size: 14px;
+}
+
+.active-stop-dot {
+  background: #ef4444;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  border: 3px solid white;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.6);
+}
+
+/* Hero Trail countdown; --ring-circumference is set on the circle. */
+@keyframes countdown-ring {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: var(--ring-circumference);
+  }
+}
+
 .leaflet-popup-content-wrapper {
   border-radius: 12px !important;
 }
@@ -74,7 +121,7 @@
   }
 
   /* Desktop: scale on hover. Touch devices get no per-tile transitions or
-     overlay — every extra paint layer per tile costs scroll fps on iOS. */
+     overlay: every extra paint layer per tile costs scroll fps on iOS. */
   @media (pointer: fine) {
     .photo-grid-item {
       @apply transition-transform duration-200;

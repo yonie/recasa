@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   ImageIcon,
@@ -24,8 +24,10 @@ import {
   Loader2,
 } from "lucide-react";
 import { clsx } from "clsx";
+import type { LibraryStats } from "../api/client";
+import { useLibraryStats, usePipelineStatus } from "../hooks/useServerState";
+import { formatBytes } from "../lib/format";
 import { useStore } from "../store/useStore";
-import { type PipelineStats } from "../api/client";
 
 const navItems = [
   { to: "/", icon: ImageIcon, label: "Photos" },
@@ -48,33 +50,16 @@ const toolItems = [
 ];
 
 export function Sidebar() {
-  const stats = useStore((s) => s.stats);
+  const stats = useLibraryStats();
+  const pipelineStats = usePipelineStatus();
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const closeSidebar = useStore((s) => s.closeSidebar);
   const location = useLocation();
   const navigate = useNavigate();
   const isToolRoute = toolItems.some((item) => location.pathname.startsWith(item.to));
   const [toolsOpen, setToolsOpen] = useState(isToolRoute);
-  const [pipelineStats, setPipelineStats] = useState<PipelineStats | null>(null);
-
-  useEffect(() => {
-    if (isToolRoute && !toolsOpen) setToolsOpen(true);
-  }, [isToolRoute, toolsOpen]);
-
-  useEffect(() => {
-    async function fetchPipelineStatus() {
-      try {
-        const res = await fetch("/api/pipeline/status");
-        const data = await res.json();
-        setPipelineStats(data);
-      } catch {
-        // ignore
-      }
-    }
-    fetchPipelineStatus();
-    const interval = setInterval(fetchPipelineStatus, 3000);
-    return () => clearInterval(interval);
-  }, []);
+  // Landing on a tool page opens the submenu it lives in, and it stays open.
+  if (isToolRoute && !toolsOpen) setToolsOpen(true);
 
   const pipelineActive = pipelineStats?.state === "scanning" || pipelineStats?.state === "processing";
 
@@ -100,7 +85,12 @@ export function Sidebar() {
       >
         {/* Logo */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
-          <button onClick={() => navigate("/")} className="flex items-center gap-2 hover:opacity-80 transition-opacity">
+          <button
+            onClick={() => {
+              closeSidebar();
+              navigate("/");
+            }}
+            className="flex items-center gap-2 hover:opacity-80 transition-opacity">
             <Camera className="w-7 h-7 text-primary-600" />
             <h1 className="text-xl font-bold text-gray-900">Recasa</h1>
           </button>
@@ -112,7 +102,7 @@ export function Sidebar() {
           </button>
         </div>
 
-        {/* Navigation */}
+        {/* Navigation. On a phone the drawer covers the page, so following a link closes it. */}
         <nav className="flex-1 overflow-y-auto py-3 px-3">
           <div className="space-y-0.5">
             {navItems.map((item) => (
@@ -120,6 +110,7 @@ export function Sidebar() {
                 key={item.to}
                 to={item.to}
                 end={item.to === "/"}
+                onClick={closeSidebar}
                 className={({ isActive }) =>
                   clsx("sidebar-link", isActive && "active")
                 }
@@ -153,6 +144,7 @@ export function Sidebar() {
                   <NavLink
                     key={item.to}
                     to={item.to}
+                    onClick={closeSidebar}
                     className={({ isActive }) =>
                       clsx("sidebar-link", isActive && "active")
                     }
@@ -171,6 +163,7 @@ export function Sidebar() {
 
             <NavLink
               to="/pipeline"
+              onClick={closeSidebar}
               className={({ isActive }) =>
                 clsx("sidebar-link", isActive && "active")
               }
@@ -188,64 +181,32 @@ export function Sidebar() {
           </div>
         </nav>
 
-        {/* Stats footer */}
-        {stats && (
-          <div className="px-5 py-3 border-t border-gray-200 text-xs text-gray-500 space-y-1">
-            <div className="flex justify-between">
-              <span>Photos</span>
-              <span className="font-medium text-gray-700">
-                {stats.total_photos.toLocaleString()}
-              </span>
-            </div>
-            {stats.videos_count > 0 && (
-              <div className="flex justify-between">
-                <span>Videos</span>
-                <span className="font-medium text-gray-700">
-                  {stats.videos_count.toLocaleString()}
-                </span>
-              </div>
-            )}
-            <div className="flex justify-between">
-              <span>Size</span>
-              <span className="font-medium text-gray-700">
-                {formatBytes(stats.total_size_bytes)}
-              </span>
-            </div>
-            {stats.total_persons > 0 && (
-              <div className="flex justify-between">
-                <span>People</span>
-                <span className="font-medium text-gray-700">
-                  {stats.total_persons.toLocaleString()}
-                </span>
-              </div>
-            )}
-            {stats.locations_count > 0 && (
-              <div className="flex justify-between">
-                <span>Locations</span>
-                <span className="font-medium text-gray-700">
-                  {stats.locations_count.toLocaleString()}
-                </span>
-              </div>
-            )}
-            {stats.favorites_count > 0 && (
-              <div className="flex justify-between">
-                <span>Favorites</span>
-                <span className="font-medium text-gray-700">
-                  {stats.favorites_count.toLocaleString()}
-                </span>
-              </div>
-            )}
-          </div>
-        )}
+        {stats && <StatsFooter stats={stats} />}
       </aside>
     </>
   );
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+function StatsFooter({ stats }: { stats: LibraryStats }) {
+  // Optional rows only show once there is something to count.
+  const rows: [string, string, boolean][] = [
+    ["Photos", stats.total_photos.toLocaleString(), true],
+    ["Videos", stats.videos_count.toLocaleString(), stats.videos_count > 0],
+    ["Size", formatBytes(stats.total_size_bytes), true],
+    ["People", stats.total_persons.toLocaleString(), stats.total_persons > 0],
+    ["Locations", stats.locations_count.toLocaleString(), stats.locations_count > 0],
+    ["Favorites", stats.favorites_count.toLocaleString(), stats.favorites_count > 0],
+  ];
+  return (
+    <div className="px-5 py-3 border-t border-gray-200 text-xs text-gray-500 space-y-1">
+      {rows
+        .filter(([, , show]) => show)
+        .map(([label, value]) => (
+          <div key={label} className="flex justify-between">
+            <span>{label}</span>
+            <span className="font-medium text-gray-700">{value}</span>
+          </div>
+        ))}
+    </div>
+  );
 }

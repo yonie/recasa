@@ -1,5 +1,21 @@
 import { useState, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Download, Upload, Loader2, CheckCircle, AlertCircle } from "lucide-react";
+import { api, type UserDataImportResult } from "../api/client";
+
+/** One line per thing an import restored or queued, joined into a sentence. */
+function importSummary(data: UserDataImportResult): string {
+  const parts: string[] = [];
+  const add = (n: number | undefined, text: string) => {
+    if (n && n > 0) parts.push(`${n} ${text}`);
+  };
+  add(data.favorites_restored, "favorites restored");
+  add(data.persons_restored, "people restored");
+  add(data.persons_pending, "people will be restored after face detection completes");
+  add(data.hidden_groups_restored, "hidden tiles restored");
+  add(data.hidden_groups_pending, "hidden tiles will be restored after face detection completes");
+  return parts.length > 0 ? parts.join(". ") : "Nothing to restore";
+}
 
 export function ExportImport() {
   const [exporting, setExporting] = useState(false);
@@ -9,20 +25,20 @@ export function ExportImport() {
     message: string;
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
 
   const handleExport = async () => {
     setExporting(true);
     setResult(null);
     try {
-      const res = await fetch("/api/user-data/export");
-      if (!res.ok) throw new Error("Export failed");
-      const blob = await res.blob();
+      const blob = await api.exportUserData();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = "recasa-user-data.json";
       a.click();
-      URL.revokeObjectURL(url);
+      // Revoking in the same tick can cancel the download in Safari and Firefox.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
       setResult({ type: "success", message: "Export downloaded" });
     } catch {
       setResult({ type: "error", message: "Export failed" });
@@ -35,35 +51,13 @@ export function ExportImport() {
     setImporting(true);
     setResult(null);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch("/api/user-data/import", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
+      const data = await api.importUserData(file);
       if (data.status === "error") {
-        setResult({ type: "error", message: data.message });
+        setResult({ type: "error", message: data.message ?? "Import failed" });
       } else {
-        const parts: string[] = [];
-        if (data.favorites_restored > 0)
-          parts.push(`${data.favorites_restored} favorites restored`);
-        if (data.persons_restored > 0)
-          parts.push(`${data.persons_restored} people restored`);
-        if (data.persons_pending > 0)
-          parts.push(
-            `${data.persons_pending} people will be restored after face detection completes`
-          );
-        if (data.hidden_groups_restored > 0)
-          parts.push(`${data.hidden_groups_restored} hidden tiles restored`);
-        if (data.hidden_groups_pending > 0)
-          parts.push(
-            `${data.hidden_groups_pending} hidden tiles will be restored after face detection completes`
-          );
-        setResult({
-          type: "success",
-          message: parts.length > 0 ? parts.join(". ") : "Nothing to restore",
-        });
+        setResult({ type: "success", message: importSummary(data) });
+        // Restored favorites and names should show everywhere right away.
+        void queryClient.invalidateQueries();
       }
     } catch {
       setResult({ type: "error", message: "Import failed" });

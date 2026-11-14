@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-const BASE = "http://localhost:7000";
+const BASE = process.env.RECASA_URL || "http://localhost:7000";
 
 /** Decode a URL in the page and report the resulting bitmap size. */
 const decode = (url: string) =>

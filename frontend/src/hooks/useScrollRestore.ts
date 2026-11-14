@@ -8,7 +8,7 @@ import { useLocation } from "react-router-dom";
  * `scrollRef` is a callback ref: it binds the scroll listener the moment the
  * container actually attaches. This matters because pages render a loading
  * spinner first and the real scroll container only appears once data is
- * ready — an ordinary effect would bind against the (absent) spinner node and
+ * ready: an ordinary effect would bind against the (absent) spinner node and
  * never re-bind, so nothing ever got saved.
  */
 export function useScrollRestore(key: string) {
@@ -30,7 +30,7 @@ export function useScrollRestore(key: string) {
 
       // Track the live position synchronously on every scroll; only the
       // sessionStorage write is throttled (that write is what janks iOS).
-      // Never re-read node.scrollTop at teardown — React resets it to 0 as
+      // Never re-read node.scrollTop at teardown: React resets it to 0 as
       // the element detaches, which would clobber the saved position.
       let timeout: number | null = null;
       let last = node.scrollTop;
