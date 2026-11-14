@@ -32,7 +32,7 @@ import base64
 import json
 import logging
 import pickle
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 from sqlalchemy import select, update
@@ -61,6 +61,14 @@ EXPORT_VERSION = 2
 # rejected on sight rather than reaching numpy with an arbitrary shape.
 ENCODING_DIM = 512
 ENCODING_NBYTES = ENCODING_DIM * 4  # float32
+
+# Upper bound on similarity cells computed at once while matching (float32,
+# so 16 MB), which keeps an import of a big library within the Pi's memory.
+_SIMILARITY_BLOCK_CELLS = 4_000_000
+
+# Favorites are restored with IN lists of at most this many hashes, well
+# under SQLite's bound-parameter limit however many favorites a file holds.
+_FAVORITES_CHUNK = 500
 
 
 def _encoding_from_db(enc_bytes: bytes) -> np.ndarray | None:
@@ -91,21 +99,41 @@ def _encoding_from_export(b64: str) -> np.ndarray | None:
     return np.frombuffer(raw, dtype="<f4")
 
 
-async def _load_person_encodings(session: AsyncSession, person_id: int) -> list[np.ndarray]:
-    """All decodable faceprints of one person, straight from the DB."""
-    result = await session.execute(
-        select(Face.encoding).where(
-            Face.person_id == person_id,
-            Face.encoding.is_not(None),
-        )
-    )
+def _decode_export_encodings(value: object) -> list[np.ndarray]:
+    """The valid faceprints in an export's ``encodings`` field.
+
+    Anything that is not a list of base64 strings of the right length is
+    dropped, so a malformed file degrades to "no match" instead of a 500.
+    """
+    if not isinstance(value, list):
+        return []
+    return [enc for enc in (_encoding_from_export(b64) for b64 in value) if enc is not None]
+
+
+def _decode_db_encodings(blobs: list[bytes]) -> list[np.ndarray]:
+    """The decodable 512-dim faceprints among stored encoding blobs."""
     encodings = []
-    for (enc_bytes,) in result:
+    for enc_bytes in blobs:
         enc = _encoding_from_db(enc_bytes)
-        if enc is None or enc.size != ENCODING_DIM:
-            continue
-        encodings.append(enc)
+        if enc is not None and enc.size == ENCODING_DIM:
+            encodings.append(enc)
     return encodings
+
+
+async def _person_encoding_blobs(session: AsyncSession, person_id: int) -> list[bytes]:
+    """Stored faceprints of one person, in face order."""
+    result = await session.execute(
+        select(Face.encoding)
+        .where(Face.person_id == person_id, Face.encoding.is_not(None))
+        .order_by(Face.face_id)
+    )
+    return list(result.scalars())
+
+
+def _b64(enc: np.ndarray) -> str:
+    # Raw float32 bytes, not the pickle we happen to store internally, so
+    # importing the file never has to deserialise code.
+    return base64.b64encode(enc.astype("<f4").tobytes()).decode("ascii")
 
 
 def _sample_encodings(encodings: list[np.ndarray], limit: int) -> list[str]:
@@ -127,80 +155,69 @@ def _sample_encodings(encodings: list[np.ndarray], limit: int) -> list[str]:
         norm = float(np.linalg.norm(centroid)) or 1.0
         sims = matrix @ (centroid / norm)
         picked = [encodings[i] for i in np.argsort(sims)[-limit:]]
-    return [
-        base64.b64encode(enc.astype("<f4").tobytes()).decode("ascii")
-        for enc in picked
-    ]
+    return [_b64(enc) for enc in picked]
 
 
 async def export_user_data(session: AsyncSession) -> dict:
-    """Build the export dict from the current database state."""
+    """Build the export dict from the current database state.
 
-    # Favorites
-    result = await session.execute(
-        select(Photo.file_hash).where(Photo.is_favorite == True)  # noqa: E712
+    Faceprints are fetched one person at a time, which bounds memory to one
+    person's vectors, and decoded off the event loop: a well-named library
+    has tens of thousands of them.
+    """
+    favorites = list(
+        (
+            await session.execute(
+                select(Photo.file_hash).where(Photo.is_favorite == True)  # noqa: E712
+            )
+        ).scalars()
     )
-    favorites = [row[0] for row in result]
 
     # Named or ignored persons with their face encodings
-    result = await session.execute(
-        select(Person).where(
-            (Person.name.is_not(None)) | (Person.ignored == True)  # noqa: E712
+    persons_rows = (
+        await session.execute(
+            select(Person.person_id, Person.name, Person.ignored)
+            .where((Person.name.is_not(None)) | (Person.ignored == True))  # noqa: E712
+            .order_by(Person.person_id)
         )
-    )
-    persons_rows = result.scalars().all()
+    ).all()
+
+    def to_export(blobs: list[bytes]) -> list[str]:
+        return [_b64(enc) for enc in _decode_db_encodings(blobs)]
 
     persons = []
-    for person in persons_rows:
-        # Get all face encodings for this person
-        faces_result = await session.execute(
-            select(Face.encoding).where(
-                Face.person_id == person.person_id,
-                Face.encoding.is_not(None),
-            )
-        )
-        encodings_b64 = []
-        for (enc_bytes,) in faces_result:
-            enc = _encoding_from_db(enc_bytes)
-            if enc is None or enc.size != ENCODING_DIM:
-                continue
-            # Raw float32 bytes, not the pickle we happen to store internally,
-            # so importing this file never has to deserialise code.
-            encodings_b64.append(
-                base64.b64encode(enc.astype("<f4").tobytes()).decode("ascii")
-            )
-
+    for person_id, name, ignored in persons_rows:
+        blobs = await _person_encoding_blobs(session, person_id)
+        encodings_b64 = await asyncio.to_thread(to_export, blobs)
         if encodings_b64:
-            persons.append({
-                "name": person.name,
-                "ignored": person.ignored,
-                "encodings": encodings_b64,
-            })
+            persons.append({"name": name, "ignored": ignored, "encodings": encodings_b64})
 
     # Hidden Together tiles. Person ids do not survive an export/import
     # round-trip, so a tile travels as its members' faceprints; on import the
     # members are matched back to whatever person ids exist by then.
-    hidden_result = await session.execute(select(HiddenPersonGroup.group_key))
+    def to_sample(blobs: list[bytes]) -> list[str]:
+        return _sample_encodings(_decode_db_encodings(blobs), HIDDEN_MEMBER_SAMPLES)
+
     hidden_groups = []
-    member_cache: dict[int, list[np.ndarray]] = {}
-    for (group_key,) in hidden_result:
+    member_samples: dict[int, list[str]] = {}
+    for group_key in (await session.execute(select(HiddenPersonGroup.group_key))).scalars():
         try:
             member_ids = [int(x) for x in group_key.split(",") if x]
         except ValueError:
             continue
         members = []
         for pid in member_ids:
-            if pid not in member_cache:
-                member_cache[pid] = await _load_person_encodings(session, pid)
-            sample = _sample_encodings(member_cache[pid], HIDDEN_MEMBER_SAMPLES)
-            if sample:
-                members.append({"encodings": sample})
+            if pid not in member_samples:
+                blobs = await _person_encoding_blobs(session, pid)
+                member_samples[pid] = await asyncio.to_thread(to_sample, blobs)
+            if member_samples[pid]:
+                members.append({"encodings": member_samples[pid]})
         if len(members) >= 2:
             hidden_groups.append({"members": members})
 
     return {
         "version": EXPORT_VERSION,
-        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "exported_at": datetime.now(UTC).isoformat(),
         "favorites": favorites,
         "persons": persons,
         "hidden_groups": hidden_groups,
@@ -240,23 +257,28 @@ def _vote_person_ids(
 
     Cosine similarity of each exported encoding against every current face;
     an encoding votes for the person of its single best match when that match
-    clears min_sim.
+    clears min_sim. Votes are counted in encoding order, which callers rely on
+    to break ties.
     """
     exported_matrix = np.array(exported_encs, dtype=np.float32)
     exp_norms = np.linalg.norm(exported_matrix, axis=1, keepdims=True)
     exp_norms[exp_norms == 0] = 1
     exported_matrix = exported_matrix / exp_norms
 
-    # Shape: (n_exported, n_current)
-    similarities = exported_matrix @ current_matrix.T
+    # The full (n_exported, n_current) similarity matrix of one person with
+    # thousands of faces against a library's ~50k is gigabytes; work through
+    # it a block of exported rows at a time instead.
+    rows_per_block = max(1, _SIMILARITY_BLOCK_CELLS // max(1, current_matrix.shape[0]))
 
     person_id_votes: dict[int, int] = {}
-    for i in range(similarities.shape[0]):
-        best_idx = int(np.argmax(similarities[i]))
-        best_sim = float(similarities[i, best_idx])
-        if best_sim >= min_sim:
-            pid = current_person_ids[best_idx]
-            person_id_votes[pid] = person_id_votes.get(pid, 0) + 1
+    for start in range(0, exported_matrix.shape[0], rows_per_block):
+        similarities = exported_matrix[start : start + rows_per_block] @ current_matrix.T
+        best = similarities.argmax(axis=1)
+        best_sims = similarities[np.arange(best.shape[0]), best]
+        for best_idx, best_sim in zip(best.tolist(), best_sims.tolist(), strict=True):
+            if best_sim >= min_sim:
+                pid = current_person_ids[best_idx]
+                person_id_votes[pid] = person_id_votes.get(pid, 0) + 1
     return person_id_votes
 
 
@@ -279,12 +301,9 @@ def _match_persons(
     used_person_ids: set[int] = set()
 
     for person_data in exported_persons:
-        # Decode exported encodings
-        exported_encs = [
-            enc
-            for enc in (_encoding_from_export(b64) for b64 in person_data.get("encodings", []))
-            if enc is not None
-        ]
+        if not isinstance(person_data, dict):
+            continue
+        exported_encs = _decode_export_encodings(person_data.get("encodings"))
         if not exported_encs:
             continue
 
@@ -295,9 +314,12 @@ def _match_persons(
         # Best person_id: most votes, not already assigned
         for pid, votes in sorted(person_id_votes.items(), key=lambda x: -x[1]):
             if pid not in used_person_ids and votes >= 2:
+                name = person_data.get("name")
                 assigned[pid] = {
-                    "name": person_data.get("name"),
-                    "ignored": person_data.get("ignored", False),
+                    # A name must be text: anything else stored in persons.name
+                    # would fail validation on every people listing afterwards.
+                    "name": name if isinstance(name, str) else None,
+                    "ignored": bool(person_data.get("ignored", False)),
                 }
                 used_person_ids.add(pid)
                 break
@@ -306,20 +328,17 @@ def _match_persons(
 
 
 def _best_person_for_encodings(
-    b64_list: list,
+    b64_list: object,
     current_matrix: np.ndarray,
     current_person_ids: list[int],
 ) -> int | None:
     """Resolve one exported identity (a set of faceprints) to a current person.
 
     Needs two agreeing votes, except when the identity carries a single
-    sample — then one clear match at the same similarity bar is accepted,
+    sample; then one clear match at the same similarity bar is accepted,
     so tiny (often junk) people still resolve instead of being dropped.
     """
-    encs = [
-        enc for enc in (_encoding_from_export(b64) for b64 in b64_list)
-        if enc is not None
-    ]
+    encs = _decode_export_encodings(b64_list)
     if not encs:
         return None
     votes = _vote_person_ids(encs, current_matrix, current_person_ids)
@@ -349,6 +368,8 @@ def _match_hidden_groups(
     unresolved: list = []
     for group in exported_hidden:
         members = group.get("members", []) if isinstance(group, dict) else []
+        if not isinstance(members, list):
+            members = []
         resolved: set[int] = set()
         complete = len(members) >= 2
         for member in members:
@@ -432,6 +453,12 @@ async def _try_apply_hidden_groups(
     return len(restored), unresolved
 
 
+def _list_field(data: dict, key: str) -> list:
+    """An export field that should be a list; anything else counts as empty."""
+    value = data.get(key, [])
+    return value if isinstance(value, list) else []
+
+
 async def import_user_data(data: dict, session: AsyncSession) -> dict:
     """Import user data from an export dict. Returns a summary."""
 
@@ -454,22 +481,21 @@ async def import_user_data(data: dict, session: AsyncSession) -> dict:
         )
 
     # --- Favorites (immediate) ---
-    fav_hashes = data.get("favorites", [])
-    if fav_hashes:
+    # Deduplicated, so a hash repeated across chunks is not counted twice.
+    fav_hashes = list(dict.fromkeys(h for h in _list_field(data, "favorites") if isinstance(h, str)))
+    for start in range(0, len(fav_hashes), _FAVORITES_CHUNK):
         result = await session.execute(
             update(Photo)
-            .where(Photo.file_hash.in_(fav_hashes))
+            .where(Photo.file_hash.in_(fav_hashes[start : start + _FAVORITES_CHUNK]))
             .values(is_favorite=True)
         )
-        summary["favorites_restored"] = result.rowcount  # type: ignore[assignment]
+        summary["favorites_restored"] += result.rowcount
 
     # --- Persons ---
-    exported_persons = data.get("persons", [])
+    exported_persons = [p for p in _list_field(data, "persons") if isinstance(p, dict)]
 
     # --- Hidden together tiles ---
-    exported_hidden = data.get("hidden_groups", [])
-    if not isinstance(exported_hidden, list):
-        exported_hidden = []
+    exported_hidden = _list_field(data, "hidden_groups")
 
     # One scan of all current faceprints serves both matchers below.
     current_faces = (
