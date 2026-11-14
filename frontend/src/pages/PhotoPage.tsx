@@ -2,8 +2,9 @@ import { useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { queryKeys } from "../api/queryKeys";
+import { PageSpinner } from "../components/Page";
 import { useStore } from "../store/useStore";
-import { Loader2 } from "lucide-react";
 
 /**
  * Direct photo link page (route: /photos/:hash)
@@ -16,7 +17,7 @@ export function PhotoPage() {
   const viewerOpen = useStore((s) => s.viewerOpen);
 
   const { data: detail, isError } = useQuery({
-    queryKey: ["photo", hash],
+    queryKey: queryKeys.photo(hash),
     queryFn: () => api.getPhoto(hash!),
     enabled: !!hash,
     retry: false,
@@ -49,9 +50,5 @@ export function PhotoPage() {
     }
   }, [viewerOpen, hash, navigate]);
 
-  return (
-    <div className="flex items-center justify-center h-64">
-      <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-    </div>
-  );
+  return <PageSpinner />;
 }

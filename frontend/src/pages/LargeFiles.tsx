@@ -1,9 +1,12 @@
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, type PhotoSummary } from "../api/client";
+import { HardDrive } from "lucide-react";
+import { clsx } from "clsx";
+import { api, thumbnailUrl } from "../api/client";
+import { queryKeys } from "../api/queryKeys";
+import { EmptyState, ErrorState, PageHeader, PageSpinner, PageTitle } from "../components/Page";
 import { useOpenPhoto } from "../hooks/useOpenPhoto";
-import { thumbnailUrl } from "../api/client";
-import { Loader2, HardDrive } from "lucide-react";
+import { formatBytes, plural } from "../lib/format";
 
 const SIZE_OPTIONS = [
   { label: "> 1 MB", value: 1_000_000 },
@@ -17,55 +20,42 @@ export function LargeFiles() {
   const [minSize, setMinSize] = useState(10_000_000);
   const openPhoto = useOpenPhoto();
 
-  const { data, isLoading: loading } = useQuery({
-    queryKey: ["large-files", minSize],
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.largeFiles(minSize),
     queryFn: () => api.getLargeFiles({ min_size: minSize, page_size: 100 }),
   });
   const photos = data?.items ?? [];
   const total = data?.total ?? 0;
 
-  const handlePhotoClick = useCallback(
-    (photo: PhotoSummary) =>
-      openPhoto(photo, photos.findIndex((p) => p.file_hash === photo.file_hash), photos),
-    [openPhoto, photos]
-  );
-
   return (
     <div className="overflow-y-auto h-full">
-      <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-        <h1 className="text-lg font-semibold">
-          Large Files
-          <span className="ml-2 text-gray-400 font-normal text-sm">
-            {total} photo{total !== 1 ? "s" : ""}
-          </span>
-        </h1>
+      <PageHeader className="flex items-center justify-between">
+        <PageTitle count={`${total} ${plural(total, "photo")}`}>Large Files</PageTitle>
 
         <div className="flex items-center gap-2">
           {SIZE_OPTIONS.map((opt) => (
             <button
               key={opt.value}
               onClick={() => setMinSize(opt.value)}
-              className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+              className={clsx(
+                "px-3 py-1 text-xs rounded-full border transition-colors",
                 minSize === opt.value
                   ? "bg-primary-50 border-primary-200 text-primary-700"
                   : "border-gray-200 text-gray-500 hover:bg-gray-50"
-              }`}
+              )}
             >
               {opt.label}
             </button>
           ))}
         </div>
-      </div>
+      </PageHeader>
 
-      {loading ? (
-        <div className="flex items-center justify-center h-64">
-          <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-        </div>
+      {isLoading ? (
+        <PageSpinner />
+      ) : error ? (
+        <ErrorState error={error} />
       ) : photos.length === 0 ? (
-        <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-2">
-          <HardDrive className="w-12 h-12 text-gray-300" />
-          <p className="text-lg">No large files found</p>
-        </div>
+        <EmptyState icon={HardDrive} title="No large files found" />
       ) : (
         <div className="p-4">
           <table className="w-full text-sm">
@@ -79,16 +69,18 @@ export function LargeFiles() {
               </tr>
             </thead>
             <tbody>
-              {photos.map((photo) => (
+              {photos.map((photo, index) => (
                 <tr
                   key={photo.file_hash}
                   className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
-                  onClick={() => handlePhotoClick(photo)}
+                  onClick={() => openPhoto(photo, index, photos)}
                 >
                   <td className="py-2 pr-3">
                     <img
                       src={thumbnailUrl(photo.file_hash, 200)}
                       alt={photo.file_name}
+                      loading="lazy"
+                      decoding="async"
                       className="w-12 h-12 object-cover rounded"
                     />
                   </td>
@@ -96,18 +88,12 @@ export function LargeFiles() {
                     <p className="font-medium text-gray-700">{photo.file_name}</p>
                     <p className="text-xs text-gray-400">{photo.file_path}</p>
                   </td>
-                  <td className="py-2 text-gray-600 font-mono">
-                    {formatBytes(photo.file_size)}
+                  <td className="py-2 text-gray-600 font-mono">{formatBytes(photo.file_size)}</td>
+                  <td className="py-2 text-gray-500">
+                    {photo.width && photo.height ? `${photo.width} x ${photo.height}` : "-"}
                   </td>
                   <td className="py-2 text-gray-500">
-                    {photo.width && photo.height
-                      ? `${photo.width} x ${photo.height}`
-                      : "-"}
-                  </td>
-                  <td className="py-2 text-gray-500">
-                    {photo.date_taken
-                      ? new Date(photo.date_taken).toLocaleDateString()
-                      : "-"}
+                    {photo.date_taken ? new Date(photo.date_taken).toLocaleDateString() : "-"}
                   </td>
                 </tr>
               ))}
@@ -117,12 +103,4 @@ export function LargeFiles() {
       )}
     </div>
   );
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }

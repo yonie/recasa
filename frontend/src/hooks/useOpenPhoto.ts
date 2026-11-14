@@ -32,3 +32,20 @@ export function useOpenPhoto() {
     [openViewer, setViewerPhoto]
   );
 }
+
+/**
+ * Open the viewer on a single photo known only by hash (map popups). There
+ * is no list entry to draw from, so this waits for the detail.
+ */
+export function useOpenPhotoByHash() {
+  const openViewer = useStore((s) => s.openViewer);
+  return useCallback(
+    (hash: string) => {
+      api
+        .getPhoto(hash)
+        .then((detail) => openViewer(detail))
+        .catch(() => {});
+    },
+    [openViewer]
+  );
+}

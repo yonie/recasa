@@ -1,9 +1,8 @@
-import { useEffect } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 
 import { Sidebar } from "./components/Sidebar";
 import { SearchBar } from "./components/SearchBar";
-import { PhotoViewer } from "./components/PhotoViewer";
+import { PhotoViewer } from "./components/viewer/PhotoViewer";
 
 import { Home } from "./pages/Home";
 import { Folders } from "./pages/Folders";
@@ -15,37 +14,15 @@ import { Videos } from "./pages/Videos";
 import { Duplicates } from "./pages/Duplicates";
 import { LargeFiles } from "./pages/LargeFiles";
 import { SearchResults } from "./pages/SearchResults";
-import { People, PersonDetail, TogetherDetail } from "./pages/People";
+import { People, PersonDetail, TogetherDetail } from "./pages/people";
 import { Events, EventDetail } from "./pages/Events";
 import { Locations, LocationCountryCities, LocationCityPhotos } from "./pages/Locations";
-import { Pipeline } from "./pages/Pipeline";
+import { Pipeline } from "./pages/pipeline";
 import { Tags, TagDetail } from "./pages/Tags";
 import { PhotoPage } from "./pages/PhotoPage";
 import { ExportImport } from "./pages/ExportImport";
 
-import { useStore } from "./store/useStore";
-import { api } from "./api/client";
-
 function AppContent() {
-  const setStats = useStore((s) => s.setStats);
-
-  // Load library stats
-  useEffect(() => {
-    async function loadStats() {
-      try {
-        const stats = await api.getStats();
-        setStats(stats);
-      } catch {
-        // API might not be ready yet
-      }
-    }
-
-    loadStats();
-    // Refresh stats every 30 seconds
-    const interval = setInterval(loadStats, 30000);
-    return () => clearInterval(interval);
-  }, [setStats]);
-
   return (
     <div className="flex h-screen h-[100dvh]">
       <Sidebar />

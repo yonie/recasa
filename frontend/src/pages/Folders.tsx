@@ -1,53 +1,30 @@
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Folder, ChevronRight, ChevronDown } from "lucide-react";
+import { ChevronDown, ChevronRight, Folder } from "lucide-react";
 import { clsx } from "clsx";
-import { api, type DirectoryNode, type PhotoSummary } from "../api/client";
+import { api, type DirectoryNode } from "../api/client";
+import { queryKeys } from "../api/queryKeys";
+import { ErrorState, PageSpinner } from "../components/Page";
 import { PhotoGrid } from "../components/PhotoGrid";
 import { useOpenPhoto } from "../hooks/useOpenPhoto";
-import { Loader2 } from "lucide-react";
 
 export function Folders() {
   const navigate = useNavigate();
   const location = useLocation();
   // Selected folder lives in the URL (/folders/<path>) so Back and deep links work.
-  const rawPath = decodeURIComponent(location.pathname.replace(/^\/folders\/?/, ""));
-  const selectedPath = rawPath || null;
-  const openPhoto = useOpenPhoto();
+  const selectedPath = decodeURIComponent(location.pathname.replace(/^\/folders\/?/, "")) || null;
 
-  const { data: treeData, isLoading: loading } = useQuery({
-    queryKey: ["directory-tree"],
-    queryFn: () => api.getDirectoryTree(),
+  const { data: tree = [], isLoading, error } = useQuery({
+    queryKey: queryKeys.directoryTree,
+    queryFn: api.getDirectoryTree,
   });
-  const tree = treeData ?? [];
 
-  const { data: photosPage, isLoading: photosLoading } = useQuery({
-    queryKey: ["directory-photos", selectedPath],
-    queryFn: () => api.getDirectoryPhotos(selectedPath!, { page_size: 200 }),
-    enabled: !!selectedPath,
-  });
-  const photos = photosPage?.items ?? [];
+  const handleSelectFolder = (path: string) =>
+    navigate(`/folders/${path.split("/").map(encodeURIComponent).join("/")}`);
 
-  const handleSelectFolder = useCallback(
-    (path: string) => {
-      navigate(`/folders/${path.split("/").map(encodeURIComponent).join("/")}`);
-    },
-    [navigate]
-  );
-
-  const handlePhotoClick = useCallback(
-    (photo: PhotoSummary, index: number) => openPhoto(photo, index, photos),
-    [openPhoto, photos]
-  );
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-      </div>
-    );
-  }
+  if (isLoading) return <PageSpinner />;
+  if (error) return <ErrorState error={error} />;
 
   return (
     <div className="flex h-full">
@@ -73,24 +50,34 @@ export function Folders() {
 
       {/* Photo grid */}
       <div className="flex-1 overflow-y-auto">
-        {!selectedPath ? (
+        {selectedPath ? (
+          <FolderPhotos path={selectedPath} />
+        ) : (
           <div className="flex items-center justify-center h-64 text-gray-400">
             <p>Select a folder to browse photos</p>
           </div>
-        ) : photosLoading ? (
-          <div className="flex items-center justify-center h-64">
-            <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
-          </div>
-        ) : (
-          <>
-            <div className="px-4 py-3 border-b border-gray-100">
-              <h2 className="text-sm font-medium text-gray-600">{selectedPath}</h2>
-            </div>
-            <PhotoGrid photos={photos} onPhotoClick={handlePhotoClick} />
-          </>
         )}
       </div>
     </div>
+  );
+}
+
+function FolderPhotos({ path }: { path: string }) {
+  const openPhoto = useOpenPhoto();
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.directoryPhotos(path),
+    queryFn: () => api.getDirectoryPhotos(path, { page_size: 200 }),
+  });
+
+  if (isLoading) return <PageSpinner />;
+  if (error) return <ErrorState error={error} />;
+  return (
+    <>
+      <div className="px-4 py-3 border-b border-gray-100">
+        <h2 className="text-sm font-medium text-gray-600">{path}</h2>
+      </div>
+      <PhotoGrid photos={data?.items ?? []} onPhotoClick={openPhoto} />
+    </>
   );
 }
 
@@ -135,7 +122,6 @@ function TreeNode({ node, selectedPath, onSelect, depth }: TreeNodeProps) {
       </button>
 
       {expanded &&
-        hasChildren &&
         node.children.map((child) => (
           <TreeNode
             key={child.path}
