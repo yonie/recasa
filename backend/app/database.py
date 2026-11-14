@@ -17,17 +17,36 @@ engine = create_async_engine(
 )
 
 
+# Per-connection SQLite settings.
+#   journal_mode=WAL      concurrent readers with a single writer, drastically
+#                         fewer 'database is locked' errors than the default
+#   synchronous=NORMAL    safe with WAL; fsync at checkpoints, not every commit
+#   mmap_size             read the index through the OS page cache instead of
+#                         a read() per page. Covers the whole 0.4 GB index
+#                         with room to grow; it is address space, not RAM.
+#                         Halves the big aggregate queries (tag counts).
+#   cache_size            16 MB page cache per connection (default 2 MB)
+#   temp_store=MEMORY     sorts and DISTINCTs without an index use RAM, not
+#                         temp files on the SD card or SSD
+# Deliberately no ANALYZE / PRAGMA optimize: they add sqlite_stat tables to
+# the schema and can change query plans, and with them the row order of
+# queries whose ORDER BY leaves ties.
+_PRAGMAS = (
+    "PRAGMA journal_mode=WAL",
+    "PRAGMA busy_timeout=30000",
+    "PRAGMA synchronous=NORMAL",
+    "PRAGMA mmap_size=536870912",
+    "PRAGMA cache_size=-16384",
+    "PRAGMA temp_store=MEMORY",
+)
+
+
 @event.listens_for(engine.sync_engine, "connect")
 def _set_sqlite_pragmas(dbapi_connection, connection_record):
-    """Configure SQLite for better concurrency on every new connection.
-
-    WAL mode allows concurrent readers with a single writer, drastically
-    reducing 'database is locked' errors compared to the default journal mode.
-    """
+    """Apply _PRAGMAS to every new connection."""
     cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA busy_timeout=30000")
-    cursor.execute("PRAGMA synchronous=NORMAL")
+    for pragma in _PRAGMAS:
+        cursor.execute(pragma)
     cursor.close()
 
 
@@ -79,6 +98,11 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
 # Indexes added after tables already existed (create_all won't add these).
 _ADDED_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_photo_tags_tag_id ON photo_tags (tag_id)",
+    # Covering index for "join to photos by hash, skip flagged ones": the tag
+    # counts probe photos once per photo_tags row (590k on the live index)
+    # and no longer have to read the wide photos rows. /api/tags 1.8s -> 1.2s.
+    "CREATE INDEX IF NOT EXISTS idx_photos_hash_flagged"
+    " ON photos (file_hash, flagged_for_removal)",
 )
 
 

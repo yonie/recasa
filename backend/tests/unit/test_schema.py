@@ -17,6 +17,12 @@ from backend.app.config import settings
 
 BASELINE = Path(__file__).with_name("schema_baseline.sql")
 
+# Indexes this code adds on top of the live schema (contract: CREATE INDEX IF
+# NOT EXISTS only, each one measured). Nothing else may change.
+ADDED_INDEXES = [
+    "CREATE INDEX idx_photos_hash_flagged ON photos (file_hash, flagged_for_removal);",
+]
+
 
 def _schema(db_file: Path) -> list[str]:
     with sqlite3.connect(db_file) as conn:
@@ -26,9 +32,10 @@ def _schema(db_file: Path) -> list[str]:
     return [r[0] for r in rows]
 
 
-def _baseline() -> list[str]:
+def _baseline(with_added: bool = True) -> list[str]:
     text = BASELINE.read_text()
-    return sorted(stmt.strip() + ";" for stmt in text.split(";\n") if stmt.strip())
+    stmts = [stmt.strip() + ";" for stmt in text.split(";\n") if stmt.strip()]
+    return sorted(stmts + (ADDED_INDEXES if with_added else []))
 
 
 async def _init_on(db_source: Path | None, build_sql: str | None = None) -> Path:
@@ -52,9 +59,11 @@ async def _init_on(db_source: Path | None, build_sql: str | None = None) -> Path
 
 @pytest.mark.asyncio
 async def test_init_db_leaves_live_schema_untouched():
-    """An index with the live schema comes out of init_db() byte-identical."""
+    """An index with the live schema comes out of init_db() byte-identical,
+    plus only the listed indexes."""
     db_file = await _init_on(None, build_sql=BASELINE.read_text())
     assert _schema(db_file) == _baseline()
+    assert set(_schema(db_file)) - set(_baseline(with_added=False)) == set(ADDED_INDEXES)
 
 
 @pytest.mark.asyncio
