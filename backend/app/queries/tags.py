@@ -14,6 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import Photo, PhotoTag
+from backend.app.queries.filters import LIKE_ESCAPE, contains_pattern
 
 # Ranking of tags by visible-photo count (ties by name), with the number of
 # ranked tags alongside every row.
@@ -91,12 +92,16 @@ def tag_counts_query(
     """Top ``limit`` tags by visible-photo count, ties by name.
 
     ``name_contains`` keeps tags whose name contains it (case-insensitive,
-    LIKE wildcards honoured, as the endpoint always has). With
+    "_" and "%" taken literally). With
     ``hidden_hashes`` (every tagged hash that is flagged or has no photo)
     counts are computed by subtraction, otherwise by the join.
     Rows carry tag_id, name, category, count, known and total.
     """
-    where = "WHERE lower(tags.name) LIKE lower(:pattern)" if name_contains else ""
+    where = (
+        f"WHERE lower(tags.name) LIKE lower(:pattern) ESCAPE '{LIKE_ESCAPE}'"
+        if name_contains
+        else ""
+    )
     if hidden_hashes is None:
         stmt = text(_BY_JOIN + _RANKING.format(where=where))
     else:
@@ -104,7 +109,7 @@ def tag_counts_query(
             bindparam("hidden_hashes", hidden_hashes, expanding=True)
         )
     if name_contains:
-        stmt = stmt.bindparams(bindparam("pattern", f"%{name_contains}%"))
+        stmt = stmt.bindparams(bindparam("pattern", contains_pattern(name_contains)))
     return stmt.bindparams(bindparam("limit", limit)).columns(**_RESULT_TYPES)
 
 

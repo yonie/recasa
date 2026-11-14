@@ -16,6 +16,7 @@ from backend.app.models import (  # noqa: E402
     Face,
     Photo,
     PhotoTag,
+    Tag,
 )
 
 
@@ -144,3 +145,44 @@ def test_directory_photos_match_the_exact_folder():
 
     found = run_with_client(body, rows)
     assert found == {"2026/2026_09": [1, 6], "2026/2026%09": [], "Trips": [10], "trips": [11]}
+
+
+# --- search takes "_" and "%" literally --------------------------------------
+
+
+def test_search_and_tag_filter_take_wildcards_literally():
+    rows = _seeded(
+        p1={"file_name": "IMG_0001.jpg"},
+        p2={"file_name": "IMG-0002.jpg", "file_path": "2020/album/IMG-0002.jpg"},
+        p3={"file_name": "100%.jpg", "file_path": "2020/album/100%.jpg"},
+        p6={"file_name": "1000.jpg", "file_path": "2020/album/1000.jpg"},
+        p7={"file_name": "back\\slash.jpg", "file_path": "x/back\\slash.jpg"},
+    )
+    rows.append(PhotoTag(file_hash=h(7), tag_id=4))
+    rows.append(Tag(tag_id=4, name="snow_man"))
+    rows.append(Tag(tag_id=5, name="snowyman"))
+    rows.append(PhotoTag(file_hash=h(6), tag_id=5))
+
+    async def body(client):
+        async def search(q):
+            page = (await client.get("/api/photos", params={"search": q})).json()
+            return sorted(int(p["file_hash"], 16) for p in page["items"])
+
+        async def tags(q):
+            data = (await client.get("/api/tags", params={"q": q})).json()
+            return [t["name"] for t in data["items"]]
+
+        return (
+            {q: await search(q) for q in ("IMG_", "img_", "100%", "0%", "back\\slash")},
+            {q: await tags(q) for q in ("snow_", "_", "SNOW")},
+        )
+
+    photos, tags = run_with_client(body, rows)
+    assert photos == {
+        "IMG_": [1, 8, 10],  # IMG-0002 no longer matches
+        "img_": [1, 8, 10],  # still case-insensitive
+        "100%": [3],
+        "0%": [3],
+        "back\\slash": [7],
+    }
+    assert tags == {"snow_": ["snow_man"], "_": ["snow_man"], "SNOW": ["snow_man", "snowyman"]}

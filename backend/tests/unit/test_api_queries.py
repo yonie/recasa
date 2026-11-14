@@ -94,10 +94,11 @@ def test_search_by_date_words():
     assert _matching(search="eva 2020") == {1, 2, 3}
 
 
-def test_search_keeps_like_wildcards():
-    # "_" and "%" have always been LIKE wildcards in the search box.
+def test_search_takes_wildcards_literally():
     assert _matching(search="IMG_000") == {1, 2, 3, 6, 7, 8}
-    assert _matching(search="%") == _matching()
+    assert _matching(search="IMG%000") == set()
+    assert _matching(search="%") == set()
+    assert _matching(search="G_0") == {1, 2, 3, 6, 7, 8, 10}
 
 
 # --- summaries and paging -------------------------------------------------

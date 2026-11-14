@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import ColumnElement, and_, extract, or_, select
 
@@ -31,6 +32,24 @@ _MONTHS = {
 }
 
 
+# Escape character for LIKE patterns built from user text.
+LIKE_ESCAPE = "\\"
+
+
+def contains_pattern(text: str) -> str:
+    """LIKE pattern matching ``text`` anywhere, taken literally.
+
+    "_" and "%" in the text are escaped, so a search for IMG_ finds IMG_
+    and not also IMG-. Use with ``escape=LIKE_ESCAPE``.
+    """
+    escaped = (
+        text.replace(LIKE_ESCAPE, LIKE_ESCAPE * 2)
+        .replace("%", LIKE_ESCAPE + "%")
+        .replace("_", LIKE_ESCAPE + "_")
+    )
+    return f"%{escaped}%"
+
+
 def date_search_condition(search: str) -> ColumnElement[bool] | None:
     """Capture-date filter from the year and month-name words in a search.
 
@@ -54,20 +73,24 @@ def text_search_condition(search: str) -> ColumnElement[bool]:
     of probing three tables for every one of ~40k photos, which took a search
     from seconds to about a tenth of one. The matching rows are the same.
     """
-    pattern = f"%{search}%"
-    captioned = select(Caption.file_hash).where(Caption.caption.ilike(pattern))
+    pattern = contains_pattern(search)
+
+    def matches(column: Any) -> ColumnElement[bool]:
+        return column.ilike(pattern, escape=LIKE_ESCAPE)
+
+    captioned = select(Caption.file_hash).where(matches(Caption.caption))
     with_person = select(Face.file_hash).where(
-        Face.person_id.in_(select(Person.person_id).where(Person.name.ilike(pattern)))
+        Face.person_id.in_(select(Person.person_id).where(matches(Person.name)))
     )
     tagged = select(PhotoTag.file_hash).where(
-        PhotoTag.tag_id.in_(select(Tag.tag_id).where(Tag.name.ilike(pattern)))
+        PhotoTag.tag_id.in_(select(Tag.tag_id).where(matches(Tag.name)))
     )
     conditions: list[ColumnElement[bool]] = [
-        Photo.file_name.ilike(pattern),
-        Photo.file_path.ilike(pattern),
-        Photo.location_city.ilike(pattern),
-        Photo.location_country.ilike(pattern),
-        Photo.location_address.ilike(pattern),
+        matches(Photo.file_name),
+        matches(Photo.file_path),
+        matches(Photo.location_city),
+        matches(Photo.location_country),
+        matches(Photo.location_address),
         Photo.file_hash.in_(captioned),
         Photo.file_hash.in_(with_person),
         Photo.file_hash.in_(tagged),
