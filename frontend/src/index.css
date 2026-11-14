@@ -121,7 +121,7 @@
   }
 
   /* Desktop: scale on hover. Touch devices get no per-tile transitions or
-     overlay — every extra paint layer per tile costs scroll fps on iOS. */
+     overlay: every extra paint layer per tile costs scroll fps on iOS. */
   @media (pointer: fine) {
     .photo-grid-item {
       @apply transition-transform duration-200;

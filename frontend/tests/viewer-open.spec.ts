@@ -51,7 +51,7 @@ test("a video still opens in a player, not the image path", async ({ page }) => 
 });
 
 /**
- * Once the full view has decoded, the stand-in must be gone — otherwise a
+ * Once the full view has decoded, the stand-in must be gone, otherwise a
  * static thumbnail sits behind the image and shows through when zooming.
  */
 test("the placeholder is cleared once the full view has decoded", async ({ page }) => {
