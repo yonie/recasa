@@ -36,7 +36,7 @@ export function Favorites() {
     <PhotoListLayout
       photos={photos}
       header={
-        <PageHeader>
+        <PageHeader className="flex items-center gap-3">
           <PageTitle count={`${photos.length} ${plural(photos.length, "photo")}`}>Favorites</PageTitle>
           <div className="ml-auto">
             <CollageButton
