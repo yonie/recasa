@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from backend.app.models import Photo
 from backend.app.services import hasher, thumbnail
 from backend.app.services.hasher import _compute_perceptual_hashes, _find_duplicate_groups
 from backend.app.services.thumbnail import (
@@ -17,7 +18,7 @@ from backend.app.services.thumbnail import (
     thumb_exists,
 )
 
-from .helpers import h, write_jpeg
+from .helpers import h, photo_row, write_jpeg
 
 
 def _reference_groups(file_hashes, phash_hexes, threshold):
@@ -143,3 +144,40 @@ def test_unreadable_image_is_a_permanent_failure(tmp_path: Path):
         _generate_thumbnail(bad, h(4), [200])
     with pytest.raises(PermanentStageError, match="cannot read image"):
         _compute_perceptual_hashes(bad)
+
+
+@pytest.mark.asyncio
+async def test_motion_videos_are_named_by_hash_and_old_names_still_resolve(db, photos_dir):
+    from backend.app.services import motion_photo
+
+    fake_mp4 = b"\x00\x00\x00\x18ftypmp42" + b"v" * 4000
+    rows, hashes = [], []
+    for i, folder in enumerate(("2019", "2020")):
+        # Same file name in two folders: they used to share one video.
+        path = photos_dir / folder / "PXL_0001.jpg"
+        write_jpeg(path, seed=60 + i)
+        path.write_bytes(path.read_bytes() + fake_mp4 + bytes([i]))
+        fh = h(60 + i)
+        hashes.append(fh)
+        rows += photo_row(fh, f"{folder}/PXL_0001.jpg", motion_photo=True)
+    async with db() as session:
+        session.add_all(rows)
+        await session.commit()
+
+    for fh in hashes:
+        assert await motion_photo.extract_motion_video(fh)
+    videos = [motion_photo.motion_video_path(fh, None) for fh in hashes]
+    assert videos[0] != videos[1]
+    assert [v.read_bytes()[-1] for v in videos] == [0, 1]
+    async with db() as session:
+        stored = [(await session.get(Photo, fh)).live_photo_video for fh in hashes]
+    assert stored == [f"_motion/00/{fh}_motion.mp4" for fh in hashes]
+    assert [motion_photo.motion_video_path(fh, s) for fh, s in zip(hashes, stored)] == videos
+
+    # Another install's video from before the hash naming: still served.
+    old = motion_photo.motion_videos_dir() / "IM" / "IMG_1_motion.mp4"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"old")
+    assert motion_photo.motion_video_path(h(70), "_motion/IM/IMG_1_motion.mp4") == old
+    assert motion_photo.motion_video_path(h(70), "_motion/../db/recasa.db") is None
+    assert motion_photo.motion_video_path(h(70), "2020/IMG_1.MOV") is None
