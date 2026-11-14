@@ -1,5 +1,6 @@
 """Worker per-stage decisions: run, skip, record failure, route on."""
 
+import asyncio
 from datetime import datetime
 
 import pytest
@@ -164,3 +165,71 @@ def test_ignored_stage_switches(monkeypatch):
     monkeypatch.setenv("ENABLE_THUMBNAILS", "true")
     monkeypatch.delenv("ENABLE_EXIF_EXTRACTION", raising=False)
     assert ignored_stage_switches() == ["ENABLE_HASHING"]
+
+
+@pytest.mark.asyncio
+async def test_stop_ends_the_item_in_hand_and_later_work_still_runs(db, monkeypatch):
+    fh, fh2 = h(20), h(21)
+    await _add(db, photo_row(fh), photo_row(fh2))
+
+    class StopDuring(FakeService):
+        async def __call__(self, file_hash: str):
+            if not self.calls:
+                p.stop_and_drain()  # Stop pressed while this photo is hashed
+            return await super().__call__(file_hash)
+
+    svc = StopDuring()
+    w, p = _worker(monkeypatch, QueueType.HASHING, svc)
+    await p.add_file_at(fh2, QueueType.HASHING)
+    await w.process_item(fh)
+    assert p._stop_requested
+    assert not any(p.get_queue_sizes().values())  # drained, fh not routed on
+
+    # Resume: the worker loop is still alive and processes new work.
+    p.begin_work()
+    assert not p._stop_requested
+    task = asyncio.create_task(w.run())
+    await p.add_file_at(fh2, QueueType.HASHING)
+    for _ in range(100):
+        if p.get_queue_sizes()["faces"]:
+            break
+        await asyncio.sleep(0.02)
+    w.stop()
+    await asyncio.wait_for(task, 3)
+    assert svc.calls == [fh, fh2]
+    assert p.get_queue_sizes()["faces"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_scan_after_stop_runs_and_a_stop_cancels_only_the_running_scan(
+    db, photos_dir, monkeypatch
+):
+    from backend.app.services import scanner
+    from backend.app.workers import pipeline as pipeline_mod
+    from backend.app.workers.queues import pipeline
+
+    from .helpers import write_jpeg
+
+    write_jpeg(photos_dir / "a.jpg", seed=50)
+    pipeline.stop_and_drain()
+    stats = await pipeline_mod.run_initial_scan()
+    assert stats["new"] == 1 and not pipeline._stop_requested
+    assert pipeline.get_queue_sizes()["exif"] == 1
+
+    # Stop during a scan: it is cancelled before indexing anything.
+    write_jpeg(photos_dir / "b.jpg", seed=51)
+    real_collect = scanner._collect_photo_files
+
+    def collect_then_stop(*args):
+        result = real_collect(*args)
+        pipeline.stop_and_drain()
+        return result
+
+    monkeypatch.setattr(scanner, "_collect_photo_files", collect_then_stop)
+    stats = await pipeline_mod.run_initial_scan()
+    assert stats["new"] == 0 and pipeline._stop_requested
+    monkeypatch.setattr(scanner, "_collect_photo_files", real_collect)
+    stats = await pipeline_mod.run_initial_scan()
+    assert stats["new"] == 1
+    pipeline.stop_and_drain()
+    pipeline.begin_work()

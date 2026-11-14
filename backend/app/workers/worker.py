@@ -162,9 +162,11 @@ class Worker:
         if entry is None:
             return False
         name, service_fn = entry
+        # A Stop while this item is in hand ends its trip after this stage.
+        generation = self.pipeline.generation
 
         if not stage_enabled(self.queue_type):
-            await self.pipeline.route_to_next(file_hash, self.queue_type)
+            await self.pipeline.route_to_next(file_hash, self.queue_type, generation)
             return True
 
         run, photo = await self._should_run(file_hash)
@@ -173,7 +175,7 @@ class Worker:
             return False
         if not run:
             logger.debug("[%s] Skip: %s", name, photo.file_path)
-            await self.pipeline.route_to_next(file_hash, self.queue_type)
+            await self.pipeline.route_to_next(file_hash, self.queue_type, generation)
             return True
 
         filepath = str(settings.photos_dir / photo.file_path)
@@ -197,7 +199,7 @@ class Worker:
             self.queue.current_file_hash = None
             self.queue.current_file_path = None
 
-        await self.pipeline.route_to_next(file_hash, self.queue_type)
+        await self.pipeline.route_to_next(file_hash, self.queue_type, generation)
         self._log_progress()
         return True
 
@@ -215,15 +217,18 @@ class Worker:
         semaphore = get_processing_semaphore()
         logger.info("Worker %d started for queue %s", self.worker_id, self.queue_type.value)
 
-        while self._running and not self.pipeline._stop_requested:
+        # A Stop drains the queues but does not end this loop: Resume and
+        # later scans need the workers again.
+        while self._running:
             try:
                 file_hash = await asyncio.wait_for(self.queue.get(), timeout=1.0)
             except TimeoutError:
                 continue
-            if self.pipeline._stop_requested:
-                break
+            generation = self.pipeline.generation
             try:
                 async with semaphore:
+                    if generation != self.pipeline.generation:
+                        continue  # stopped while waiting for a slot
                     await self.process_item(file_hash)
             except Exception as e:
                 # One bad item must not end the worker loop.
@@ -259,18 +264,15 @@ class EventDetectionWorker:
         # would write.
         self._last_phash_signature: bytes | None = None
 
-    def _active(self) -> bool:
-        return self._running and not self.pipeline._stop_requested
-
     async def run(self) -> None:
         self._running = True
         logger.info("Event detection worker started")
         events_queue = self.pipeline.queues[QueueType.EVENTS]
 
-        while self._active():
-            while events_queue.empty() and self._active():
+        while self._running:
+            while events_queue.empty() and self._running:
                 await asyncio.sleep(2)
-            if not self._active():
+            if not self._running:
                 break
 
             drained = events_queue.drain()

@@ -105,10 +105,13 @@ class Pipeline:
             qtype: ProcessingQueue(qtype) for qtype in QueueType
         }
         self.is_running = False
-        # Read by the API (/api/pipeline/status) and by scans as their cancel
-        # check. Once set it stays set: a stopped pipeline stays stopped until
-        # the app restarts.
+        # Shown by /api/pipeline/status: a Stop was the last thing to happen.
+        # Cleared when new work begins (a scan, a sweep or Resume).
         self._stop_requested = False
+        # Bumped by every Stop. Work begun before a Stop (a running scan, an
+        # item a worker holds) sees a newer generation and is abandoned;
+        # work begun after it runs normally, without a restart.
+        self.generation = 0
         self.error_log: list[dict] = []
 
     def get_next_queues(self, queue_type: QueueType) -> list[QueueType]:
@@ -120,8 +123,16 @@ class Pipeline:
         """Add a file to the pipeline at a specific queue."""
         return await self.queues[entry_queue].put(file_hash)
 
-    async def route_to_next(self, file_hash: str, from_queue: QueueType) -> None:
-        """Route a file to the next queue(s) in the pipeline."""
+    async def route_to_next(
+        self, file_hash: str, from_queue: QueueType, generation: int | None = None
+    ) -> None:
+        """Route a file to the next queue(s) in the pipeline.
+
+        `generation` is the one the item was taken under; after a Stop the
+        item goes no further.
+        """
+        if generation is not None and generation != self.generation:
+            return
         for next_queue_type in self.get_next_queues(from_queue):
             await self.queues[next_queue_type].put(file_hash)
 
@@ -156,10 +167,22 @@ class Pipeline:
         return {qtype.value: queue.qsize() for qtype, queue in self.queues.items()}
 
     def stop_and_drain(self) -> None:
-        """Stop the pipeline and drain all queues."""
+        """Stop the running scan and drop all queued work.
+
+        Workers keep running: what they hold finishes its current stage and
+        goes no further, and anything queued afterwards (Resume, a rescan,
+        the watcher) is processed as usual.
+        """
         self._stop_requested = True
+        self.generation += 1
         for queue in self.queues.values():
             queue.drain()
+
+    def begin_work(self) -> int:
+        """Mark the start of a scan or resume. Returns the generation a scan
+        compares against to notice a later Stop."""
+        self._stop_requested = False
+        return self.generation
 
 
 # Global pipeline instance

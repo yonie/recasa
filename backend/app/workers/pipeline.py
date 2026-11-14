@@ -69,9 +69,10 @@ async def run_initial_scan(fast: bool = False) -> dict:
     async def progress_callback(processed: int, total: int, current_file: str):
         logger.info("Scanning: %d/%d", processed, total)
 
+    generation = pipeline.begin_work()
     return await scan_directory(
         progress_callback=progress_callback,
-        cancel_check=lambda: pipeline._stop_requested,
+        cancel_check=lambda: pipeline.generation != generation,
         on_file_discovered=_queue_at,
         fast=fast,
     )
@@ -86,6 +87,7 @@ async def resume_incomplete_processing() -> int:
     pipeline routing carries it through the later stages.
     Returns the number of photos queued.
     """
+    pipeline.begin_work()
     async with async_session() as session:
         facts = await load_photo_facts(session)
         outputs = await load_stage_outputs(session)
