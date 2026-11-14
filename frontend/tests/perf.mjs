@@ -167,7 +167,15 @@ async function viewer(browser) {
           const img = document.querySelector('img[data-testid="full-view"]');
           if (img && shown === null) shown = performance.now() - t0;
           if (img && img.complete && img.naturalWidth > 0) {
-            resolve({ shownMs: shown, decodedMs: performance.now() - t0 });
+            // Split the wait into what the page controls (when the request
+            // starts) and what the network and Pi do (how long it takes).
+            const res = performance.getEntriesByName(img.src)[0];
+            resolve({
+              shownMs: shown,
+              decodedMs: performance.now() - t0,
+              requestStartMs: res ? res.startTime - t0 : null,
+              transferMs: res ? res.responseEnd - res.startTime : null,
+            });
             return;
           }
           requestAnimationFrame(tick);
@@ -209,6 +217,8 @@ async function viewer(browser) {
   return {
     openShownMs: open.shownMs,
     openDecodedMs: open.decodedMs,
+    openRequestStartMs: open.requestStartMs,
+    openTransferMs: open.transferMs,
     stepSwapMs: median(steps.map((s) => s.swapMs)),
     stepDecodedMs: median(steps.map((s) => s.decodedMs)),
   };
