@@ -314,3 +314,55 @@ def test_timeline_and_trail_break_ties_by_hash():
     assert [int(p["file_hash"], 16) for p in trail[0]["photos"]] == sorted(
         set(_SHUFFLED) - _UNDATED
     )[:4]
+
+
+# --- a date-only date_to includes that whole day ----------------------------
+
+
+def test_date_to_includes_the_whole_day():
+    rows = _seeded(
+        p1={"date_taken": datetime(2020, 5, 1, 0, 0)},
+        p2={"date_taken": datetime(2020, 5, 1, 23, 59, 59, 500000)},
+        p3={"date_taken": datetime(2020, 5, 2, 0, 0)},
+    )
+
+    async def body(client):
+        async def matching(**params):
+            page = (await client.get("/api/photos", params={**params, "page_size": 200})).json()
+            return sorted(int(p["file_hash"], 16) for p in page["items"])
+
+        return {
+            "day": await matching(date_from="2020-05-01", date_to="2020-05-01"),
+            "exact": await matching(date_from="2020-05-01", date_to="2020-05-01T00:00:00"),
+            "time": await matching(date_from="2020-05-01", date_to="2020-05-01 23:59:59"),
+            "bad": (await client.get("/api/photos", params={"date_to": "2020-13-01"})).status_code,
+        }
+
+    found = run_with_client(body, rows)
+    assert found["day"] == [1, 2]
+    # A full datetime keeps its exact meaning.
+    assert found["exact"] == [1]
+    assert found["time"] == [1]
+    assert found["bad"] == 422
+
+
+def test_trail_dates_are_whole_days():
+    rows = _seeded(
+        p1={"date_taken": datetime(2020, 5, 1, 0, 0)},
+        p2={"date_taken": datetime(2020, 5, 1, 23, 59, 59, 500000)},
+        p3={"date_taken": datetime(2020, 5, 2, 0, 0)},
+        p6={"date_taken": datetime(2020, 4, 30, 23, 59, 59, 900000)},
+    )
+    for row in rows:
+        if isinstance(row, Photo):
+            row.gps_latitude, row.gps_longitude = 52.0, 5.0
+
+    async def body(client):
+        trail = (
+            await client.get(
+                "/api/locations/trail", params={"date_from": "2020-05-01", "date_to": "2020-05-01"}
+            )
+        ).json()
+        return [int(p["file_hash"], 16) for stop in trail for p in stop["photos"]]
+
+    assert run_with_client(body, rows) == [1, 2]

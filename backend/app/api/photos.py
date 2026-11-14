@@ -16,6 +16,7 @@ from backend.app.api.deps import (
     Page,
     PageSize,
     SessionDep,
+    UntilDatetime,
     require_file_hash,
 )
 from backend.app.api.files import contained_path, file_response
@@ -69,7 +70,7 @@ async def list_photos(
     flagged: bool | None = None,
     video: bool | None = None,
     date_from: datetime | None = None,
-    date_to: datetime | None = None,
+    date_to: UntilDatetime = None,
     country: str | None = None,
     city: str | None = None,
     search: Annotated[str | None, Query(max_length=500)] = None,

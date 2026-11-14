@@ -1,6 +1,6 @@
 """Locations API endpoints."""
 
-from datetime import date
+from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter
 from sqlalchemy import func, select
@@ -131,10 +131,14 @@ async def get_trail(
         )
         .order_by(Photo.date_taken.asc(), Photo.file_hash.asc())
     )
+    # Whole days, both ends included. These were string bounds that only
+    # came out right because stored dates have a space where the bound had
+    # a "T"; the datetimes say the same thing on purpose.
     if date_from:
-        query = query.where(Photo.date_taken >= date_from.isoformat())
+        query = query.where(Photo.date_taken >= datetime.combine(date_from, time.min))
     if date_to:
-        query = query.where(Photo.date_taken < (date_to.isoformat() + "T23:59:59"))
+        next_day = datetime.combine(date_to + timedelta(days=1), time.min)
+        query = query.where(Photo.date_taken < next_day)
 
     # Group by day + approximate location
     stops: dict[str, dict] = {}
