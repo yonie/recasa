@@ -132,22 +132,29 @@ export function PhotoViewer() {
 
   // Warm the next/previous full views (and, for RAW and HEIC, the server-side
   // render cache) and their details, so a step shows the photo and its info
-  // at once instead of waiting on a decode and a request.
+  // at once instead of waiting on a decode and a request. Started once the
+  // photo on screen has decoded, so the neighbours (often several MB each)
+  // don't compete with it for the Pi's bandwidth; a slow one is not waited
+  // on for more than a moment.
+  const currentReady = !!detail && (detail.is_video || fullLoaded === detail.file_hash);
   useEffect(() => {
     if (!viewerOpen || viewerIndex < 0) return;
-    const t = setTimeout(() => {
-      for (const i of [viewerIndex + 1, viewerIndex - 1]) {
-        const p = viewerPhotoList[i];
-        if (!p) continue;
-        if (!p.is_video) new Image().src = fullViewUrl(p);
-        void queryClient.prefetchQuery({
-          queryKey: queryKeys.photo(p.file_hash),
-          queryFn: () => api.getPhoto(p.file_hash),
-        });
-      }
-    }, 200); // let the photo on screen finish first
+    const t = setTimeout(
+      () => {
+        for (const i of [viewerIndex + 1, viewerIndex - 1]) {
+          const p = viewerPhotoList[i];
+          if (!p) continue;
+          if (!p.is_video) new Image().src = fullViewUrl(p);
+          void queryClient.prefetchQuery({
+            queryKey: queryKeys.photo(p.file_hash),
+            queryFn: () => api.getPhoto(p.file_hash),
+          });
+        }
+      },
+      currentReady ? 0 : 1500
+    );
     return () => clearTimeout(t);
-  }, [queryClient, viewerOpen, viewerIndex, viewerPhotoList]);
+  }, [queryClient, viewerOpen, viewerIndex, viewerPhotoList, currentReady]);
 
   // An image served from cache can finish before React attaches onLoad, which
   // would leave the placeholder up over a ready image.
