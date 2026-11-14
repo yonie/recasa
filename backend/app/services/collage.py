@@ -10,7 +10,7 @@ from backend.app.services.thumbnail import _get_thumbnail_path
 
 
 def _hamming(a: int, b: int) -> int:
-    return bin(a ^ b).count("1")
+    return (a ^ b).bit_count()
 
 
 # Photos within this phash distance are the same shot (mirrors
@@ -22,6 +22,7 @@ def _select_diverse(
     file_hashes: list[str],
     phashes: list[str | None],
     needed: int,
+    rng: random.Random,
 ) -> list[str]:
     """Select visually diverse photos using greedy max-distance phash picking.
 
@@ -54,8 +55,8 @@ def _select_diverse(
                 kept_ph.append(ph)
         return [file_hashes[i] for i in kept]
 
-    # Start from a random photo (seed-controlled via caller's random.seed)
-    start = random.randint(0, n - 1)
+    # Start from a random photo (seed-controlled by the caller's rng)
+    start = rng.randint(0, n - 1)
     selected: list[int] = [start]
     selected_ph: list[int | None] = [ph_ints[start]]
     remaining = set(range(n)) - {start}
@@ -107,11 +108,9 @@ def _scatter_grid(hashes: list[str]) -> list[str]:
         brightness = 128.0
         if path.exists():
             try:
-                img = Image.open(path)
-                grey = img.convert("L")
-                brightness = float(np.array(grey).mean())
-                img.close()
-            except Exception:
+                with Image.open(path) as img:
+                    brightness = float(np.array(img.convert("L")).mean())
+            except Exception:  # noqa: BLE001, S110 - unreadable tile keeps the mid-grey default
                 pass
         items.append((fh, brightness))
 
@@ -138,11 +137,15 @@ def generate_collage(
     phashes: list[str | None],
     grid: int = 0,
     output_size: int = 1400,
-    dates: list = None,  # kept for API compat, unused
     seed: int = 0,
 ) -> bytes | None:
-    """Generate a square collage from photo thumbnails."""
-    random.seed(seed)
+    """Generate a square collage from photo thumbnails.
+
+    The same inputs and seed always give the same picture. The generator is
+    private to the call: collages render in worker threads, and seeding the
+    shared module-level one let two concurrent renders disturb each other.
+    """
+    rng = random.Random(seed)
 
     if not file_hashes:
         return None
@@ -169,7 +172,7 @@ def generate_collage(
     needed = cols * cols
 
     # Select diverse photos (greedy max phash distance)
-    selected = _select_diverse(file_hashes, phashes, needed)
+    selected = _select_diverse(file_hashes, phashes, needed, rng)
 
     if not selected:
         return None
@@ -201,7 +204,7 @@ def generate_collage(
             img = img.crop((left, top, left + side, top + side))
             img = img.resize((tile_size, tile_size), Image.LANCZOS)
             images.append(img)
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - skip a tile that will not decode
             continue
 
     if not images:
