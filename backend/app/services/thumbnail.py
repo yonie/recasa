@@ -6,7 +6,6 @@ and every file is written atomically: a crash can leave the larger sizes
 missing, but never a truncated file that looks finished.
 """
 
-import asyncio
 import logging
 import os
 import threading
@@ -24,6 +23,7 @@ from backend.app.services.image_loader import (
     is_raw,
     open_image_cm,
 )
+from backend.app.services.media_task import run_media_task
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,7 @@ async def generate_thumbnails(file_hash: str) -> bool:
         logger.warning("File not found: %s", filepath)
         return False
 
-    created = await asyncio.to_thread(
+    created = await run_media_task(
         _generate_thumbnail, filepath, file_hash, settings.thumbnail_sizes, is_video
     )
     if created:

@@ -9,13 +9,17 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# ffmpeg gives up on a read that stalls this long (open, read) instead of
+# blocking its thread forever, e.g. on a file on a hung network mount.
+_AV_TIMEOUT = (30.0, 30.0)
+
 
 def extract_video_metadata(filepath: Path) -> dict:
     """Return {duration, width, height} for a video, or {} if unreadable."""
     try:
         import av
 
-        with av.open(str(filepath)) as container:
+        with av.open(str(filepath), timeout=_AV_TIMEOUT) as container:
             stream = next((s for s in container.streams if s.type == "video"), None)
             if stream is None:
                 return {}
@@ -59,7 +63,7 @@ def extract_poster_frame(filepath: Path):
     try:
         import av
 
-        with av.open(str(filepath)) as container:
+        with av.open(str(filepath), timeout=_AV_TIMEOUT) as container:
             stream = next((s for s in container.streams if s.type == "video"), None)
             if stream is None:
                 return None

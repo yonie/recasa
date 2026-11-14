@@ -14,6 +14,7 @@ from backend.app.database import async_session
 from backend.app.exceptions import PermanentStageError
 from backend.app.models import DuplicateGroup, DuplicateMember, Photo, PhotoHash
 from backend.app.services.image_loader import PermanentReadError, open_image_cm
+from backend.app.services.media_task import run_media_task
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ async def compute_hashes(file_hash: str) -> bool:
     if not filepath.exists():
         raise PermanentStageError("file not found on disk")
 
-    hashes = await asyncio.to_thread(_compute_perceptual_hashes, filepath)
+    hashes = await run_media_task(_compute_perceptual_hashes, filepath)
     if not hashes:
         raise PermanentStageError("no hashes could be computed")
 

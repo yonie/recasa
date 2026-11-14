@@ -21,6 +21,7 @@ from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.models import Caption, Photo, PhotoTag, Tag
 from backend.app.services.image_loader import open_image_cm
+from backend.app.services.media_task import MediaTimeout, run_media_task
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +228,12 @@ async def caption_photo(file_hash: str) -> bool:
     if not filepath.exists():
         return False
 
-    image_base64 = await asyncio.to_thread(_prepare_image_base64, filepath)
+    try:
+        image_base64 = await run_media_task(_prepare_image_base64, filepath)
+    except MediaTimeout:
+        # Same as any image that cannot be prepared: marked done below.
+        logger.warning("Skipping caption for %s: image preparation timed out", filepath)
+        image_base64 = None
     if not image_base64:
         # Store marker to prevent re-processing
         async with async_session() as session:

@@ -5,13 +5,14 @@ This service extracts the embedded video to a separate file so it
 can be served for hover-to-play previews.
 """
 
-import asyncio
 import logging
+import mmap
 from pathlib import Path
 
 from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.models import Photo
+from backend.app.services.media_task import run_media_task
 
 logger = logging.getLogger(__name__)
 
@@ -33,26 +34,26 @@ def _extract_motion_photo_video(filepath: Path) -> Path | None:
     Returns the path to the extracted video file, or None if extraction fails.
     """
     try:
-        with open(filepath, "rb") as f:
-            data = f.read()
+        # Memory-mapped rather than read whole: searching a large JPEG does not
+        # pull all of it into the process, only the video part is copied out.
+        with open(filepath, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            # Strategy 1: Look for the MP4 ftyp box header
+            # The ftyp box starts with a 4-byte size followed by 'ftyp'
+            mp4_offset = None
+            for sig in MP4_SIGNATURES:
+                # ftyp box: [4 bytes size][4 bytes 'ftyp'][brand bytes]
+                # We look for 'ftyp' + brand
+                idx = data.find(sig)
+                if idx >= 4:
+                    # The box starts 4 bytes before 'ftyp'
+                    mp4_offset = idx - 4
+                    break
 
-        # Strategy 1: Look for the MP4 ftyp box header
-        # The ftyp box starts with a 4-byte size followed by 'ftyp'
-        mp4_offset = None
-        for sig in MP4_SIGNATURES:
-            # ftyp box: [4 bytes size][4 bytes 'ftyp'][brand bytes]
-            # We look for 'ftyp' + brand
-            idx = data.find(sig)
-            if idx >= 4:
-                # The box starts 4 bytes before 'ftyp'
-                mp4_offset = idx - 4
-                break
+            if mp4_offset is None:
+                return None
 
-        if mp4_offset is None:
-            return None
-
-        # Verify it looks like an MP4 (should start with a valid box size)
-        mp4_data = data[mp4_offset:]
+            # Verify it looks like an MP4 (should start with a valid box size)
+            mp4_data = data[mp4_offset:]
         if len(mp4_data) < 8:
             return None
 
@@ -90,7 +91,7 @@ async def extract_motion_video(file_hash: str) -> bool:
     if not filepath.exists():
         return False
 
-    video_path = await asyncio.to_thread(_extract_motion_photo_video, filepath)
+    video_path = await run_media_task(_extract_motion_photo_video, filepath)
     if not video_path:
         return False
 

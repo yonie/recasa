@@ -22,6 +22,14 @@ from backend.app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Decompression-bomb guard, set explicitly so nothing can quietly switch it
+# off. This is Pillow's own default: a warning above it and an error
+# (DecompressionBombError, a permanent stage failure) above twice it, i.e.
+# about 179 MP, or 0.5 GB per decoded RGB image. The largest photo in the live
+# library is a 61 MP panorama. Applies to every Pillow plugin including HEIF;
+# RAW decodes are checked against the same ceiling in _open_raw.
+Image.MAX_IMAGE_PIXELS = 89_478_485
+
 # Register HEIF support as an import side effect (HEIC/HEIF via pillow-heif).
 try:
     from pillow_heif import register_heif_opener
@@ -90,6 +98,13 @@ def _open_raw(filepath: Path) -> Image.Image:
 
     assert rawpy is not None  # guaranteed by RAWPY_SUPPORTED check
     with rawpy.imread(str(filepath)) as raw:
+        # rawpy bypasses Pillow's bomb check; apply the same error ceiling
+        # before the full-size buffer is allocated.
+        pixels = raw.sizes.width * raw.sizes.height
+        if pixels > 2 * Image.MAX_IMAGE_PIXELS:
+            raise Image.DecompressionBombError(
+                f"RAW image has {pixels} pixels, over the {2 * Image.MAX_IMAGE_PIXELS} limit"
+            )
         rgb = raw.postprocess(
             output_bps=8,  # 8-bit per channel
             output_color=rawpy.ColorSpace.sRGB,

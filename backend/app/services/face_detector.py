@@ -21,6 +21,7 @@ from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.models import Face, Person, Photo
 from backend.app.services.image_loader import is_raw, open_image_cm
+from backend.app.services.media_task import run_media_task
 
 logger = logging.getLogger(__name__)
 
@@ -268,9 +269,9 @@ async def detect_faces(file_hash: str) -> bool:
     if not filepath.exists():
         return False
 
-    faces = await asyncio.to_thread(_detect_faces, filepath)
+    faces = await run_media_task(_detect_faces, filepath)
     thumb_paths = (
-        await asyncio.to_thread(
+        await run_media_task(
             _generate_face_thumbnails, filepath, [f["bbox"] for f in faces], file_hash
         )
         if faces

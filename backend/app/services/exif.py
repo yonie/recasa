@@ -1,6 +1,5 @@
 """EXIF extraction service - reads metadata from photo files."""
 
-import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +15,7 @@ from backend.app.services.image_loader import (
     get_raw_dimensions,
     is_raw,
 )
+from backend.app.services.media_task import run_media_task
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +272,7 @@ async def extract_exif(file_hash: str) -> bool:
         logger.warning("File not found: %s", filepath)
         return False
 
-    exif_data = await asyncio.to_thread(_extract_exif_data, filepath)
+    exif_data = await run_media_task(_extract_exif_data, filepath)
 
     async with async_session() as session:
         photo = await session.get(Photo, file_hash)
