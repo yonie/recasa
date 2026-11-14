@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type APIRequestContext } from "@playwright/test";
 
 const BASE = process.env.RECASA_URL || "http://localhost:7000";
 
@@ -11,7 +11,7 @@ const decode = (url: string) =>
     img.src = url;
   });
 
-async function firstHash(request: any, ext: string): Promise<string | null> {
+async function firstHash(request: APIRequestContext, ext: string): Promise<string | null> {
   const res = await request.get(`${BASE}/api/photos?search=${ext}&limit=1`);
   const items = (await res.json()).items as Array<{ file_hash: string }>;
   return items.length ? items[0].file_hash : null;
