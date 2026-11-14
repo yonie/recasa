@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-const BASE_URL = 'http://localhost:7000';
+const BASE_URL = process.env.RECASA_URL || 'http://localhost:7000';
 
 async function waitForPipelineComplete(page, timeout = 120000) {
   await page.goto('/pipeline');

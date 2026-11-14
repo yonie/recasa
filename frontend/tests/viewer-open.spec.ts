@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-const BASE = "http://localhost:7000";
+const BASE = process.env.RECASA_URL || "http://localhost:7000";
 const FULL = 'img[data-testid="full-view"]';
 
 /**

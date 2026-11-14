@@ -1,5 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// The instance under test. Defaults to the app on this host; point it
+// elsewhere with e.g. RECASA_URL=http://localhost:3000 (a Vite dev server).
+const baseURL = process.env.RECASA_URL || 'http://localhost:7000';
+
 export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
@@ -8,7 +12,7 @@ export default defineConfig({
   workers: 4,
   reporter: 'list',
   use: {
-    baseURL: 'http://localhost:7000',
+    baseURL,
     trace: 'on-first-retry',
     headless: true,
     launchOptions: {
@@ -28,8 +32,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'echo "App should be running on localhost:7000"',
-    url: 'http://localhost:7000',
+    command: `echo "App should be running on ${baseURL}"`,
+    url: baseURL,
     reuseExistingServer: true,
   },
 });
