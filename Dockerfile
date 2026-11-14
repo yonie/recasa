@@ -67,6 +67,8 @@ RUN mkdir -p /data/db /data/thumbs /data/models /data/faces /data/motion_videos
 COPY nginx/nginx.conf /etc/nginx/sites-enabled/default
 COPY nginx/security-headers.conf /etc/nginx/snippets/recasa-security-headers.conf
 COPY nginx/proxy.conf /etc/nginx/snippets/recasa-proxy.conf
+# Fail the build, not the container start, on a config error.
+RUN nginx -t
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
