@@ -14,6 +14,8 @@ from backend.app.models import (  # noqa: E402
     DuplicateMember,
     EventPhoto,
     Face,
+    HiddenPersonGroup,
+    Person,
     Photo,
     PhotoTag,
     Tag,
@@ -186,3 +188,43 @@ def test_search_and_tag_filter_take_wildcards_literally():
         "back\\slash": [7],
     }
     assert tags == {"snow_": ["snow_man"], "_": ["snow_man"], "SNOW": ["snow_man", "snowyman"]}
+
+
+# --- a person's thumbnail URL only when the crop exists ----------------------
+
+
+def test_person_thumbnail_url_needs_a_crop_everywhere():
+    rows = seed_rows()
+    # Lise and Eva together on a second photo, so they form a Together tile;
+    # Bob's representative face points at a face that does not exist.
+    rows += [
+        Face(face_id=9, file_hash=h(7), person_id=2),
+        HiddenPersonGroup(group_key="1,3"),
+    ]
+    for row in rows:
+        if isinstance(row, Person) and row.person_id == 3:
+            row.representative_face_id = 999
+
+    async def body(client):
+        listing = (await client.get("/api/persons")).json()
+        single = {pid: (await client.get(f"/api/persons/{pid}")).json() for pid in (1, 2, 3)}
+        renamed = (await client.put("/api/persons/2", json={"name": "Eva B"})).json()
+        together = (
+            await client.get("/api/persons/groups/together", params={"min_photos": 2})
+        ).json()
+        hidden = (await client.get("/api/persons/groups/hidden")).json()
+        return listing, single, renamed, together, hidden
+
+    listing, single, renamed, together, hidden = run_with_client(body, rows)
+    expected = {1: "/api/persons/1/thumbnail", 2: None, 3: None}
+    assert {p["person_id"]: p["face_thumbnail_url"] for p in listing} == expected
+    assert {pid: p["face_thumbnail_url"] for pid, p in single.items()} == expected
+    assert renamed["name"] == "Eva B" and renamed["face_thumbnail_url"] is None
+    assert [(p["person_id"], p["face_thumbnail_url"]) for p in together[0]["persons"]] == [
+        (1, expected[1]),
+        (2, None),
+    ]
+    assert [(p["person_id"], p["face_thumbnail_url"]) for p in hidden[0]["persons"]] == [
+        (1, expected[1]),
+        (3, None),
+    ]

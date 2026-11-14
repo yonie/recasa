@@ -2,6 +2,7 @@
 
 import re
 from collections import Counter
+from collections.abc import Iterable
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -39,28 +40,50 @@ _PERSON_ID = re.compile(r"[0-9]{1,18}")
 _MOST_PHOTOS_FIRST = (Person.photo_count.desc(), Person.person_id)
 
 
-def _thumbnail_url(person: Person) -> str | None:
-    """Face thumbnail URL for a person that has a representative face."""
-    if person.representative_face_id:
+async def _faces_with_crop(session, persons: Iterable[Person]) -> set[int]:
+    """The representative faces of ``persons`` that have a crop on record.
+
+    Only those get a thumbnail URL: for the rest /thumbnail answers 404,
+    and the UI would show a broken image instead of its placeholder.
+    """
+    face_ids = {p.representative_face_id for p in persons if p.representative_face_id}
+    if not face_ids:
+        return set()
+    return set(
+        (
+            await session.execute(
+                select(Face.face_id).where(
+                    Face.face_id.in_(face_ids),
+                    Face.face_thumbnail.is_not(None),
+                    Face.face_thumbnail != "",
+                )
+            )
+        ).scalars()
+    )
+
+
+def _thumbnail_url(person: Person, with_crop: set[int]) -> str | None:
+    """Face thumbnail URL for a person whose representative face has a crop."""
+    if person.representative_face_id in with_crop:
         return f"/api/persons/{person.person_id}/thumbnail"
     return None
 
 
-def _person_info(p: Person) -> dict:
+def _person_info(p: Person, with_crop: set[int]) -> dict:
     return {
         "person_id": p.person_id,
         "name": p.name,
         "photo_count": p.photo_count,
-        "face_thumbnail_url": _thumbnail_url(p),
+        "face_thumbnail_url": _thumbnail_url(p, with_crop),
     }
 
 
-def _summary(person: Person, face_thumbnail_url: str | None) -> PersonSummary:
+def _summary(person: Person, with_crop: set[int]) -> PersonSummary:
     return PersonSummary(
         person_id=person.person_id,
         name=person.name,
         photo_count=person.photo_count,
-        face_thumbnail_url=face_thumbnail_url,
+        face_thumbnail_url=_thumbnail_url(person, with_crop),
     )
 
 
@@ -75,27 +98,9 @@ def _parse_person_ids(person_ids: str) -> list[int]:
 
 
 async def _list_summaries(session, stmt: Select[Any]) -> list[PersonSummary]:
-    """Person summaries for a listing, linking the thumbnail only where the
-    representative face actually has a crop on record."""
     persons = (await session.execute(stmt)).scalars().all()
-    face_ids = {p.representative_face_id for p in persons if p.representative_face_id}
-    with_crop: set[int] = set()
-    if face_ids:
-        with_crop = set(
-            (
-                await session.execute(
-                    select(Face.face_id).where(
-                        Face.face_id.in_(face_ids),
-                        Face.face_thumbnail.is_not(None),
-                        Face.face_thumbnail != "",
-                    )
-                )
-            ).scalars()
-        )
-    return [
-        _summary(p, _thumbnail_url(p) if p.representative_face_id in with_crop else None)
-        for p in persons
-    ]
+    with_crop = await _faces_with_crop(session, persons)
+    return [_summary(p, with_crop) for p in persons]
 
 
 @router.get("", response_model=list[PersonSummary])
@@ -138,7 +143,7 @@ async def get_person(person_id: int, session: SessionDep):
     person = await session.get(Person, person_id)
     if not person:
         raise HTTPException(status_code=404, detail="Person not found")
-    return _summary(person, _thumbnail_url(person))
+    return _summary(person, await _faces_with_crop(session, [person]))
 
 
 @router.get("/{person_id}/photos", response_model=PhotoPage)
@@ -196,7 +201,7 @@ async def update_person(person_id: int, update: PersonUpdate, session: SessionDe
 
     person.name = update.name
     await session.commit()
-    return _summary(person, _thumbnail_url(person))
+    return _summary(person, await _faces_with_crop(session, [person]))
 
 
 @router.post("/merge")
@@ -307,6 +312,7 @@ async def list_person_groups(
         )
     }
 
+    with_crop = await _faces_with_crop(session, persons_map.values())
     results = []
     for group, count in top_groups:
         persons_in_group = [persons_map.get(pid) for pid in group]
@@ -316,7 +322,7 @@ async def list_person_groups(
         cover = photos_map.get(group_photos[group])
         results.append(
             {
-                "persons": [_person_info(p) for p in persons_in_group],
+                "persons": [_person_info(p, with_crop) for p in persons_in_group],
                 "shared_photo_count": count,
                 "cover_photo": to_summary(cover) if cover else None,
             }
@@ -362,10 +368,13 @@ async def list_hidden_person_groups(session: SessionDep):
         ).scalars()
     }
 
+    with_crop = await _faces_with_crop(session, persons_map.values())
     return [
         {
             "group_key": key,
-            "persons": [_person_info(persons_map[pid]) for pid in ids if pid in persons_map],
+            "persons": [
+                _person_info(persons_map[pid], with_crop) for pid in ids if pid in persons_map
+            ],
         }
         for key, ids in parsed
     ]
