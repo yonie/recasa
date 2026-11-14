@@ -10,6 +10,7 @@ from backend.app.api.deps import Page, PageSize, SessionDep
 from backend.app.models import Photo
 from backend.app.queries.photos import NEWEST_FIRST, VISIBLE, photo_page, summary_select
 from backend.app.schemas.photo import DirectoryNode, PhotoPage
+from backend.app.services.scanner import is_library_name
 
 router = APIRouter(prefix="/api/directories", tags=["directories"])
 
@@ -17,9 +18,11 @@ router = APIRouter(prefix="/api/directories", tags=["directories"])
 def build_directory_tree(file_paths: Iterable[str]) -> list[DirectoryNode]:
     """Directory tree with recursive photo counts, children sorted by name.
 
-    Files at the root have no directory and are not counted. A directory whose
-    name starts with "_" is left out together with everything below it, as it
-    always has been.
+    Files at the root have no directory and are not counted. A hidden
+    directory (".stversions" and the like) is left out with everything below
+    it, by the scanner's own rule: such paths are never indexed, and one still
+    in an older index is on its way out. A name starting with "_" is an
+    ordinary folder.
     """
     # Count per directory first: a library has a few thousand folders but
     # tens of thousands of files, so the tree is built from far fewer keys.
@@ -42,7 +45,7 @@ def build_directory_tree(file_paths: Iterable[str]) -> list[DirectoryNode]:
     def build(children: dict[str, dict], parent_path: str) -> list[DirectoryNode]:
         nodes = []
         for name, data in sorted(children.items()):
-            if name.startswith("_"):
+            if not is_library_name(name):
                 continue
             path = f"{parent_path}/{name}" if parent_path else name
             nodes.append(

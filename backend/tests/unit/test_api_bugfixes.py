@@ -102,3 +102,18 @@ def test_event_cover_is_a_full_tile():
     event = run_with_client(body, _seeded(p4={"flagged_for_removal": False, "is_video": True}))
     assert event["cover_photo"]["file_hash"] == h(4)
     assert event["cover_photo"]["is_video"] is True
+
+
+# --- folders starting with "_" ----------------------------------------------
+
+
+def test_underscore_folders_are_listed_and_browsable():
+    async def body(client):
+        tree = (await client.get("/api/directories")).json()
+        grid = (await client.get("/api/directories/_private")).json()
+        return tree, grid
+
+    tree, grid = run_with_client(body)
+    assert [n["name"] for n in tree] == ["2020", "_private", "videos"]
+    assert tree[1]["photo_count"] == 1 and tree[1]["path"] == "_private"
+    assert [p["file_hash"] for p in grid["items"]] == [h(8)]

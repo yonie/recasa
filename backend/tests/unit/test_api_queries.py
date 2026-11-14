@@ -207,13 +207,17 @@ def test_tag_listing_endpoint():
 # --- directories ----------------------------------------------------------
 
 
-def test_directory_tree_counts_and_skips():
+def test_directory_tree_counts_and_skips_hidden():
     tree = build_directory_tree(
-        ["a/b/1.jpg", "a/b/2.jpg", "a/3.jpg", "a\\c\\4.jpg", "root.jpg", "_hidden/5.jpg",
-         "a/_private/6.jpg"]
+        ["a/b/1.jpg", "a/b/2.jpg", "a/3.jpg", "a\\c\\4.jpg", "root.jpg", "_export/5.jpg",
+         "a/_private/6.jpg", ".stversions/2026/7.jpg", "a/.thumbs/8.jpg"]
     )
-    assert [(n.name, n.path, n.photo_count) for n in tree] == [("a", "a", 5)]
-    assert [(n.name, n.path, n.photo_count) for n in tree[0].children] == [
+    assert [(n.name, n.path, n.photo_count) for n in tree] == [("_export", "_export", 1),
+                                                               ("a", "a", 6)]
+    # A hidden folder is left out, but its photos still count towards the
+    # parent, as /api/directories/a lists them too.
+    assert [(n.name, n.path, n.photo_count) for n in tree[1].children] == [
+        ("_private", "a/_private", 1),
         ("b", "a/b", 2),
         ("c", "a/c", 1),
     ]
