@@ -233,3 +233,39 @@ async def test_a_scan_after_stop_runs_and_a_stop_cancels_only_the_running_scan(
     assert stats["new"] == 1
     pipeline.stop_and_drain()
     pipeline.begin_work()
+
+
+@pytest.mark.asyncio
+async def test_geocoding_takes_zero_coordinates_and_skips_half_a_position(
+    db, monkeypatch, stage_switches
+):
+    from backend.app.services import geocoder
+    from backend.app.workers.stages import load_photo_facts, load_stage_outputs
+
+    equator, lat_only = h(9), h(10)
+    await _add(db, photo_row(equator, gps_latitude=0.0, gps_longitude=9.5),
+               photo_row(lat_only, gps_latitude=52.0))
+
+    # Half a position never enters geocoding, so it is not re-queued forever.
+    async with db() as session:
+        facts = {f.file_hash: f for f in await load_photo_facts(session)}
+        outputs = await load_stage_outputs(session)
+    assert outputs.first_needed_stage(facts[equator]) is QueueType.GEOCODING
+    assert outputs.first_needed_stage(facts[lat_only]) is QueueType.THUMBNAILS
+    svc = FakeService()
+    w, _ = _worker(monkeypatch, QueueType.GEOCODING, svc)
+    await w.process_item(lat_only)
+    assert svc.calls == []
+
+    class FakeGeocoder:
+        @staticmethod
+        def search(coords, mode, verbose):
+            assert coords == [(0.0, 9.5)]
+            return [{"name": "Libreville", "cc": "GA", "admin1": "Estuaire"}]
+
+    monkeypatch.setattr(geocoder, "_geocoder", FakeGeocoder)
+    assert await geocoder.geocode_photo(equator)
+    assert not await geocoder.geocode_photo(lat_only)
+    async with db() as session:
+        photo = await session.get(worker_mod.Photo, equator)
+    assert photo.location_address == "Libreville, Estuaire, GA"

@@ -33,6 +33,7 @@ from backend.app.services.user_data import (
 from backend.app.workers.queues import Pipeline, QueueType
 from backend.app.workers.stages import (
     failure_recorded,
+    has_coordinates,
     has_output,
     stage_applies,
     stage_enabled,
@@ -147,7 +148,7 @@ class Worker:
             stage = self.queue_type
             run = (
                 stage_applies(stage, is_video=bool(photo.is_video),
-                              has_gps=photo.gps_latitude is not None)
+                              has_gps=has_coordinates(photo))
                 and not await has_output(session, stage, photo)
                 # A photo can reach a stage that already failed for it by being
                 # routed through from an earlier one; retrying would just fail

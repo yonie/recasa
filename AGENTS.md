@@ -110,7 +110,7 @@ re-processing (or never processing) part of the library.
 | Stage | "Output Exists?" Check |
 |-------|----------------------|
 | EXIF | `camera_make IS NOT NULL` OR `date_taken IS NOT NULL` (a photo without EXIF gets its file date) |
-| Geocoding | `location_city IS NOT NULL` (only applies to photos with `gps_latitude`) |
+| Geocoding | `location_city IS NOT NULL` (only applies to photos with both `gps_latitude` and `gps_longitude`) |
 | Thumbnails | File exists: `/data/thumbs/{file_hash[:2]}/{file_hash}_200.webp` (written last of the three sizes) |
 | Motion Photos | No check: runs for every photo, a no-op unless `motion_photo` is set and `live_photo_video` is not. The video goes to `/data/motion_videos/{file_hash[:2]}/{file_hash}_motion.mp4`; videos named after the file stem by older versions stay readable |
 | Hashing | Record exists in `photo_hashes` table for this file_hash |

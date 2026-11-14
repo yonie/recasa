@@ -57,6 +57,12 @@ def stage_applies(stage: QueueType, *, is_video: bool, has_gps: bool) -> bool:
     return True
 
 
+def has_coordinates(photo: Photo) -> bool:
+    """Geocoding needs both halves: a latitude alone would be queued on
+    every scan and never produce a location."""
+    return photo.gps_latitude is not None and photo.gps_longitude is not None
+
+
 @dataclass(frozen=True, slots=True)
 class PhotoFacts:
     """The photo columns the stage rules read."""
@@ -64,7 +70,7 @@ class PhotoFacts:
     file_hash: str
     is_video: bool
     has_exif: bool  # camera_make or date_taken is set
-    has_gps: bool  # gps_latitude is set
+    has_gps: bool  # gps_latitude and gps_longitude are both set
     has_city: bool  # location_city is set
 
     @classmethod
@@ -73,7 +79,7 @@ class PhotoFacts:
             file_hash=photo.file_hash,
             is_video=bool(photo.is_video),
             has_exif=photo.camera_make is not None or photo.date_taken is not None,
-            has_gps=photo.gps_latitude is not None,
+            has_gps=has_coordinates(photo),
             has_city=photo.location_city is not None,
         )
 
@@ -83,7 +89,7 @@ _FACT_COLUMNS = (
     Photo.file_hash,
     Photo.is_video,
     (Photo.camera_make.is_not(None) | Photo.date_taken.is_not(None)).label("has_exif"),
-    Photo.gps_latitude.is_not(None).label("has_gps"),
+    (Photo.gps_latitude.is_not(None) & Photo.gps_longitude.is_not(None)).label("has_gps"),
     Photo.location_city.is_not(None).label("has_city"),
 )
 

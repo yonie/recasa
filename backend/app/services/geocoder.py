@@ -30,7 +30,12 @@ async def geocode_photo(file_hash: str) -> bool:
         photo = await session.get(Photo, file_hash)
         if not photo:
             return False
-        if photo.location_country or not photo.gps_latitude or not photo.gps_longitude:
+        # 0.0 is a coordinate (the equator, the prime meridian), not "no GPS".
+        if (
+            photo.location_country
+            or photo.gps_latitude is None
+            or photo.gps_longitude is None
+        ):
             return False
         coords = (photo.gps_latitude, photo.gps_longitude)
 
