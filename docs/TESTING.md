@@ -284,7 +284,25 @@ environment; on timeout the failure lists what is still in each stage.
 ## Frontend (Playwright) tests
 
 Browser tests live in `frontend/tests/` and run against a *running* instance on
-`localhost:7000`; they do not start the app themselves.
+`localhost:7000`; they do not start the app themselves. Point them elsewhere with
+`RECASA_URL`, for example a test instance or a Vite dev server:
+
+```bash
+RECASA_URL=http://localhost:7001 npx playwright test --workers=1
+RECASA_API=http://localhost:7001 npm run dev   # dev server proxying /api to that backend
+```
+
+`pipeline.spec.ts` only reads pipeline state, except "Full Indexing Flow", which
+starts a scan; keep that one away from production.
+
+Three scripts compare two builds of the frontend:
+
+```bash
+node tests/screens.mjs <url> <dir>                   # every route, desktop and phone
+SCREENS_CSP="<policy>" node tests/screens.mjs ...    # same, failing on CSP violations
+node tests/compare-screens.mjs <before> <after> <diff-dir>
+node tests/perf.mjs <url> [runs]                     # load, route-switch and viewer timings
+```
 
 ```bash
 cd frontend
@@ -379,3 +397,30 @@ The test suite uses a two-container architecture:
 - **app**: Runs the Recasa application
 - **tester**: Runs pytest, validates API responses
 - Both share the same data volume for database consistency
+## Comparing two versions on a copy of the real index
+
+The fixture suite cannot show that a refactor leaves real data alone. For that,
+run the old and the new image against the same copy of the index and compare
+every API response. On velvet the setup lives outside the repo, in `~/recasa-test`:
+
+- `docker-compose.yml` runs container `recasa-test` on port 7001 with the real
+  library read-only and its own copy of the index in `/mnt/ssd/recasa/test-data`
+  (`WATCH_INTERVAL=0`, so nothing changes the index between runs). Pick the
+  image with `TEST_IMAGE`.
+- `reset.sh` removes the test container and restores the database from
+  `/mnt/ssd/recasa/test-pristine/recasa.db`, a `VACUUM INTO` snapshot like the
+  nightly backup. Never replace a database under a running instance.
+
+```bash
+./reset.sh && TEST_IMAGE=recasa-recasa:baseline docker compose up -d
+python3 golden.py discover http://localhost:7001 urls.txt     # once, from the old version
+python3 golden.py capture http://localhost:7001 urls.txt golden-old
+./reset.sh && TEST_IMAGE=recasa-recasa:new docker compose up -d
+python3 golden.py capture http://localhost:7001 urls.txt golden-new
+python3 golden.py diff golden-old golden-new
+```
+
+`backend/scripts/golden.py` builds the URL list from the live ids (persons,
+events, tags, places, folders, years, sample photos) and covers every filter,
+sort and search. Two captures of the same version must be identical, so any
+difference is caused by the change. It also prints timings per URL.
