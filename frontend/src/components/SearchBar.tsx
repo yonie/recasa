@@ -1,13 +1,23 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Search, X, Menu } from "lucide-react";
 import { useStore } from "../store/useStore";
 
 export function SearchBar() {
   const navigate = useNavigate();
   const toggleSidebar = useStore((s) => s.toggleSidebar);
-  // The bar is mounted for the app's lifetime, so plain state keeps the text.
-  const [inputValue, setInputValue] = useState("");
+  const location = useLocation();
+  // The bar is mounted for the app's lifetime, so plain state keeps the text
+  // while browsing. On a search page the URL is the truth: a link, a reload
+  // or Back/Forward to /search?q=... shows that query in the box.
+  const urlQuery =
+    location.pathname === "/search" ? new URLSearchParams(location.search).get("q") ?? "" : null;
+  const [inputValue, setInputValue] = useState(urlQuery ?? "");
+  const [seenQuery, setSeenQuery] = useState(urlQuery);
+  if (urlQuery !== seenQuery) {
+    setSeenQuery(urlQuery);
+    if (urlQuery !== null) setInputValue(urlQuery);
+  }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
