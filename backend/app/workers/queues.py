@@ -166,6 +166,11 @@ class Pipeline:
         """Get current queue sizes (legacy format for compatibility)."""
         return {qtype.value: queue.qsize() for qtype, queue in self.queues.items()}
 
+    async def request_batch(self) -> None:
+        """Have the batch step (face clustering, duplicates, events) rerun,
+        e.g. after photos left the index without passing through a stage."""
+        await self.queues[QueueType.EVENTS].put("")
+
     def stop_and_drain(self) -> None:
         """Stop the running scan and drop all queued work.
 

@@ -70,12 +70,17 @@ async def run_initial_scan(fast: bool = False) -> dict:
         logger.info("Scanning: %d/%d", processed, total)
 
     generation = pipeline.begin_work()
-    return await scan_directory(
+    stats = await scan_directory(
         progress_callback=progress_callback,
         cancel_check=lambda: pipeline.generation != generation,
         on_file_discovered=_queue_at,
         fast=fast,
     )
+    if stats.get("removed"):
+        # Events, duplicate groups and person photo counts are rebuilt from
+        # what is indexed; removed photos pass no stage to trigger that.
+        await pipeline.request_batch()
+    return stats
 
 
 async def resume_incomplete_processing() -> int:

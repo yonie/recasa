@@ -248,6 +248,10 @@ The scanner (`backend/app/services/scanner.py`) has safeguards:
    its own `photo_paths` (left by older code after a move) is pointed at its
    first remaining path, and its "file not found / cannot read (OSError)"
    stage failures are cleared so those stages run once more.
+9. **Removal reaches the batch results**: a removed photo leaves
+   `event_photos` and `duplicate_members` at once (a duplicate group left
+   with one member goes too), and a scan that removed photos has the batch
+   step rerun so event counts, covers and person counts follow.
 
 ### Common Issues
 

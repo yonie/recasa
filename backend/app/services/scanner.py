@@ -17,12 +17,19 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import delete, exists, select
+from sqlalchemy import delete, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import settings
 from backend.app.database import async_session
-from backend.app.models import Photo, PhotoPath, StageFailure
+from backend.app.models import (
+    DuplicateGroup,
+    DuplicateMember,
+    EventPhoto,
+    Photo,
+    PhotoPath,
+    StageFailure,
+)
 from backend.app.workers.stages import (
     PhotoFacts,
     StageOutputs,
@@ -692,6 +699,7 @@ async def _remove_paths(session: AsyncSession, pairs: list[tuple[str, str]]) -> 
             # stage failures through the Photo relationships.
             await session.delete(photo)
             removed.append(photo)
+            await _forget_in_batch_results(session, file_hash)
         elif photo.file_path not in remaining:
             # The copy the photo pointed at is gone but another remains:
             # point at that one, or originals and thumbnails would be
@@ -767,6 +775,41 @@ async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> int:
         await session.commit()
     logger.info("Cleaned up %d removed file paths", len(removed_paths))
     return len(removed)
+
+
+async def _forget_in_batch_results(session: AsyncSession, file_hash: str) -> None:
+    """Take a removed photo out of the event and duplicate tables.
+
+    Those are rebuilt as a whole by the batch step, which the caller of a
+    scan that removed photos triggers (see run_initial_scan); this keeps
+    them free of rows for photos that no longer exist until it has run. A
+    duplicate group needs two members, as find_duplicates would write it.
+    """
+    await session.execute(delete(EventPhoto).where(EventPhoto.file_hash == file_hash))
+    group_ids = (
+        await session.execute(
+            select(DuplicateMember.group_id).where(DuplicateMember.file_hash == file_hash)
+        )
+    ).scalars().all()
+    if not group_ids:
+        return
+    await session.execute(delete(DuplicateMember).where(DuplicateMember.file_hash == file_hash))
+    too_small = (
+        await session.execute(
+            select(DuplicateGroup.group_id)
+            .outerjoin(DuplicateMember, DuplicateMember.group_id == DuplicateGroup.group_id)
+            .where(DuplicateGroup.group_id.in_(group_ids))
+            .group_by(DuplicateGroup.group_id)
+            .having(func.count(DuplicateMember.file_hash) < 2)
+        )
+    ).scalars().all()
+    if too_small:
+        await session.execute(
+            delete(DuplicateMember).where(DuplicateMember.group_id.in_(too_small))
+        )
+        await session.execute(
+            delete(DuplicateGroup).where(DuplicateGroup.group_id.in_(too_small))
+        )
 
 
 # Recorded stage failures that say the file could not be found or opened, as

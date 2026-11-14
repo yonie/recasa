@@ -409,3 +409,48 @@ async def test_photo_pointing_at_a_vanished_path_is_repointed(db, photos_dir):
     found = Discovered()
     await scan_directory(on_file_discovered=found, fast=True)
     assert found.items == []
+
+
+@pytest.mark.asyncio
+async def test_removed_photo_leaves_events_and_duplicates_and_triggers_the_batch(
+    db, photos_dir
+):
+    from backend.app.models import DuplicateGroup, DuplicateMember, Event, EventPhoto
+    from backend.app.workers import pipeline as pipeline_mod
+    from backend.app.workers.queues import QueueType, pipeline
+
+    files = [write_jpeg(photos_dir / f"{i}.jpg", seed=80 + i) for i in range(4)]
+    await scan_directory()
+    a, b, c, d = (compute_file_hash(f) for f in files)
+    async with db() as session:
+        session.add_all([
+            Event(event_id=1, name="e", photo_count=3, cover_file_hash=a),
+            EventPhoto(event_id=1, file_hash=a), EventPhoto(event_id=1, file_hash=b),
+            EventPhoto(event_id=1, file_hash=c),
+            DuplicateGroup(group_id=1), DuplicateGroup(group_id=2),
+            DuplicateMember(group_id=1, file_hash=a), DuplicateMember(group_id=1, file_hash=b),
+            DuplicateMember(group_id=2, file_hash=a), DuplicateMember(group_id=2, file_hash=c),
+            DuplicateMember(group_id=2, file_hash=d),
+        ])
+        await session.commit()
+
+    pipeline.stop_and_drain()
+    files[0].unlink()
+    stats = await pipeline_mod.run_initial_scan(fast=True)
+    assert stats["removed"] == 1
+    assert pipeline.get_queue_sizes()[QueueType.EVENTS.value] == 1  # batch requested
+    async with db() as session:
+        members = (await session.execute(
+            select(DuplicateMember.group_id, DuplicateMember.file_hash))).all()
+        groups = (await session.execute(select(DuplicateGroup.group_id))).scalars().all()
+        event_photos = (await session.execute(select(EventPhoto.file_hash))).scalars().all()
+    # Group 1 fell to one member and goes; group 2 keeps its other two.
+    assert groups == [2]
+    assert sorted(members) == sorted([(2, c), (2, d)])
+    assert sorted(event_photos) == sorted([b, c])
+
+    # Nothing removed, no batch requested.
+    pipeline.stop_and_drain()
+    await pipeline_mod.run_initial_scan(fast=True)
+    assert not any(pipeline.get_queue_sizes().values())
+    pipeline.begin_work()
