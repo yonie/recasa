@@ -11,11 +11,7 @@ services:
     environment:
       - PHOTOS_DIR=/photos
       - DATA_DIR=/data
-      - ENABLE_EXIF_EXTRACTION=true
       - ENABLE_GEOCODING=true
-      - ENABLE_THUMBNAILS=true
-      - ENABLE_MOTION_PHOTOS=true
-      - ENABLE_HASHING=true
       - ENABLE_FACE_DETECTION=true
       - ENABLE_CAPTIONING=true
       - OLLAMA_URL=http://host.docker.internal:11434

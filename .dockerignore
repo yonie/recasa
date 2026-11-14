@@ -1,0 +1,17 @@
+# Keep the build context small and stable: anything listed here can change
+# without invalidating the cached npm and pip layers.
+.git
+.env
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+frontend/dist
+frontend/playwright-report
+frontend/test-results
+# Playwright specs are not part of the build (tsconfig includes src only).
+frontend/tests
+data
+demo-photos
+docs/screenshots

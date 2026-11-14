@@ -1,4 +1,4 @@
-# Recasa — one compose file for every host. Per-host values live in .env.
+# Recasa: one compose file for every host. Per-host values live in .env.
 #
 #   docker compose up -d --build
 #
@@ -18,7 +18,7 @@ services:
       - "${PHOTOS_PATH:?set PHOTOS_PATH in .env}:/photos:ro"
 
       # The index: database, thumbnails, previews and face models. A bind mount
-      # on a disk you choose, not a named volume — it is gigabytes and grows,
+      # on a disk you choose, not a named volume: it is gigabytes and grows,
       # and it holds work that takes days to redo.
       - "${RECASA_DATA_PATH:?set RECASA_DATA_PATH in .env}:/data"
 
@@ -41,11 +41,10 @@ services:
       - MAX_CONCURRENT=${MAX_CONCURRENT:-4}
       - UVICORN_RELOAD=false
 
-      - ENABLE_EXIF_EXTRACTION=${ENABLE_EXIF_EXTRACTION:-true}
+      # The stages that can be switched off. EXIF, thumbnails, motion photos
+      # and hashing always run; their old ENABLE_* switches never did anything
+      # and are logged as ignored at startup when set to false.
       - ENABLE_GEOCODING=${ENABLE_GEOCODING:-true}
-      - ENABLE_THUMBNAILS=${ENABLE_THUMBNAILS:-true}
-      - ENABLE_MOTION_PHOTOS=${ENABLE_MOTION_PHOTOS:-true}
-      - ENABLE_HASHING=${ENABLE_HASHING:-true}
       - ENABLE_FACE_DETECTION=${ENABLE_FACE_DETECTION:-true}
       - ENABLE_CAPTIONING=${ENABLE_CAPTIONING:-true}
 
