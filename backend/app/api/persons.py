@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 from sqlalchemy import Select, delete, func, intersect, select, update
 
 from backend.app.api.deps import CollageGrid, Page, PageSize, SessionDep
@@ -87,14 +87,31 @@ def _summary(person: Person, with_crop: set[int]) -> PersonSummary:
     )
 
 
+def _distinct(ids: Iterable[int]) -> list[int]:
+    """``ids`` without repeats, first occurrence kept."""
+    return list(dict.fromkeys(ids))
+
+
+def _group_ids(ids: Iterable[int]) -> list[int]:
+    """The distinct people of a Together group, at least two of them.
+
+    A repeated id is the same person, not a second one: 25,25 used to pass
+    as a pair and list the photos of 25 alone. One distinct person is
+    refused the way a single id always has been.
+    """
+    distinct = _distinct(ids)
+    if len(distinct) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 person IDs")
+    if len(distinct) > MAX_GROUP_SIZE:
+        raise HTTPException(status_code=400, detail="Too many person IDs")
+    return distinct
+
+
 def _parse_person_ids(person_ids: str) -> list[int]:
     """The ids in a comma-separated list; anything that is not one is skipped."""
-    ids = [int(token) for x in person_ids.split(",") if _PERSON_ID.fullmatch(token := x.strip())]
-    if len(ids) < 2:
-        raise HTTPException(status_code=400, detail="Need at least 2 person IDs")
-    if len(ids) > MAX_GROUP_SIZE:
-        raise HTTPException(status_code=400, detail="Too many person IDs")
-    return ids
+    return _group_ids(
+        int(token) for x in person_ids.split(",") if _PERSON_ID.fullmatch(token := x.strip())
+    )
 
 
 async def _list_summaries(session, stmt: Select[Any]) -> list[PersonSummary]:
@@ -332,8 +349,12 @@ async def list_person_groups(
 
 
 class PersonIdsRequest(BaseModel):
+    # Repeats are dropped, so [1, 1] is one person and cannot be hidden as
+    # a tile, and unhiding [1, 2, 2] finds the tile of 1 and 2.
     person_ids: Annotated[
-        list[Annotated[int, Field(ge=0, le=2**63 - 1)]], Field(max_length=MAX_GROUP_SIZE)
+        list[Annotated[int, Field(ge=0, le=2**63 - 1)]],
+        Field(max_length=MAX_GROUP_SIZE),
+        AfterValidator(_distinct),
     ]
 
 
@@ -439,7 +460,9 @@ async def get_shared_photos(
     page_size: PageSize = 50,
 ):
     """Get all photos where two specific people appear together."""
-    return await _get_together_photos([person_a_id, person_b_id], page, page_size, session)
+    return await _get_together_photos(
+        _group_ids([person_a_id, person_b_id]), page, page_size, session
+    )
 
 
 @router.get("/groups/together-n/photos", response_model=PhotoPage)
@@ -495,7 +518,9 @@ async def get_together_collage(
     seed: int = 0,
 ):
     """Generate a square photo collage for two people together."""
-    return await _together_collage(request, [person_a_id, person_b_id], grid, seed, session)
+    return await _together_collage(
+        request, _group_ids([person_a_id, person_b_id]), grid, seed, session
+    )
 
 
 @router.get("/groups/together-n/collage")

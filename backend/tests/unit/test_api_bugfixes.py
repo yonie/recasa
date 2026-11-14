@@ -366,3 +366,38 @@ def test_trail_dates_are_whole_days():
         return [int(p["file_hash"], 16) for stop in trail for p in stop["photos"]]
 
     assert run_with_client(body, rows) == [1, 2]
+
+
+# --- a repeated person id is one person ---------------------------------------
+
+
+def test_repeated_person_ids_are_one_person():
+    async def body(client):
+        async def status_and_hashes(url, **params):
+            r = await client.get(url, params=params)
+            items = r.json().get("items", []) if r.status_code == 200 else None
+            return r.status_code, items and [int(p["file_hash"], 16) for p in items]
+
+        n = "/api/persons/groups/together-n/photos"
+        hidden = await client.post("/api/persons/groups/hide", json={"person_ids": [1, 1]})
+        hid_pair = await client.post("/api/persons/groups/hide", json={"person_ids": [2, 1, 2]})
+        unhid = await client.post("/api/persons/groups/unhide", json={"person_ids": [1, 2, 1]})
+        return {
+            "dup": await status_and_hashes(n, person_ids="1,1"),
+            "single": await status_and_hashes(n, person_ids="1"),
+            "dup_pair": await status_and_hashes(n, person_ids="1,2,1"),
+            "pair": await status_and_hashes(n, person_ids="1,2"),
+            "path_dup": await status_and_hashes("/api/persons/groups/together/1/1/photos"),
+            "hide_one": hidden.status_code,
+            "hide_pair": hid_pair.json(),
+            "unhide": unhid.json(),
+        }
+
+    found = run_with_client(body)
+    # One distinct person is refused, exactly as a single id always was.
+    assert found["dup"] == found["single"] == (400, None)
+    assert found["path_dup"] == (400, None)
+    assert found["dup_pair"] == found["pair"] == (200, [6])
+    assert found["hide_one"] == 400
+    assert found["hide_pair"]["group_key"] == "1,2"
+    assert found["unhide"]["group_key"] == "1,2"
