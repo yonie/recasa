@@ -4,7 +4,7 @@ import { clsx } from "clsx";
 import { api, fullViewUrl, provisionalDetail, thumbnailUrl, videoUrl } from "../../api/client";
 import { usePhotoActions } from "../../hooks/usePhotoActions";
 import { useStore } from "../../store/useStore";
-import { THUMB_SIZE } from "../PhotoGrid";
+import { gridThumbSize } from "../../lib/gridLayout";
 import { usePhotoGestures } from "./usePhotoGestures";
 import { useViewerHistory } from "./useViewerHistory";
 import { ViewerInfoPanel } from "./ViewerInfoPanel";
@@ -166,7 +166,8 @@ export function PhotoViewer() {
         style={
           !detail.is_video && fullLoaded !== detail.file_hash
             ? {
-                backgroundImage: `url("${thumbnailUrl(detail.file_hash, THUMB_SIZE[gridSize])}")`,
+                // Same size the grid chose, so this is a browser-cache hit.
+                backgroundImage: `url("${thumbnailUrl(detail.file_hash, gridThumbSize(gridSize))}")`,
                 backgroundSize: "contain",
                 backgroundPosition: "center",
                 backgroundRepeat: "no-repeat",

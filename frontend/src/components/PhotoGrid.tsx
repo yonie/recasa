@@ -4,18 +4,9 @@ import { clsx } from "clsx";
 import { livePhotoUrl, thumbnailUrl, type PhotoSummary } from "../api/client";
 import { usePhotoActions } from "../hooks/usePhotoActions";
 import { formatDuration } from "../lib/format";
-import { useStore, type GridFit, type GridSize } from "../store/useStore";
+import { gridClasses, useGridThumbSize } from "../lib/gridLayout";
+import { useStore, type GridFit } from "../store/useStore";
 import { GridViewControls } from "./GridViewControls";
-
-const GRID_CLASSES: Record<GridSize, string> = {
-  S: "grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10",
-  M: "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6",
-  L: "grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4",
-};
-
-// Exported so the viewer can reuse the exact URL the grid already fetched:
-// that cache hit is what makes its placeholder appear with no network wait.
-export const THUMB_SIZE: Record<GridSize, number> = { S: 300, M: 600, L: 600 };
 
 /** Opens a photo from a list; the list is what the viewer steps through. */
 export type OpenPhoto = (photo: PhotoSummary, index: number, list: PhotoSummary[]) => void;
@@ -26,6 +17,9 @@ interface PhotoGridProps {
   /** Render the floating size/fit controls. Set false when a page shows many
    *  grids (month groups) and renders GridViewControls once itself. */
   showControls?: boolean;
+  /** Render only the first this-many tiles (the viewer still gets the whole
+   *  list). Lets a caller spread a big grid's first render over frames. */
+  renderCount?: number;
 }
 
 /** Touch devices never hover, so live-photo <video> elements would be dead
@@ -34,9 +28,10 @@ const HOVER_CAPABLE =
   typeof window !== "undefined" &&
   window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 
-export function PhotoGrid({ photos, onPhotoClick, showControls = true }: PhotoGridProps) {
+export function PhotoGrid({ photos, onPhotoClick, showControls = true, renderCount }: PhotoGridProps) {
   const gridSize = useStore((s) => s.gridSize);
   const gridFit = useStore((s) => s.gridFit);
+  const thumbSize = useGridThumbSize(gridSize);
 
   // Stable per list, so a tile only re-renders when its own photo changes:
   // after a toggle the refetched list keeps every untouched photo object.
@@ -55,14 +50,14 @@ export function PhotoGrid({ photos, onPhotoClick, showControls = true }: PhotoGr
 
   return (
     <>
-      <div className={clsx("photo-grid grid gap-1.5 p-4", GRID_CLASSES[gridSize])}>
-        {photos.map((photo, index) => (
+      <div className={clsx("photo-grid grid gap-1.5 p-4", gridClasses(gridSize))}>
+        {(renderCount === undefined ? photos : photos.slice(0, renderCount)).map((photo, index) => (
           <PhotoTile
             key={photo.file_hash}
             photo={photo}
             index={index}
             onOpen={open}
-            thumbSize={THUMB_SIZE[gridSize]}
+            thumbSize={thumbSize}
             fit={gridFit}
           />
         ))}
