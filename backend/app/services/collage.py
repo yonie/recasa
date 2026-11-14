@@ -285,7 +285,7 @@ def render_collage(
             left = (w - side) // 2
             top = (h - side) // 2
             img = img.crop((left, top, left + side, top + side))
-            img = img.resize((tile_size, tile_size), Image.LANCZOS)
+            img = img.resize((tile_size, tile_size), Image.Resampling.LANCZOS)
             images.append(img)
         except Exception:  # noqa: BLE001 - skip a tile that will not decode
             complete = False

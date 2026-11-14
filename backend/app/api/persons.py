@@ -525,7 +525,7 @@ async def recluster_persons(session: SessionDep):
     from backend.app.services.face_detector import cluster_faces
 
     # Map face_ids to their person's name (so we can restore names after recluster)
-    face_name_map: dict[int, str] = dict(
+    face_name_map: dict[int, str | None] = dict(
         (
             await session.execute(
                 select(Face.face_id, Person.name)

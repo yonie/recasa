@@ -41,7 +41,7 @@ SUMMARY_COLUMNS = (
 _N_SUMMARY_COLUMNS = len(SUMMARY_COLUMNS)
 
 
-def summary_select() -> Select[Any]:
+def summary_select() -> Select:
     """A select of the grid-tile columns, ready for filters and joins."""
     return select(*SUMMARY_COLUMNS)
 

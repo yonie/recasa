@@ -62,7 +62,7 @@ def text_search_condition(search: str) -> ColumnElement[bool]:
     tagged = select(PhotoTag.file_hash).where(
         PhotoTag.tag_id.in_(select(Tag.tag_id).where(Tag.name.ilike(pattern)))
     )
-    conditions = [
+    conditions: list[ColumnElement[bool]] = [
         Photo.file_name.ilike(pattern),
         Photo.file_path.ilike(pattern),
         Photo.location_city.ilike(pattern),

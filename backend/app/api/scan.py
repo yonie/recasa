@@ -5,7 +5,7 @@ import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks
-from sqlalchemy import update
+from sqlalchemy import delete, update
 
 from backend.app.database import async_session
 from backend.app.models import (
@@ -113,19 +113,19 @@ async def clear_index():
 
     async with async_session() as session:
         # Delete all related data in correct order
-        await session.execute(DuplicateMember.__table__.delete())
-        await session.execute(DuplicateGroup.__table__.delete())
-        await session.execute(EventPhoto.__table__.delete())
-        await session.execute(Event.__table__.delete())
-        await session.execute(PhotoTag.__table__.delete())
-        await session.execute(Tag.__table__.delete())
-        await session.execute(Face.__table__.delete())
-        await session.execute(Person.__table__.delete())
-        await session.execute(Caption.__table__.delete())
-        await session.execute(PhotoHash.__table__.delete())
-        await session.execute(StageFailure.__table__.delete())
-        await session.execute(PhotoPath.__table__.delete())
-        await session.execute(Photo.__table__.delete())
+        await session.execute(delete(DuplicateMember))
+        await session.execute(delete(DuplicateGroup))
+        await session.execute(delete(EventPhoto))
+        await session.execute(delete(Event))
+        await session.execute(delete(PhotoTag))
+        await session.execute(delete(Tag))
+        await session.execute(delete(Face))
+        await session.execute(delete(Person))
+        await session.execute(delete(Caption))
+        await session.execute(delete(PhotoHash))
+        await session.execute(delete(StageFailure))
+        await session.execute(delete(PhotoPath))
+        await session.execute(delete(Photo))
         await session.commit()
 
     return {"status": "index_cleared"}
@@ -145,23 +145,23 @@ async def clear_stage(stage: str):
                 )
             )
         elif stage == "hashing":
-            await session.execute(DuplicateMember.__table__.delete())
-            await session.execute(DuplicateGroup.__table__.delete())
-            await session.execute(PhotoHash.__table__.delete())
+            await session.execute(delete(DuplicateMember))
+            await session.execute(delete(DuplicateGroup))
+            await session.execute(delete(PhotoHash))
         elif stage == "faces":
-            await session.execute(Face.__table__.delete())
-            await session.execute(Person.__table__.delete())
+            await session.execute(delete(Face))
+            await session.execute(delete(Person))
         elif stage == "captioning":
-            await session.execute(Caption.__table__.delete())
+            await session.execute(delete(Caption))
         elif stage == "events":
-            await session.execute(EventPhoto.__table__.delete())
-            await session.execute(Event.__table__.delete())
+            await session.execute(delete(EventPhoto))
+            await session.execute(delete(Event))
         else:
             return {"status": "unsupported_stage", "stage": stage}
 
         # A rebuild is also the retry path for permanently-failed photos.
         await session.execute(
-            StageFailure.__table__.delete().where(StageFailure.stage == stage)
+            delete(StageFailure).where(StageFailure.stage == stage)
         )
         await session.commit()
 

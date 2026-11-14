@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.database import async_session
 from backend.app.models import Photo
 from backend.app.models.config import ConfigStore
-from backend.app.models.face import Face, Person, HiddenPersonGroup, group_key_from_ids
+from backend.app.models.face import Face, HiddenPersonGroup, Person, group_key_from_ids
 
 logger = logging.getLogger(__name__)
 
@@ -489,7 +489,7 @@ async def import_user_data(data: dict, session: AsyncSession) -> dict:
             .where(Photo.file_hash.in_(fav_hashes[start : start + _FAVORITES_CHUNK]))
             .values(is_favorite=True)
         )
-        summary["favorites_restored"] += result.rowcount
+        summary["favorites_restored"] += result.rowcount  # type: ignore[attr-defined]
 
     # --- Persons ---
     exported_persons = [p for p in _list_field(data, "persons") if isinstance(p, dict)]
