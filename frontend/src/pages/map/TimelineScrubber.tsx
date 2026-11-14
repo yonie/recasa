@@ -38,20 +38,18 @@ export function CountdownRing({
         strokeDasharray={circumference}
         strokeDashoffset={0}
         strokeLinecap="round"
+        // The keyframes live in index.css (a <style> element here would need
+        // 'unsafe-inline' in the Content-Security-Policy); they read the ring
+        // length from this custom property.
         style={
           running
-            ? {
+            ? ({
+                "--ring-circumference": circumference,
                 animation: `countdown-ring ${duration}ms linear forwards`,
-              }
+              } as React.CSSProperties)
             : { strokeDashoffset: 0 }
         }
       />
-      <style>{`
-        @keyframes countdown-ring {
-          from { stroke-dashoffset: 0; }
-          to { stroke-dashoffset: ${circumference}; }
-        }
-      `}</style>
     </svg>
   );
 }

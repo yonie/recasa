@@ -63,6 +63,11 @@ export async function fetchBlob(url: string): Promise<Blob> {
   return res.blob();
 }
 
+/** A slash-separated path with every segment percent-encoded. */
+export function encodePath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
 /** Query string from the defined entries, in the order given. */
 function buildQuery(params?: object): string {
   if (!params) return "";
@@ -124,10 +129,12 @@ export const api = {
   clearPrintList: () => post<{ removed: number }>("/photos/print/clear"),
   getStats: () => request<LibraryStats>("/photos/stats"),
 
-  // Directories. The path goes in raw: the backend route is /{path:path}.
+  // Directories. Each segment is encoded, keeping the slashes the backend's
+  // /{path:path} route expects; a raw "#" or "?" in a folder name would
+  // otherwise cut the URL short.
   getDirectoryTree: () => request<DirectoryNode[]>("/directories"),
   getDirectoryPhotos: (path: string, params?: PageParams) =>
-    request<PhotoPage>(`/directories/${path}${buildQuery(params)}`),
+    request<PhotoPage>(`/directories/${encodePath(path)}${buildQuery(params)}`),
 
   // Timeline
   getYears: () => request<YearCount[]>("/timeline/years"),

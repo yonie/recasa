@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Folder } from "lucide-react";
 import { clsx } from "clsx";
-import { api, type DirectoryNode } from "../api/client";
+import { api, encodePath, type DirectoryNode } from "../api/client";
 import { queryKeys } from "../api/queryKeys";
 import { ErrorState, PageSpinner } from "../components/Page";
 import { PhotoGrid } from "../components/PhotoGrid";
@@ -20,8 +20,7 @@ export function Folders() {
     queryFn: api.getDirectoryTree,
   });
 
-  const handleSelectFolder = (path: string) =>
-    navigate(`/folders/${path.split("/").map(encodeURIComponent).join("/")}`);
+  const handleSelectFolder = (path: string) => navigate(`/folders/${encodePath(path)}`);
 
   if (isLoading) return <PageSpinner />;
   if (error) return <ErrorState error={error} />;

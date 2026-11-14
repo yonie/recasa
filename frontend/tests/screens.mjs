@@ -14,6 +14,10 @@
  * data visit the same pages. Override any with SCREENS_PERSON, SCREENS_TOGETHER,
  * SCREENS_EVENT, SCREENS_TAG, SCREENS_COUNTRY, SCREENS_CITY, SCREENS_FOLDER,
  * SCREENS_YEAR, SCREENS_SEARCH; SCREENS_ONLY=<regex> limits the shots taken.
+ *
+ * SCREENS_CSP="<policy>" serves every page with that Content-Security-Policy
+ * and reports each violation as an error, to check a policy before nginx
+ * enforces it.
  */
 import { chromium } from "@playwright/test";
 import fs from "node:fs";
@@ -126,6 +130,21 @@ for (const vp of VIEWPORTS) {
 
   let requests = [];
   let errors = [];
+  if (process.env.SCREENS_CSP) {
+    await page.route(
+      (url) => url.origin === new URL(base).origin && !url.pathname.startsWith("/api/") && !/\.\w+$/.test(url.pathname),
+      async (route) => {
+        const res = await route.fetch();
+        await route.fulfill({ response: res, headers: { ...res.headers(), "content-security-policy": process.env.SCREENS_CSP } });
+      }
+    );
+    await page.exposeFunction("__cspViolation", (v) => errors.push(`csp: ${v}`));
+    await page.addInitScript(() => {
+      document.addEventListener("securitypolicyviolation", (e) =>
+        window.__cspViolation(`${e.violatedDirective} blocked ${e.blockedURI || "inline"}`)
+      );
+    });
+  }
   page.on("request", (r) => {
     const u = new URL(r.url());
     if (u.pathname.startsWith("/api/") && !/\/(thumbnail|original|preview|live)/.test(u.pathname)) {

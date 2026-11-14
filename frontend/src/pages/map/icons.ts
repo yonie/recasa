@@ -20,20 +20,8 @@ export function clusterIcon(count: number): L.DivIcon {
   if (!icon) {
     const size = count > 100 ? 50 : count > 10 ? 40 : 30;
     icon = L.divIcon({
-      html: `<div style="
-        background: #3b82f6;
-        color: white;
-        border-radius: 50%;
-        width: ${size}px;
-        height: ${size}px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: ${size > 40 ? 14 : 12}px;
-        font-weight: 600;
-        border: 2px solid white;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-      ">${count}</div>`,
+      // Count is a number, so nothing from the API ends up as markup here.
+      html: `<div class="cluster-badge cluster-badge-${size}">${count}</div>`,
       className: "custom-cluster-icon",
       iconSize: [size, size],
       iconAnchor: [size / 2, size / 2],
@@ -45,14 +33,7 @@ export function clusterIcon(count: number): L.DivIcon {
 
 /** The red dot marking the Hero Trail's current stop. */
 export const activeStopIcon = L.divIcon({
-  html: `<div style="
-    background: #ef4444;
-    border-radius: 50%;
-    width: 18px;
-    height: 18px;
-    border: 3px solid white;
-    box-shadow: 0 0 12px rgba(239,68,68,0.6);
-  "></div>`,
+  html: `<div class="active-stop-dot"></div>`,
   className: "active-stop-icon",
   iconSize: [18, 18],
   iconAnchor: [9, 9],
