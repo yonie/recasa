@@ -260,6 +260,9 @@ class EventDetectionWorker:
         self.pipeline = pipeline
         self._running = False
         self._last_event_run = 0.0
+        # A batch skipped event detection inside MIN_EVENT_INTERVAL; it runs
+        # once the interval has passed, even if no further photo arrives.
+        self._events_pending = False
         # Perceptual-hash input of the last duplicate detection; when it has
         # not changed the stored groups are already exactly what a rerun
         # would write.
@@ -272,6 +275,8 @@ class EventDetectionWorker:
 
         while self._running:
             while events_queue.empty() and self._running:
+                if self._events_pending and self._events_due():
+                    await self._detect_events()
                 await asyncio.sleep(2)
             if not self._running:
                 break
@@ -297,13 +302,21 @@ class EventDetectionWorker:
 
         await self._detect_duplicates()
 
-        now = time.time()
-        if now - self._last_event_run >= self.MIN_EVENT_INTERVAL:
-            logger.info("Running batch event detection...")
-            if await _guarded("Event detection", detect_events):
-                self._last_event_run = now
+        if self._events_due():
+            await self._detect_events()
         else:
-            logger.debug("Skipping event detection (debounced)")
+            logger.debug("Deferring event detection (debounced)")
+            self._events_pending = True
+
+    def _events_due(self) -> bool:
+        return time.time() - self._last_event_run >= self.MIN_EVENT_INTERVAL
+
+    async def _detect_events(self) -> None:
+        now = time.time()
+        logger.info("Running batch event detection...")
+        self._events_pending = False
+        if await _guarded("Event detection", detect_events):
+            self._last_event_run = now
 
     async def _detect_duplicates(self) -> None:
         try:

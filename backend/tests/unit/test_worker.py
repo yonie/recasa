@@ -269,3 +269,43 @@ async def test_geocoding_takes_zero_coordinates_and_skips_half_a_position(
     async with db() as session:
         photo = await session.get(worker_mod.Photo, equator)
     assert photo.location_address == "Libreville, Estuaire, GA"
+
+
+@pytest.mark.asyncio
+async def test_debounced_event_detection_still_runs_after_the_last_batch(monkeypatch):
+    """A batch inside MIN_EVENT_INTERVAL of the previous one used to skip
+    event detection for good when no further photo came."""
+    calls = []
+
+    async def fake_detect():
+        calls.append(1)
+
+    async def nothing():
+        return None
+
+    monkeypatch.setattr(worker_mod, "detect_events", fake_detect)
+    monkeypatch.setattr(worker_mod.settings, "ENABLE_FACE_DETECTION", False)
+    ew = worker_mod.EventDetectionWorker(Pipeline())
+    monkeypatch.setattr(ew, "_detect_duplicates", nothing)
+    await ew._run_batch()
+    await ew._run_batch()  # within the interval: deferred, not dropped
+    assert calls == [1] and ew._events_pending
+
+    ew.MIN_EVENT_INTERVAL = 0.05
+    ew.SETTLE_SECONDS = 0
+    monkeypatch.setattr(worker_mod.asyncio, "sleep", _fast_sleep)
+    task = asyncio.create_task(ew.run())
+    for _ in range(200):
+        if len(calls) == 2:
+            break
+        await _real_sleep(0.01)
+    ew.stop()
+    await asyncio.wait_for(task, 3)
+    assert calls == [1, 1] and not ew._events_pending
+
+
+_real_sleep = asyncio.sleep
+
+
+async def _fast_sleep(seconds):
+    await _real_sleep(min(seconds, 0.01))
