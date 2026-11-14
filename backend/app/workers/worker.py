@@ -2,68 +2,76 @@
 
 Simplified architecture:
 - Workers check if processing is needed by looking at actual data existence
+  (the rules live in workers/stages.py, shared with the scanner and resume)
 - No in-memory counters or _processed sets
 - Config flags control whether each stage runs
-- Stage handlers are driven by a config table, not individual methods
 """
 
 import asyncio
 import logging
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import select, func
-
-from backend.app.config import settings
+from backend.app.config import ignored_stage_switches, settings
 from backend.app.database import async_session
 from backend.app.exceptions import PermanentStageError
-from backend.app.models import Photo, PhotoHash, Face, Caption, StageFailure
-from backend.app.services.exif import extract_exif
-from backend.app.services.thumbnail import generate_thumbnails
-from backend.app.services.hasher import compute_hashes, find_duplicates
-from backend.app.services.geocoder import geocode_photo
-from backend.app.services.face_detector import detect_faces, cluster_faces
+from backend.app.models import Photo, StageFailure
 from backend.app.services.captioner import caption_photo
 from backend.app.services.event_detector import detect_events
-from backend.app.services.user_data import (
-    apply_pending_person_imports,
-    apply_pending_hidden_group_imports,
-)
+from backend.app.services.exif import extract_exif
+from backend.app.services.face_detector import cluster_faces, detect_faces
+from backend.app.services.geocoder import geocode_photo
+from backend.app.services.hasher import compute_hashes, find_duplicates, phash_signature
 from backend.app.services.motion_photo import extract_motion_video
-from backend.app.services.scanner import thumb_exists
+from backend.app.services.thumbnail import generate_thumbnails
+from backend.app.services.user_data import (
+    apply_pending_hidden_group_imports,
+    apply_pending_person_imports,
+)
 from backend.app.workers.queues import Pipeline, QueueType
+from backend.app.workers.stages import (
+    failure_recorded,
+    has_output,
+    stage_applies,
+    stage_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
-# In-memory log storage for recent pipeline activity
+# In-memory log storage for recent pipeline activity (served by
+# /api/pipeline/logs).
 pipeline_logs: deque = deque(maxlen=500)
 
+
 class PipelineLogHandler(logging.Handler):
-    """Custom handler to capture pipeline logs."""
+    """Capture INFO+ records from the workers and services for the status page."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        # Only capture pipeline worker logs
-        if record.name.startswith('backend.app.workers') or record.name.startswith('backend.app.services'):
-            # Only INFO level or higher, skip progress spam
-            if record.levelno >= logging.INFO:
-                msg = record.getMessage()
-                # Skip progress messages (they're for cumulative tracking)
-                if 'Progress:' not in msg:
-                    pipeline_logs.append({
-                        'timestamp': datetime.utcnow().isoformat(),
-                        'level': record.levelname,
-                        'message': msg,
-                    })
+        if record.levelno < logging.INFO:
+            return
+        msg = record.getMessage()
+        # Progress lines are cumulative counters, not events worth listing.
+        if "Progress:" in msg:
+            return
+        pipeline_logs.append({
+            "timestamp": datetime.now(UTC).replace(tzinfo=None).isoformat(),
+            "level": record.levelname,
+            "message": msg,
+        })
 
-# Install the handler
+
 pipeline_handler = PipelineLogHandler()
 pipeline_handler.setLevel(logging.INFO)
-logging.getLogger('backend.app.workers').addHandler(pipeline_handler)
-logging.getLogger('backend.app.services').addHandler(pipeline_handler)
+logging.getLogger("backend.app.workers").addHandler(pipeline_handler)
+logging.getLogger("backend.app.services").addHandler(pipeline_handler)
 
 processing_semaphore: asyncio.Semaphore | None = None
+
+# The event loop only holds weak references to tasks; keep the worker loops
+# alive explicitly.
+_worker_tasks: set[asyncio.Task] = set()
 
 
 def get_processing_semaphore() -> asyncio.Semaphore:
@@ -71,125 +79,27 @@ def get_processing_semaphore() -> asyncio.Semaphore:
     global processing_semaphore
     if processing_semaphore is None:
         processing_semaphore = asyncio.Semaphore(settings.max_concurrent)
-        logger.info(f"Created processing semaphore with limit: {settings.max_concurrent}")
+        logger.info("Created processing semaphore with limit: %d", settings.max_concurrent)
     return processing_semaphore
 
 
-# --- Stage configuration ---
-
-@dataclass
-class StageConfig:
-    """Configuration for a pipeline processing stage."""
-    name: str
-    queue_type: QueueType
-    enabled: Callable[[], bool]
-    is_done: Callable[["Worker", Photo, str], Awaitable[bool] | bool]
-    service_fn: Callable[[str], Awaitable[object]]
-    skip_if: Callable[["Worker", Photo, str], bool] | None = None
-
-
-async def _exif_is_done(worker: "Worker", photo: Photo, file_hash: str) -> bool:
-    return photo.camera_make is not None or photo.date_taken is not None
-
-async def _geocoding_is_done(worker: "Worker", photo: Photo, file_hash: str) -> bool:
-    return photo.location_city is not None
-
-def _geocoding_skip_if(worker: "Worker", photo: Photo, file_hash: str) -> bool:
-    return photo.gps_latitude is None
-
-async def _thumbnails_is_done(worker: "Worker", photo: Photo, file_hash: str) -> bool:
-    return thumb_exists(file_hash)
-
-async def _hashing_is_done(worker: "Worker", photo: Photo, file_hash: str) -> bool:
-    async with async_session() as session:
-        result = await session.execute(
-            select(PhotoHash).where(PhotoHash.file_hash == file_hash)
-        )
-        return result.scalar_one_or_none() is not None
-
-async def _faces_is_done(worker: "Worker", photo: Photo, file_hash: str) -> bool:
-    async with async_session() as session:
-        result = await session.execute(
-            select(func.count(Face.file_hash)).where(Face.file_hash == file_hash)
-        )
-        return (result.scalar() or 0) > 0
-
-async def _caption_is_done(worker: "Worker", photo: Photo, file_hash: str) -> bool:
-    async with async_session() as session:
-        result = await session.execute(
-            select(Caption).where(Caption.file_hash == file_hash)
-        )
-        return result.scalar_one_or_none() is not None
-
-# Motion photos have no idempotency check -- always run (fast no-op if not a motion photo)
-async def _motion_never_done(worker: "Worker", photo: Photo, file_hash: str) -> bool:
-    return False
-
-
-STAGE_CONFIGS: dict[QueueType, StageConfig] = {
-    QueueType.EXIF: StageConfig(
-        name="exif",
-        queue_type=QueueType.EXIF,
-        enabled=lambda: True,
-        is_done=_exif_is_done,
-        service_fn=extract_exif,
-    ),
-    QueueType.GEOCODING: StageConfig(
-        name="geocoding",
-        queue_type=QueueType.GEOCODING,
-        enabled=lambda: settings.ENABLE_GEOCODING,
-        is_done=_geocoding_is_done,
-        skip_if=_geocoding_skip_if,
-        service_fn=geocode_photo,
-    ),
-    QueueType.THUMBNAILS: StageConfig(
-        name="thumbnails",
-        queue_type=QueueType.THUMBNAILS,
-        enabled=lambda: True,
-        is_done=_thumbnails_is_done,
-        service_fn=generate_thumbnails,
-    ),
-    QueueType.MOTION_PHOTOS: StageConfig(
-        name="motion",
-        queue_type=QueueType.MOTION_PHOTOS,
-        enabled=lambda: True,
-        is_done=_motion_never_done,
-        service_fn=extract_motion_video,
-    ),
-    QueueType.HASHING: StageConfig(
-        name="hashing",
-        queue_type=QueueType.HASHING,
-        enabled=lambda: True,
-        is_done=_hashing_is_done,
-        service_fn=compute_hashes,
-    ),
-    QueueType.FACES: StageConfig(
-        name="faces",
-        queue_type=QueueType.FACES,
-        enabled=lambda: settings.ENABLE_FACE_DETECTION,
-        is_done=_faces_is_done,
-        service_fn=detect_faces,
-    ),
-    QueueType.CAPTIONING: StageConfig(
-        name="captioning",
-        queue_type=QueueType.CAPTIONING,
-        enabled=lambda: settings.ENABLE_CAPTIONING,
-        is_done=_caption_is_done,
-        service_fn=caption_photo,
-    ),
+# The service that produces each stage's output, and the short name used in
+# log lines ("[motion] Processing: ...").
+STAGE_SERVICES: dict[QueueType, tuple[str, Callable[[str], Awaitable[object]]]] = {
+    QueueType.EXIF: ("exif", extract_exif),
+    QueueType.GEOCODING: ("geocoding", geocode_photo),
+    QueueType.THUMBNAILS: ("thumbnails", generate_thumbnails),
+    QueueType.MOTION_PHOTOS: ("motion", extract_motion_video),
+    QueueType.HASHING: ("hashing", compute_hashes),
+    QueueType.FACES: ("faces", detect_faces),
+    QueueType.CAPTIONING: ("captioning", caption_photo),
 }
+
+PROGRESS_EVERY = 100
 
 
 class Worker:
-    """Worker that processes files from a specific queue.
-
-    Uses STAGE_CONFIGS to drive a generic processing loop rather than
-    per-stage handler methods.
-    """
-
-    # Progress tracking - shared across all worker instances for each queue type
-    _progress_counts: dict[str, int] = {}
-    _progress_logs: dict[str, int] = {}
+    """Worker that processes files from one stage's queue."""
 
     def __init__(self, pipeline: Pipeline, queue_type: QueueType, worker_id: int = 0):
         self.pipeline = pipeline
@@ -197,9 +107,9 @@ class Worker:
         self.worker_id = worker_id
         self.queue = pipeline.queues[queue_type]
         self._running = False
+        self._processed = 0  # for the periodic progress line only
 
-    def _log_error(self, file_hash: str, file_path: str | None, error: str):
-        """Log an error."""
+    def _log_error(self, file_hash: str, file_path: str | None, error: str) -> None:
         self.pipeline.add_error(
             queue=self.queue_type.value,
             file_hash=file_hash,
@@ -207,7 +117,7 @@ class Worker:
             error=error,
         )
 
-    async def _record_failure(self, file_hash: str, error: str):
+    async def _record_failure(self, file_hash: str, error: str) -> None:
         """Persist a stage failure so scans stop re-queueing this photo forever."""
         try:
             async with async_session() as session:
@@ -221,253 +131,222 @@ class Worker:
                 )
                 await session.commit()
         except Exception as e:
-            logger.warning(f"Could not record stage failure: {type(e).__name__}")
+            # Losing the record only means the photo is retried later.
+            logger.warning("Could not record stage failure: %s", type(e).__name__)
 
-    async def _clear_failure(self, file_hash: str):
-        """Remove any recorded failure for this photo+stage after a success."""
-        try:
-            async with async_session() as session:
-                await session.execute(
-                    StageFailure.__table__.delete().where(
-                        StageFailure.file_hash == file_hash,
-                        StageFailure.stage == self.queue_type.value,
-                    )
-                )
-                await session.commit()
-        except Exception as e:
-            logger.warning(f"Could not clear stage failure: {type(e).__name__}")
+    async def _should_run(self, file_hash: str) -> tuple[bool, Photo | None]:
+        """Decide whether this stage has work to do for the photo.
 
-    async def process_item(self, file_hash: str) -> bool:
-        """Process a single item through the configured stage."""
-        # Events queue is handled by EventDetectionWorker, not here
-        if self.queue_type == QueueType.EVENTS:
-            return True
-
-        config = STAGE_CONFIGS.get(self.queue_type)
-        if not config:
-            return False
-
-        # Stage disabled -- skip to next
-        if not config.enabled():
-            await self.pipeline.route_to_next(file_hash, self.queue_type)
-            return True
-
-        # Get photo from DB
+        Returns (run, photo). photo is None when the photo is gone from the
+        index; such an item is dropped rather than routed on.
+        """
         async with async_session() as session:
             photo = await session.get(Photo, file_hash)
-        if not photo:
+            if photo is None:
+                return False, None
+            stage = self.queue_type
+            run = (
+                stage_applies(stage, is_video=bool(photo.is_video),
+                              has_gps=photo.gps_latitude is not None)
+                and not await has_output(session, stage, photo)
+                # A photo can reach a stage that already failed for it by being
+                # routed through from an earlier one; retrying would just fail
+                # again. A stage rebuild (clear-stage) clears the record.
+                and not await failure_recorded(session, stage, file_hash)
+            )
+            return run, photo
+
+    async def process_item(self, file_hash: str) -> bool:
+        """Process a single item through this worker's stage."""
+        entry = STAGE_SERVICES.get(self.queue_type)
+        if entry is None:
+            return False
+        name, service_fn = entry
+
+        if not stage_enabled(self.queue_type):
+            await self.pipeline.route_to_next(file_hash, self.queue_type)
+            return True
+
+        run, photo = await self._should_run(file_hash)
+        if photo is None:
             self._log_error(file_hash, None, "Photo not found in database")
             return False
-
-        # Videos only need a poster thumbnail; every other stage is image-only.
-        if photo.is_video and self.queue_type != QueueType.THUMBNAILS:
+        if not run:
+            logger.debug("[%s] Skip: %s", name, photo.file_path)
             await self.pipeline.route_to_next(file_hash, self.queue_type)
             return True
 
-        filepath = settings.photos_dir / photo.file_path
-
-        # Skip if condition met (e.g., no GPS data for geocoding)
-        if config.skip_if and config.skip_if(self, photo, file_hash):
-            logger.debug(f"[{config.name}] Skip: {photo.file_path}")
-            await self.pipeline.route_to_next(file_hash, self.queue_type)
-            return True
-
-        # Already processed -- skip
-        done = config.is_done(self, photo, file_hash)
-        if asyncio.iscoroutine(done):
-            done = await done
-        if done:
-            logger.debug(f"[{config.name}] Skip: {photo.file_path} (already done)")
-            await self.pipeline.route_to_next(file_hash, self.queue_type)
-            return True
-
-        # Process
+        filepath = str(settings.photos_dir / photo.file_path)
         self.queue.current_file_hash = file_hash
-        self.queue.current_file_path = str(filepath)
-        logger.info(f"[{config.name}] Processing: {photo.file_path}")
+        self.queue.current_file_path = filepath
+        logger.info("[%s] Processing: %s", name, photo.file_path)
 
         try:
-            result = await config.service_fn(file_hash)
-            logger.info(f"[{config.name}] Done: {photo.file_path}")
-            await self._clear_failure(file_hash)
+            await service_fn(file_hash)
+            logger.info("[%s] Done: %s", name, photo.file_path)
         except PermanentStageError as e:
-            logger.warning(f"[{config.name}] Unreadable: {photo.file_path} - {e}")
-            self._log_error(file_hash, str(filepath), str(e)[:100])
+            logger.warning("[%s] Unreadable: %s - %s", name, photo.file_path, e)
+            self._log_error(file_hash, filepath, str(e)[:100])
             await self._record_failure(file_hash, str(e)[:200])
         except Exception as e:
-            # Transient (service/network) errors are not persisted — the photo
+            # Transient (service/network) errors are not persisted: the photo
             # will be retried by a later scan.
-            logger.warning(f"[{config.name}] Failed: {photo.file_path} - {type(e).__name__}")
-            self._log_error(file_hash, str(filepath), str(e)[:100])
+            logger.warning("[%s] Failed: %s - %s", name, photo.file_path, type(e).__name__)
+            self._log_error(file_hash, filepath, str(e)[:100])
+        finally:
+            self.queue.current_file_hash = None
+            self.queue.current_file_path = None
 
-        self.queue.current_file_hash = None
-        self.queue.current_file_path = None
         await self.pipeline.route_to_next(file_hash, self.queue_type)
-
         self._log_progress()
         return True
 
-    def _log_progress(self):
-        """Log progress every 100 items."""
-        queue_name = self.queue_type.value
-        if queue_name not in Worker._progress_counts:
-            Worker._progress_counts[queue_name] = 0
-            Worker._progress_logs[queue_name] = 0
+    def _log_progress(self) -> None:
+        self._processed += 1
+        if self._processed % PROGRESS_EVERY == 0:
+            logger.info(
+                "[%s] Progress: %d processed, %d pending",
+                self.queue_type.value, self._processed, self.queue.qsize(),
+            )
 
-        Worker._progress_counts[queue_name] += 1
-        count = Worker._progress_counts[queue_name]
-        last_milestone = Worker._progress_logs[queue_name]
-
-        if count >= last_milestone + 100:
-            Worker._progress_logs[queue_name] = (count // 100) * 100
-            pending = self.queue.qsize()
-            logger.info(f"[{queue_name}] Progress: {count} processed, {pending} pending")
-
-    async def run(self):
+    async def run(self) -> None:
         """Run the worker loop."""
         self._running = True
         semaphore = get_processing_semaphore()
-        logger.info(f"Worker {self.worker_id} started for queue {self.queue_type.value}")
+        logger.info("Worker %d started for queue %s", self.worker_id, self.queue_type.value)
 
-        while self._running:
-            if self.pipeline._stop_requested:
-                logger.info(f"Worker {self.worker_id} stopping (stop requested)")
-                break
+        while self._running and not self.pipeline._stop_requested:
             try:
                 file_hash = await asyncio.wait_for(self.queue.get(), timeout=1.0)
-                if self.pipeline._stop_requested:
-                    break
+            except TimeoutError:
+                continue
+            if self.pipeline._stop_requested:
+                break
+            try:
                 async with semaphore:
                     await self.process_item(file_hash)
-            except asyncio.TimeoutError:
-                continue
             except Exception as e:
-                logger.warning(f"Worker {self.worker_id} error ({self.queue_type.value}): {type(e).__name__}")
+                # One bad item must not end the worker loop.
+                logger.warning(
+                    "Worker %d error (%s): %s", self.worker_id, self.queue_type.value,
+                    type(e).__name__,
+                )
                 await asyncio.sleep(0.5)
 
-        logger.info(f"Worker {self.worker_id} stopped for queue {self.queue_type.value}")
+        logger.info("Worker %d stopped for queue %s", self.worker_id, self.queue_type.value)
 
-    def stop(self):
-        """Stop the worker."""
+    def stop(self) -> None:
         self._running = False
 
 
 class EventDetectionWorker:
-    """Special worker that runs face clustering + event detection in batch."""
+    """Runs face clustering, duplicate and event detection in batches.
+
+    Every photo leaving the last stage lands in the EVENTS queue; this worker
+    drains it, waits for upstream to settle, then recomputes the library-wide
+    results once per batch.
+    """
+
+    MIN_EVENT_INTERVAL = 60.0  # seconds between event detections
+    SETTLE_SECONDS = 5
 
     def __init__(self, pipeline: Pipeline):
         self.pipeline = pipeline
         self._running = False
-        self._last_event_run: float = 0
-        self._min_event_interval: float = 60.0
+        self._last_event_run = 0.0
+        # Perceptual-hash input of the last duplicate detection; when it has
+        # not changed the stored groups are already exactly what a rerun
+        # would write.
+        self._last_phash_signature: bytes | None = None
 
-    async def run(self):
-        """Run the event detection worker."""
-        import time
+    def _active(self) -> bool:
+        return self._running and not self.pipeline._stop_requested
+
+    async def run(self) -> None:
         self._running = True
         logger.info("Event detection worker started")
+        events_queue = self.pipeline.queues[QueueType.EVENTS]
 
-        while self._running:
-            if self.pipeline._stop_requested:
-                break
-
-            events_queue = self.pipeline.queues[QueueType.EVENTS]
-
-            # Wait for items
-            while events_queue.empty() and self._running and not self.pipeline._stop_requested:
+        while self._active():
+            while events_queue.empty() and self._active():
                 await asyncio.sleep(2)
-
-            if not self._running or self.pipeline._stop_requested:
+            if not self._active():
                 break
 
-            # Drain queue
-            drained = 0
-            while not events_queue.empty():
-                try:
-                    await events_queue.get()
-                    drained += 1
-                except Exception:
-                    break
-
+            drained = events_queue.drain()
             if drained == 0:
                 continue
+            logger.debug("Event worker: drained %d items", drained)
 
-            logger.debug(f"Event worker: drained {drained} items")
-
-            # Wait for upstream to settle
-            await asyncio.sleep(5)
-
-            # Face clustering
-            if settings.ENABLE_FACE_DETECTION:
-                logger.debug("Running batch face clustering...")
-                try:
-                    await cluster_faces()
-                except Exception as e:
-                    logger.warning(f"Face clustering failed: {type(e).__name__}")
-
-                # Apply pending person name imports (from Export/Import)
-                try:
-                    await apply_pending_person_imports()
-                except Exception as e:
-                    logger.warning(f"Pending person import failed: {type(e).__name__}")
-
-                # Apply pending hidden-group imports (from Export/Import)
-                try:
-                    await apply_pending_hidden_group_imports()
-                except Exception as e:
-                    logger.warning(f"Pending hidden-group import failed: {type(e).__name__}")
-
-            # Duplicate detection
-            logger.info("Running batch duplicate detection...")
-            try:
-                await find_duplicates()
-            except Exception as e:
-                logger.warning(f"Duplicate detection failed: {type(e).__name__}")
-
-            # Event detection - debounced
-            now = time.time()
-            if now - self._last_event_run >= self._min_event_interval:
-                logger.info("Running batch event detection...")
-                try:
-                    await detect_events()
-                    self._last_event_run = now
-                except Exception as e:
-                    logger.warning(f"Event detection failed: {type(e).__name__}")
-            else:
-                logger.debug("Skipping event detection (debounced)")
+            await asyncio.sleep(self.SETTLE_SECONDS)
+            await self._run_batch()
 
         logger.info("Event detection worker stopped")
 
-    def stop(self):
-        """Stop the worker."""
+    async def _run_batch(self) -> None:
+        if settings.ENABLE_FACE_DETECTION:
+            logger.debug("Running batch face clustering...")
+            await _guarded("Face clustering", cluster_faces)
+            # Person names and hidden Together tiles from an Export/Import wait
+            # for clustering to produce persons they can match.
+            await _guarded("Pending person import", apply_pending_person_imports)
+            await _guarded("Pending hidden-group import", apply_pending_hidden_group_imports)
+
+        await self._detect_duplicates()
+
+        now = time.time()
+        if now - self._last_event_run >= self.MIN_EVENT_INTERVAL:
+            logger.info("Running batch event detection...")
+            if await _guarded("Event detection", detect_events):
+                self._last_event_run = now
+        else:
+            logger.debug("Skipping event detection (debounced)")
+
+    async def _detect_duplicates(self) -> None:
+        try:
+            signature = await phash_signature()
+        except Exception as e:
+            logger.warning("Duplicate detection failed: %s", type(e).__name__)
+            return
+        if signature == self._last_phash_signature:
+            logger.debug("Skipping duplicate detection (perceptual hashes unchanged)")
+            return
+        logger.info("Running batch duplicate detection...")
+        if await _guarded("Duplicate detection", find_duplicates):
+            self._last_phash_signature = signature
+
+    def stop(self) -> None:
         self._running = False
 
 
+async def _guarded(what: str, fn: Callable[[], Awaitable[object]]) -> bool:
+    """Run a batch step; log and swallow its failure so the next step still runs."""
+    try:
+        await fn()
+        return True
+    except Exception as e:
+        logger.warning("%s failed: %s", what, type(e).__name__)
+        return False
+
+
 async def start_pipeline_workers(pipeline: Pipeline) -> list[Worker]:
-    """Start workers for all queues."""
+    """Start one worker per stage queue plus the batch event worker."""
+    for switch in ignored_stage_switches():
+        logger.warning(
+            "%s is set but is not a setting: that stage always runs. Only "
+            "ENABLE_GEOCODING, ENABLE_FACE_DETECTION and ENABLE_CAPTIONING switch "
+            "stages off.", switch,
+        )
+
     workers = []
-
-    for queue_type in QueueType:
-        if queue_type == QueueType.EVENTS:
-            continue
-
+    for queue_type in STAGE_SERVICES:
         worker = Worker(pipeline, queue_type, worker_id=len(workers))
-        asyncio.create_task(worker.run())
+        _worker_tasks.add(asyncio.create_task(worker.run()))
         workers.append(worker)
 
     event_worker = EventDetectionWorker(pipeline)
-    asyncio.create_task(event_worker.run())
+    _worker_tasks.add(asyncio.create_task(event_worker.run()))
 
     pipeline.is_running = True
-
-    logger.info(f"Started {len(workers)} pipeline workers")
+    logger.info("Started %d pipeline workers", len(workers))
     return workers
-
-
-async def stop_pipeline_workers(workers: list[Worker]):
-    """Stop all pipeline workers."""
-    for worker in workers:
-        worker.stop()
-
-    await asyncio.sleep(1)
-    logger.info("All pipeline workers stopped")

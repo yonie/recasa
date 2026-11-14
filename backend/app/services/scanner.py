@@ -15,31 +15,35 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select, func
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.app.config import settings
+from backend.app.database import async_session
+from backend.app.models import Photo, PhotoPath
+from backend.app.workers.stages import (
+    PhotoFacts,
+    StageOutputs,
+    first_needed_stage,
+    load_photo_facts,
+    load_stage_outputs,
+)
 
 # Register MIME types for formats Python's mimetypes module doesn't know.
 mimetypes.add_type("image/x-olympus-orf", ".orf")
 
-from backend.app.config import settings
-from backend.app.database import async_session
-from backend.app.models import Photo, PhotoPath, PhotoHash, Face, Caption, StageFailure
-
 logger = logging.getLogger(__name__)
 
-HASH_BUFFER_SIZE = 65536
+# Index writes (new photos, new paths, cleanup) from the periodic sweep and
+# the file watcher go through this lock. Both can meet the same new file at
+# the same moment, and two sessions inserting it race to an IntegrityError.
+_index_lock = asyncio.Lock()
 
 
 def compute_file_hash(filepath: Path) -> str:
     """Compute SHA-256 hash of a file."""
-    sha256 = hashlib.sha256()
     with open(filepath, "rb") as f:
-        while True:
-            data = f.read(HASH_BUFFER_SIZE)
-            if not data:
-                break
-            sha256.update(data)
-    return sha256.hexdigest()
+        return hashlib.file_digest(f, "sha256").hexdigest()
 
 
 def is_supported_photo(filepath: Path) -> bool:
@@ -56,15 +60,23 @@ def is_indexable(filepath: Path) -> bool:
     return is_supported_photo(filepath) or is_supported_video(filepath)
 
 
-def _is_live_photo_companion(filepath: Path) -> bool:
+def _is_live_photo_companion(filepath: Path, siblings: set[str] | None = None) -> bool:
     """True if this video is the movie half of a Live Photo (a sibling
-    photo shares its stem) — it's surfaced via the photo, not indexed alone."""
+    photo shares its stem): it's surfaced via the photo, not indexed alone.
+
+    `siblings` are the names in the same directory when the caller already
+    listed it; a hit there answers without the per-extension stat calls.
+    """
     if filepath.suffix.lower() not in {".mov"}:
         return False
-    for ext in settings.photo_extensions:
-        if filepath.with_suffix(ext).exists() or filepath.with_suffix(ext.upper()).exists():
-            return True
-    return False
+    candidates = [
+        filepath.with_suffix(variant)
+        for ext in settings.photo_extensions
+        for variant in (ext, ext.upper())
+    ]
+    if siblings is not None and any(c.name in siblings for c in candidates):
+        return True
+    return any(c.exists() for c in candidates)
 
 
 # Apple Live Photo movies carry this QuickTime metadata key (and a paired
@@ -153,31 +165,48 @@ def detect_google_motion_photo(filepath: Path) -> bool:
         return False
 
 
-def thumb_exists(file_hash: str) -> bool:
-    """Check if thumbnail file exists."""
-    prefix = file_hash[:2]
-    thumb_path = settings.thumbnails_dir / prefix / f"{file_hash}_200.webp"
-    return thumb_path.exists()
-
-
 # Directory mtime snapshot from the last completed scan. A directory's mtime
 # changes when entries are added/removed/renamed, so an unchanged mtime means
-# no files appeared or vanished inside it — those files can be skipped without
+# no files appeared or vanished inside it: those files can be skipped without
 # a stat call each. Per-file stats dominate sweep cost on Docker bind mounts
 # (~55s vs ~8s for 50k files / 2k dirs). In-memory only: the first sweep after
 # a restart stats everything once, then pruning kicks in.
 _dir_snapshot: dict[str, float] = {}
 
+# Relative paths the last completed scan saw. A file in an "unchanged"
+# directory that is not in here is checked anyway: two changes within the
+# mtime tolerance of each other leave the directory's mtime looking the same.
+_seen_snapshot: set[str] = set()
+
+# Two mtimes within this many seconds count as equal (FAT and SMB round).
+_MTIME_TOLERANCE = 1.0
+
+
+def is_hidden_path(relative_path: str | Path) -> bool:
+    """True if any component of a library-relative path is a dot-directory or
+    dot-file. Sweeps never descend into those (Syncthing's .stversions,
+    NAS thumbnail caches), so the watcher must not index them either."""
+    return any(part.startswith(".") for part in Path(relative_path).parts)
+
+
+def _mtime_equal(a: float, b: float) -> bool:
+    return abs(a - b) < _MTIME_TOLERANCE
+
 
 def _collect_photo_files(
-    photos_dir: Path, cancel_check=None, dir_snapshot: dict[str, float] | None = None
+    photos_dir: Path,
+    cancel_check=None,
+    dir_snapshot: dict[str, float] | None = None,
+    prev_seen: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[list[tuple[Path, os.stat_result]], set[str], dict[str, float]]:
     """Walk the photos directory; stat files only in changed directories.
 
-    Runs in a worker thread — must not touch the event loop or the database.
+    Runs in a worker thread: must not touch the event loop or the database.
     When dir_snapshot is None every directory counts as changed (full scan).
+    Files in unchanged directories are still checked when prev_seen (the
+    previous scan's paths) does not have them.
     Note: in-place content edits don't bump the parent dir's mtime, so pruned
-    sweeps miss them — only a full rescan re-checks unchanged directories.
+    sweeps miss them; only a full rescan re-checks unchanged directories.
 
     Returns (files_to_check, seen_relative_paths, new_snapshot).
     """
@@ -192,7 +221,8 @@ def _collect_photo_files(
             continue
         new_snapshot[root] = dir_mtime
         prev_mtime = dir_snapshot.get(root) if dir_snapshot is not None else None
-        dir_unchanged = prev_mtime is not None and abs(prev_mtime - dir_mtime) < 1.0
+        dir_unchanged = prev_mtime is not None and _mtime_equal(prev_mtime, dir_mtime)
+        siblings = set(files)
         for f in files:
             filepath = Path(root) / f
             if not is_indexable(filepath):
@@ -202,11 +232,12 @@ def _collect_photo_files(
             # marker (still elsewhere or absent). Genuine short clips lack the
             # marker and are kept.
             if is_supported_video(filepath) and (
-                _is_live_photo_companion(filepath) or is_live_photo_movie(filepath)
+                _is_live_photo_companion(filepath, siblings) or is_live_photo_movie(filepath)
             ):
                 continue
-            seen.add(str(filepath.relative_to(photos_dir)))
-            if dir_unchanged:
+            rel_path = str(filepath.relative_to(photos_dir))
+            seen.add(rel_path)
+            if dir_unchanged and rel_path in prev_seen:
                 continue
             try:
                 file_stat = filepath.stat()
@@ -218,6 +249,35 @@ def _collect_photo_files(
         if cancel_check and cancel_check():
             break
     return to_check, seen, new_snapshot
+
+
+# Known indexed paths: relative path -> [(file_hash, size, mtime timestamp)].
+# Usually one entry; a file edited in place keeps an entry per content
+# version (see _index_photo).
+KnownPaths = dict[str, list[tuple[str, int, float]]]
+
+
+async def _load_known_paths() -> KnownPaths:
+    """One query for all known paths beats per-file lookups at this scale."""
+    known: KnownPaths = {}
+    async with async_session() as session:
+        result = await session.execute(
+            select(PhotoPath.file_path, Photo.file_hash, Photo.file_size, Photo.file_modified)
+            .join(Photo, Photo.file_hash == PhotoPath.file_hash)
+        )
+        for rel_path, file_hash, size, modified in result:
+            known.setdefault(rel_path, []).append(
+                (file_hash, size, modified.timestamp() if modified else 0.0)
+            )
+    return known
+
+
+def _unchanged_hash(entries, file_stat: os.stat_result) -> str | None:
+    """The indexed photo this path still holds, if size and mtime match one."""
+    for file_hash, size, mtime in entries or ():
+        if size == file_stat.st_size and mtime and _mtime_equal(mtime, file_stat.st_mtime):
+            return file_hash
+    return None
 
 
 async def scan_directory(
@@ -240,6 +300,8 @@ async def scan_directory(
     Returns:
         dict with scan statistics.
     """
+    global _dir_snapshot, _seen_snapshot
+
     photos_dir = settings.photos_dir
     if not photos_dir.exists():
         logger.error("Photos directory does not exist: %s", photos_dir)
@@ -257,10 +319,10 @@ async def scan_directory(
     # Walk + stat in a worker thread: on Docker bind mounts each filesystem
     # call is slow, and doing 40k of them on the event loop freezes the API.
     # Fast sweeps prune via the dir-mtime snapshot; full rescans check all.
-    global _dir_snapshot
     dir_snapshot = dict(_dir_snapshot) if fast else None
+    prev_seen = _seen_snapshot
     photo_files, seen_paths, new_snapshot = await asyncio.to_thread(
-        _collect_photo_files, photos_dir, cancel_check, dir_snapshot
+        _collect_photo_files, photos_dir, cancel_check, dir_snapshot, prev_seen
     )
     if cancel_check and cancel_check():
         logger.info("Scan cancelled during file collection")
@@ -272,19 +334,27 @@ async def scan_directory(
         "Found %d photo files, %d in changed directories", len(seen_paths), len(photo_files)
     )
 
-    # One query for all known paths beats per-file lookups at this scale.
-    known: dict[str, tuple[int, float]] = {}
-    async with async_session() as session:
-        result = await session.execute(
-            select(PhotoPath.file_path, Photo.file_size, Photo.file_modified).join(
-                Photo, Photo.file_hash == PhotoPath.file_hash
-            )
-        )
-        for rel_path, size, modified in result.all():
-            known[rel_path] = (size, modified.timestamp() if modified else 0.0)
+    if fast and not photo_files and seen_paths == prev_seen:
+        # The common periodic sweep: no file to check and exactly the files
+        # of the last scan, so nothing to index and nothing removed. Skip the
+        # two whole-index queries below.
+        _dir_snapshot = new_snapshot
+        _log_scan_complete(stats)
+        return stats
+
+    known = await _load_known_paths()
+
+    # A full rescan also re-checks the stages of unchanged photos. The stage
+    # state is loaded once up front instead of queried per photo per stage.
+    facts: dict[str, PhotoFacts] = {}
+    outputs: StageOutputs | None = None
+    if not fast:
+        async with async_session() as session:
+            facts = {f.file_hash: f for f in await load_photo_facts(session)}
+            outputs = await load_stage_outputs(session)
 
     # A directory is only recorded in the snapshot when everything in it was
-    # handled cleanly — a dir with errors (e.g. a file still being copied)
+    # handled cleanly: a dir with errors (e.g. a file still being copied)
     # gets re-checked on the next sweep.
     cancelled = False
     error_dirs: set[str] = set()
@@ -295,42 +365,38 @@ async def scan_directory(
             break
 
         rel_path = str(filepath.relative_to(photos_dir))
-
-        entry = known.get(rel_path)
-        unchanged = (
-            entry is not None
-            and entry[0] == file_stat.st_size
-            and entry[1]
-            and abs(entry[1] - file_stat.st_mtime) < 1.0
-        )
-
-        # Fast sweeps only look for new/changed/removed files; re-queueing
-        # incomplete stages of unchanged photos is the full rescan's job.
-        if unchanged and fast:
-            stats["skipped"] += 1
-            continue
-
-        # Validity (PIL verify) is expensive and image-only — only check photos
-        # we might index. Videos can't be opened by PIL; they're validated later
-        # when their poster frame is extracted.
-        if (
-            not unchanged
-            and not is_supported_video(filepath)
-            and not await asyncio.to_thread(is_valid_image, filepath)
-        ):
-            stats["errors"] += 1
-            error_dirs.add(str(filepath.parent))
-            continue
+        unchanged_hash = _unchanged_hash(known.get(rel_path), file_stat)
 
         try:
-            async with async_session() as session:
-                entry_stage = await _index_photo(session, filepath, stats, file_stat)
-                await session.commit()
+            if unchanged_hash is not None:
+                # Fast sweeps only look for new/changed/removed files;
+                # re-queueing incomplete stages of unchanged photos is the
+                # full rescan's job.
+                if fast:
+                    stats["skipped"] += 1
+                    continue
+                photo_facts = facts.get(unchanged_hash)
+                stage = outputs.first_needed_stage(photo_facts) if photo_facts else None
+                if stage is None:
+                    stats["skipped"] += 1
+                elif on_file_discovered:
+                    await on_file_discovered(unchanged_hash, stage.value)
+            else:
+                # Validity (PIL verify) is expensive and image-only. Videos
+                # can't be opened by PIL; they're validated later when their
+                # poster frame is extracted.
+                if not is_supported_video(filepath) and not await asyncio.to_thread(
+                    is_valid_image, filepath
+                ):
+                    stats["errors"] += 1
+                    error_dirs.add(str(filepath.parent))
+                    continue
 
-                if entry_stage and on_file_discovered:
-                    file_hash = entry_stage[0]
-                    stage = entry_stage[1]
-                    await on_file_discovered(file_hash, stage)
+                async with _index_lock, async_session() as session:
+                    entry = await _index_photo(session, filepath, stats, file_stat)
+                    await session.commit()
+                if entry and on_file_discovered:
+                    await on_file_discovered(*entry)
         except Exception as e:
             logger.warning("Skipping %s: %s", filepath, type(e).__name__)
             stats["errors"] += 1
@@ -348,7 +414,13 @@ async def scan_directory(
         _dir_snapshot = {
             d: mtime for d, mtime in new_snapshot.items() if d not in error_dirs
         }
+        _seen_snapshot = seen_paths
 
+    _log_scan_complete(stats)
+    return stats
+
+
+def _log_scan_complete(stats: dict) -> None:
     logger.info(
         "Scan complete: %d total, %d new, %d updated, %d skipped, %d errors",
         stats["total"],
@@ -357,42 +429,50 @@ async def scan_directory(
         stats["skipped"],
         stats["errors"],
     )
-    return stats
+
+
+async def _entry_stage(session: AsyncSession, photo: Photo) -> str | None:
+    stage = await first_needed_stage(session, photo)
+    return stage.value if stage else None
 
 
 async def _index_photo(
     session: AsyncSession, filepath: Path, stats: dict, file_stat: os.stat_result | None = None
 ) -> tuple[str, str] | None:
-    """Index a single photo file.
+    """Index a single photo file. Callers hold _index_lock.
 
     Returns:
         (file_hash, entry_stage) if photo needs processing
         None if photo is fully processed or not indexed
     """
-    from backend.app.workers.queues import QueueType
-
     relative_path = str(filepath.relative_to(settings.photos_dir))
     if file_stat is None:
         file_stat = await asyncio.to_thread(filepath.stat)
     file_size = file_stat.st_size
     file_mtime = file_stat.st_mtime
 
-    # Check if photo already indexed by path
-    path_result = await session.execute(
-        select(PhotoPath).where(PhotoPath.file_path == relative_path)
-    )
-    existing_path = path_result.scalar_one_or_none()
-
-    if existing_path:
-        existing_photo = await session.get(Photo, existing_path.file_hash)
-        if existing_photo and existing_photo.file_size == file_size:
-            if existing_photo.file_modified and abs(existing_photo.file_modified.timestamp() - file_mtime) < 1.0:
-                # File unchanged - check if any processing is needed
-                entry_stage = await _get_entry_stage_async(existing_photo, session)
-                if entry_stage:
-                    return (existing_path.file_hash, entry_stage)
-                stats["skipped"] += 1
-                return None
+    # Already indexed at this path with the same size and mtime? A path can
+    # carry more than one photo (one per content version after an in-place
+    # edit), so look at all of them.
+    path_hashes = (
+        await session.execute(
+            select(PhotoPath.file_hash).where(PhotoPath.file_path == relative_path)
+        )
+    ).scalars().all()
+    for path_hash in path_hashes:
+        existing_photo = await session.get(Photo, path_hash)
+        if (
+            existing_photo
+            and existing_photo.file_size == file_size
+            and existing_photo.file_modified
+            and _mtime_equal(existing_photo.file_modified.timestamp(), file_mtime)
+        ):
+            # File unchanged - check if any processing is needed
+            entry_stage = await _entry_stage(session, existing_photo)
+            if entry_stage:
+                return (path_hash, entry_stage)
+            stats["skipped"] += 1
+            return None
 
     # Compute hash
     file_hash = await asyncio.to_thread(compute_file_hash, filepath)
@@ -402,13 +482,7 @@ async def _index_photo(
 
     if existing_by_hash:
         # Update path if needed
-        path_result = await session.execute(
-            select(PhotoPath).where(
-                PhotoPath.file_hash == file_hash,
-                PhotoPath.file_path == relative_path,
-            )
-        )
-        if not path_result.scalar_one_or_none():
+        if file_hash not in path_hashes:
             session.add(PhotoPath(file_hash=file_hash, file_path=relative_path))
             old_path = settings.photos_dir / existing_by_hash.file_path
             if not old_path.exists():
@@ -418,7 +492,7 @@ async def _index_photo(
             stats["skipped"] += 1
 
         # Check if processing is needed
-        entry_stage = await _get_entry_stage_async(existing_by_hash, session)
+        entry_stage = await _entry_stage(session, existing_by_hash)
         if entry_stage:
             return (file_hash, entry_stage)
         return None
@@ -478,136 +552,91 @@ async def _index_photo(
     return (file_hash, "exif")
 
 
-async def _get_entry_stage_async(photo: Photo, session) -> str | None:
-    """Determine which pipeline stage a photo should enter (async version).
-
-    Stages with a recorded permanent failure are skipped — without this,
-    photos that can never complete a stage get re-queued on every scan.
-    """
-    # Videos only need a poster thumbnail; all other stages are image-only.
-    if photo.is_video:
-        if not thumb_exists(photo.file_hash):
-            failed_result = await session.execute(
-                select(StageFailure.stage).where(StageFailure.file_hash == photo.file_hash)
-            )
-            if "thumbnails" not in {row[0] for row in failed_result}:
-                return "thumbnails"
-        return None
-
-    failed_result = await session.execute(
-        select(StageFailure.stage).where(StageFailure.file_hash == photo.file_hash)
-    )
-    failed = {row[0] for row in failed_result}
-
-    # EXIF is always enabled (core functionality)
-    if "exif" not in failed and photo.camera_make is None and photo.date_taken is None:
-        return "exif"
-
-    # Geocoding
-    if settings.ENABLE_GEOCODING and "geocoding" not in failed:
-        if photo.location_city is None and photo.gps_latitude is not None:
-            return "geocoding"
-
-    # Thumbnails always enabled (core functionality)
-    if "thumbnails" not in failed and not thumb_exists(photo.file_hash):
-        return "thumbnails"
-
-    # Hashing always enabled (core functionality)
-    if "hashing" not in failed:
-        result = await session.execute(
-            select(PhotoHash).where(PhotoHash.file_hash == photo.file_hash)
-        )
-        if result.scalar_one_or_none() is None:
-            return "hashing"
-
-    # Faces
-    if settings.ENABLE_FACE_DETECTION and "faces" not in failed:
-        result = await session.execute(
-            select(func.count(Face.file_hash)).where(Face.file_hash == photo.file_hash)
-        )
-        if (result.scalar() or 0) == 0:
-            return "faces"
-
-    # Captioning
-    if settings.ENABLE_CAPTIONING and "captioning" not in failed:
-        result = await session.execute(
-            select(Caption).where(Caption.file_hash == photo.file_hash)
-        )
-        if result.scalar_one_or_none() is None:
-            return "captioning"
-
-    return None
+def _missing_on_disk(candidates: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return [(h, p) for h, p in candidates if not (settings.photos_dir / p).exists()]
 
 
 async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> None:
     """Remove database entries for files that no longer exist on disk.
 
     When the caller provides the set of paths seen during its walk, only the
-    paths missing from that set are stat-checked — at 40k photos, exists()
+    paths missing from that set are stat-checked: at 40k photos, exists()
     on every DB path over a Docker bind mount is far too slow.
     """
     async with async_session() as session:
-        result = await session.execute(select(PhotoPath))
-        paths = result.scalars().all()
+        rows = (await session.execute(select(PhotoPath.file_hash, PhotoPath.file_path))).all()
 
-        candidates = (
-            [p for p in paths if p.file_path not in seen_paths]
-            if seen_paths is not None
-            else list(paths)
+    candidates = [
+        (file_hash, file_path)
+        for file_hash, file_path in rows
+        if seen_paths is None or file_path not in seen_paths
+    ]
+    del rows
+    if not candidates:
+        return
+    removed_paths = await asyncio.to_thread(_missing_on_disk, candidates)
+    if not removed_paths:
+        return
+
+    # Refuse to clean up when the library is *unavailable* rather than
+    # emptied. Deleting here cascades to faces, captions, favourites and
+    # flags, which cost days of processing to rebuild, so an unmounted or
+    # unreadable directory must not be mistaken for a deletion.
+    #
+    # There is deliberately no cap on how many files may be cleaned up at
+    # once. Deleting a big folder is a normal thing to do, and a threshold
+    # would leave the index permanently unable to converge on the truth.
+    # The two checks below are unambiguous failures rather than heuristics:
+    # a genuine deletion leaves the library readable and still full of
+    # other photos.
+    if not settings.photos_dir.is_dir():
+        logger.error(
+            "REFUSING to clean up %d indexed paths: %s is not a readable "
+            "directory. The library looks unmounted, not deleted. Nothing "
+            "was removed from the index.",
+            len(removed_paths), settings.photos_dir,
         )
+        return
+    if seen_paths is not None and not seen_paths:
+        logger.error(
+            "REFUSING to clean up %d indexed paths: the sweep of %s found "
+            "no photos at all. The library looks unmounted or empty, not "
+            "deleted. Nothing was removed from the index.",
+            len(removed_paths), settings.photos_dir,
+        )
+        return
 
-        def _missing_on_disk(candidate_paths):
-            return [
-                p for p in candidate_paths
-                if not (settings.photos_dir / p.file_path).exists()
-            ]
-
-        removed_paths = await asyncio.to_thread(_missing_on_disk, candidates)
-
-        # Refuse to clean up when the library is *unavailable* rather than
-        # emptied. Deleting here cascades to faces, captions, favourites and
-        # flags, which cost days of processing to rebuild, so an unmounted or
-        # unreadable directory must not be mistaken for a deletion.
-        #
-        # There is deliberately no cap on how many files may be cleaned up at
-        # once. Deleting a big folder is a normal thing to do, and a threshold
-        # would leave the index permanently unable to converge on the truth.
-        # The two checks below are unambiguous failures rather than heuristics:
-        # a genuine deletion leaves the library readable and still full of
-        # other photos.
-        if removed_paths:
-            if not settings.photos_dir.is_dir():
-                logger.error(
-                    "REFUSING to clean up %d indexed paths: %s is not a readable "
-                    "directory. The library looks unmounted, not deleted. Nothing "
-                    "was removed from the index.",
-                    len(removed_paths), settings.photos_dir,
+    async with _index_lock, async_session() as session:
+        for file_hash, file_path in removed_paths:
+            await session.execute(
+                delete(PhotoPath).where(
+                    PhotoPath.file_hash == file_hash, PhotoPath.file_path == file_path
                 )
-                return
-            if seen_paths is not None and not seen_paths:
-                logger.error(
-                    "REFUSING to clean up %d indexed paths: the sweep of %s found "
-                    "no photos at all. The library looks unmounted or empty, not "
-                    "deleted. Nothing was removed from the index.",
-                    len(removed_paths), settings.photos_dir,
-                )
-                return
+            )
 
-        if removed_paths:
-            for path in removed_paths:
-                await session.delete(path)
+        for file_hash in dict.fromkeys(h for h, _ in removed_paths):
+            remaining = set(
+                (
+                    await session.execute(
+                        select(PhotoPath.file_path).where(PhotoPath.file_hash == file_hash)
+                    )
+                ).scalars()
+            )
+            photo = await session.get(Photo, file_hash)
+            if not photo:
+                continue
+            if not remaining:
+                # ORM delete: cascades to faces, caption, tags, hashes and
+                # stage failures through the Photo relationships.
+                await session.delete(photo)
+            elif photo.file_path not in remaining:
+                # The copy the photo pointed at is gone but another remains:
+                # point at that one, or originals and thumbnails would be
+                # read from a path that no longer exists.
+                photo.file_path = min(remaining)
 
-            for path in removed_paths:
-                remaining = await session.execute(
-                    select(PhotoPath).where(PhotoPath.file_hash == path.file_hash)
-                )
-                if not remaining.scalars().first():
-                    photo = await session.get(Photo, path.file_hash)
-                    if photo:
-                        await session.delete(photo)
-
-            await session.commit()
-            logger.info("Cleaned up %d removed file paths", len(removed_paths))
+        await session.commit()
+    logger.info("Cleaned up %d removed file paths", len(removed_paths))
 
 
 async def index_single_file(filepath: Path) -> tuple[str, str] | None:
@@ -617,14 +646,20 @@ async def index_single_file(filepath: Path) -> tuple[str, str] | None:
     """
     if not is_supported_photo(filepath):
         return None
-    
-    if not is_valid_image(filepath):
+    try:
+        relative_path = filepath.relative_to(settings.photos_dir)
+    except ValueError:
+        return None
+    if is_hidden_path(relative_path):
+        return None
+
+    if not await asyncio.to_thread(is_valid_image, filepath):
         logger.warning("Skipping corrupted/invalid image: %s", filepath)
         return None
 
     try:
         stats = {"new": 0, "updated": 0, "skipped": 0, "errors": 0}
-        async with async_session() as session:
+        async with _index_lock, async_session() as session:
             result = await _index_photo(session, filepath, stats)
             await session.commit()
 

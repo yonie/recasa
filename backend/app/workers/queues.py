@@ -11,10 +11,13 @@ Workers check if processing is needed before each stage (idempotent).
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Most recent errors kept for the pipeline status page.
+ERROR_LOG_SIZE = 100
 
 
 class QueueType(Enum):
@@ -28,10 +31,30 @@ class QueueType(Enum):
     EVENTS = "events"
 
 
+# The order a photo travels through the stages. Every photo that leaves a stage,
+# processed or skipped, moves on to the next one; EVENTS is the batch sink.
+PIPELINE_ORDER: tuple[QueueType, ...] = (
+    QueueType.EXIF,
+    QueueType.GEOCODING,
+    QueueType.THUMBNAILS,
+    QueueType.MOTION_PHOTOS,
+    QueueType.HASHING,
+    QueueType.FACES,
+    QueueType.CAPTIONING,
+    QueueType.EVENTS,
+)
+
+_NEXT_STAGE: dict[QueueType, QueueType | None] = {
+    stage: PIPELINE_ORDER[i + 1] if i + 1 < len(PIPELINE_ORDER) else None
+    for i, stage in enumerate(PIPELINE_ORDER)
+}
+
+
 class ProcessingQueue:
     """A simple queue for processing photos through a specific stage.
 
-    No counters, no processed tracking. Just an asyncio.Queue for flow control.
+    No counters, no processed tracking. Just an asyncio.Queue for flow control,
+    plus the item in flight so the status page can show it.
     """
 
     def __init__(self, queue_type: QueueType, max_size: int = 50000):
@@ -46,7 +69,7 @@ class ProcessingQueue:
             self.queue.put_nowait(file_hash)
             return True
         except asyncio.QueueFull:
-            logger.warning(f"Queue {self.queue_type.value} is full, dropping {file_hash}")
+            logger.warning("Queue %s is full, dropping %s", self.queue_type.value, file_hash)
             return False
 
     async def get(self) -> str:
@@ -54,12 +77,20 @@ class ProcessingQueue:
         return await self.queue.get()
 
     def qsize(self) -> int:
-        """Get the current queue size."""
         return self.queue.qsize()
 
     def empty(self) -> bool:
-        """Check if queue is empty."""
         return self.queue.empty()
+
+    def drain(self) -> int:
+        """Drop everything waiting in the queue. Returns how many were dropped."""
+        dropped = 0
+        while True:
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return dropped
+            dropped += 1
 
 
 class Pipeline:
@@ -70,58 +101,42 @@ class Pipeline:
     """
 
     def __init__(self):
-        self.queues: dict[QueueType, ProcessingQueue] = {}
-        self.workers: list[asyncio.Task] = []
+        self.queues: dict[QueueType, ProcessingQueue] = {
+            qtype: ProcessingQueue(qtype) for qtype in QueueType
+        }
         self.is_running = False
+        # Read by the API (/api/pipeline/status) and by scans as their cancel
+        # check. Once set it stays set: a stopped pipeline stays stopped until
+        # the app restarts.
         self._stop_requested = False
         self.error_log: list[dict] = []
 
-        # Create queues
-        for qtype in QueueType:
-            self.queues[qtype] = ProcessingQueue(qtype)
-
-        # Define pipeline flow - sequential per file
-        self._flow: dict[QueueType, list[QueueType]] = {
-            QueueType.EXIF: [QueueType.GEOCODING],
-            QueueType.GEOCODING: [QueueType.THUMBNAILS],
-            QueueType.THUMBNAILS: [QueueType.MOTION_PHOTOS],
-            QueueType.MOTION_PHOTOS: [QueueType.HASHING],
-            QueueType.HASHING: [QueueType.FACES],
-            QueueType.FACES: [QueueType.CAPTIONING],
-            QueueType.CAPTIONING: [QueueType.EVENTS],
-            QueueType.EVENTS: [],
-        }
-
     def get_next_queues(self, queue_type: QueueType) -> list[QueueType]:
-        """Get the next queues in the pipeline flow."""
-        return self._flow.get(queue_type, [])
-
-    async def add_file(self, file_hash: str) -> bool:
-        """Add a newly discovered file to the pipeline (starts at EXIF)."""
-        return await self.queues[QueueType.EXIF].put(file_hash)
+        """The queue(s) a file moves to after leaving `queue_type`."""
+        next_stage = _NEXT_STAGE.get(queue_type)
+        return [next_stage] if next_stage else []
 
     async def add_file_at(self, file_hash: str, entry_queue: QueueType) -> bool:
         """Add a file to the pipeline at a specific queue."""
         return await self.queues[entry_queue].put(file_hash)
 
-    async def route_to_next(self, file_hash: str, from_queue: QueueType):
+    async def route_to_next(self, file_hash: str, from_queue: QueueType) -> None:
         """Route a file to the next queue(s) in the pipeline."""
-        next_queues = self.get_next_queues(from_queue)
-        for next_queue_type in next_queues:
+        for next_queue_type in self.get_next_queues(from_queue):
             await self.queues[next_queue_type].put(file_hash)
 
-    def add_error(self, queue: str, file_hash: str, file_path: str | None, error: str):
+    def add_error(self, queue: str, file_hash: str, file_path: str | None, error: str) -> None:
         """Add an error to the error log."""
-        import datetime
         self.error_log.append({
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            # Naive UTC, matching the format the status page has always shown.
+            "timestamp": datetime.now(UTC).replace(tzinfo=None).isoformat(),
             "queue": queue,
             "file_hash": file_hash,
             "file_path": file_path,
             "error": error[:200],
         })
-        if len(self.error_log) > 100:
-            self.error_log = self.error_log[-100:]
+        if len(self.error_log) > ERROR_LOG_SIZE:
+            del self.error_log[:-ERROR_LOG_SIZE]
 
     def get_queue_info(self) -> dict[str, dict]:
         """Get detailed queue information for each queue type."""
@@ -138,21 +153,13 @@ class Pipeline:
 
     def get_queue_sizes(self) -> dict[str, int]:
         """Get current queue sizes (legacy format for compatibility)."""
-        return {
-            qtype.value: queue.qsize()
-            for qtype, queue in self.queues.items()
-        }
+        return {qtype.value: queue.qsize() for qtype, queue in self.queues.items()}
 
-    def stop_and_drain(self):
+    def stop_and_drain(self) -> None:
         """Stop the pipeline and drain all queues."""
         self._stop_requested = True
-        for qtype in QueueType:
-            queue = self.queues[qtype]
-            while not queue.empty():
-                try:
-                    queue.queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+        for queue in self.queues.values():
+            queue.drain()
 
 
 # Global pipeline instance

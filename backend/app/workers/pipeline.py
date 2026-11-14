@@ -11,26 +11,43 @@ import asyncio
 import logging
 from pathlib import Path
 
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 
 from backend.app.config import settings
-from backend.app.services.scanner import scan_directory, index_single_file, is_supported_photo, thumb_exists
-from backend.app.workers.queues import pipeline, QueueType
 from backend.app.database import async_session
-from backend.app.models import Photo, PhotoHash, Face, Caption, StageFailure
-from sqlalchemy import select, func
+from backend.app.services.scanner import index_single_file, is_supported_photo, scan_directory
+from backend.app.workers.queues import QueueType, pipeline
+from backend.app.workers.stages import (
+    ENTRY_STAGES,
+    load_photo_facts,
+    load_stage_outputs,
+    stage_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
-STAGE_TO_QUEUE: dict[str, QueueType] = {
-    "exif": QueueType.EXIF,
-    "geocoding": QueueType.GEOCODING,
-    "thumbnails": QueueType.THUMBNAILS,
-    "hashing": QueueType.HASHING,
-    "faces": QueueType.FACES,
-    "captioning": QueueType.CAPTIONING,
+# How "Found N photos needing <stage>" names each stage in the startup log.
+# The wording is relied on: after a container recreate, a huge "needing
+# captioning" count is the sign that an empty index got mounted.
+_STAGE_LABELS = {
+    QueueType.EXIF: "EXIF extraction",
+    QueueType.GEOCODING: "geocoding",
+    QueueType.THUMBNAILS: "thumbnails",
+    QueueType.HASHING: "hashing",
+    QueueType.FACES: "face detection",
+    QueueType.CAPTIONING: "captioning",
 }
+
+
+async def _queue_at(file_hash: str, entry_stage: str) -> None:
+    """Queue a photo at the stage named by the scanner."""
+    try:
+        queue_type = QueueType(entry_stage)
+    except ValueError:
+        return
+    await pipeline.add_file_at(file_hash, queue_type)
+    logger.debug("Queued %s for %s", file_hash, entry_stage)
 
 
 async def run_initial_scan(fast: bool = False) -> dict:
@@ -43,140 +60,62 @@ async def run_initial_scan(fast: bool = False) -> dict:
     fast=True only picks up new/changed/removed files (periodic sweep);
     fast=False also re-checks processing stages of unchanged photos.
     """
-    from backend.app.services.scanner import thumb_exists
 
     async def progress_callback(processed: int, total: int, current_file: str):
-        logger.info(f"Scanning: {processed}/{total}")
+        logger.info("Scanning: %d/%d", processed, total)
 
-    async def on_file_discovered(file_hash: str, entry_stage: str):
-        """Queue a photo for processing at the appropriate stage."""
-        queue_type = STAGE_TO_QUEUE.get(entry_stage)
-        if queue_type:
-            await pipeline.add_file_at(file_hash, queue_type)
-            logger.debug(f"Queued {file_hash} for {entry_stage}")
-
-    stats = await scan_directory(
+    return await scan_directory(
         progress_callback=progress_callback,
         cancel_check=lambda: pipeline._stop_requested,
-        on_file_discovered=on_file_discovered,
+        on_file_discovered=_queue_at,
         fast=fast,
     )
-    return stats
 
 
 async def resume_incomplete_processing() -> int:
     """Queue photos that have incomplete processing based on config and actual data.
 
-    Called on startup to resume processing after a crash or restart.
-    Each photo is queued at its earliest incomplete stage only -- the pipeline
-    routing will carry it through subsequent stages automatically.
+    Called on startup to resume processing after a crash or restart. Each
+    photo is queued at its first needed stage only, by the same rules the
+    scanner uses (stages with a recorded permanent failure are passed over);
+    pipeline routing carries it through the later stages.
     Returns the number of photos queued.
     """
-    # Collect sets of file_hashes needing each stage (ordered earliest to latest)
-    # Stage order matches the pipeline flow: EXIF -> GEOCODING -> THUMBNAILS -> HASHING -> FACES -> CAPTIONING
-    needs: dict[QueueType, set[str]] = {}
-
-    # Videos only need a poster thumbnail — exclude them from image-only stages.
-    not_video = Photo.is_video == False  # noqa: E712
-
-    # EXIF: photos missing camera_make AND date_taken (always enabled)
     async with async_session() as session:
-        result = await session.execute(
-            select(Photo.file_hash).where(
-                Photo.camera_make.is_(None),
-                Photo.date_taken.is_(None),
-                not_video,
-            )
-        )
-        needs[QueueType.EXIF] = {row[0] for row in result.fetchall()}
-        logger.info(f"Found {len(needs[QueueType.EXIF])} photos needing EXIF extraction")
+        facts = await load_photo_facts(session)
+        outputs = await load_stage_outputs(session)
 
-    # Geocoding: photos with GPS but no city
-    if settings.ENABLE_GEOCODING:
-        async with async_session() as session:
-            result = await session.execute(
-                select(Photo.file_hash).where(
-                    Photo.location_city.is_(None),
-                    Photo.gps_latitude.is_not(None),
-                    not_video,
-                )
-            )
-            needs[QueueType.GEOCODING] = {row[0] for row in result.fetchall()}
-            logger.info(f"Found {len(needs[QueueType.GEOCODING])} photos needing geocoding")
+    # Per-stage counts of photos still needing that stage, for the log.
+    needing: dict[QueueType, int] = dict.fromkeys(ENTRY_STAGES, 0)
+    by_entry: dict[QueueType, list[str]] = {}
+    for f in facts:
+        needed = list(outputs.needed_stages(f))
+        for stage in needed:
+            needing[stage] += 1
+        if needed:
+            by_entry.setdefault(needed[0], []).append(f.file_hash)
 
-    # Thumbnails: photos AND videos missing a thumb/poster (always enabled)
-    async with async_session() as session:
-        result = await session.execute(select(Photo.file_hash))
-        all_hashes = [row[0] for row in result.fetchall()]
-        needs[QueueType.THUMBNAILS] = {fh for fh in all_hashes if not thumb_exists(fh)}
-        logger.info(f"Found {len(needs[QueueType.THUMBNAILS])} photos needing thumbnails")
+    for stage in ENTRY_STAGES:
+        if stage_enabled(stage):
+            logger.info("Found %d photos needing %s", needing[stage], _STAGE_LABELS[stage])
 
-    # Hashing: photos missing perceptual hash (always enabled)
-    async with async_session() as session:
-        result = await session.execute(
-            select(Photo.file_hash).where(
-                ~Photo.file_hash.in_(select(PhotoHash.file_hash)),
-                not_video,
-            )
-        )
-        needs[QueueType.HASHING] = {row[0] for row in result.fetchall()}
-        logger.info(f"Found {len(needs[QueueType.HASHING])} photos needing hashing")
+    failed_pairs = sum(len(stages) for stages in outputs.failures.values())
+    if failed_pairs:
+        logger.info("Skipping %d photo/stage pairs with recorded failures", failed_pairs)
 
-    # Faces: photos missing faces
-    if settings.ENABLE_FACE_DETECTION:
-        async with async_session() as session:
-            result = await session.execute(
-                select(Photo.file_hash).where(
-                    ~Photo.file_hash.in_(select(Face.file_hash)),
-                    not_video,
-                )
-            )
-            needs[QueueType.FACES] = {row[0] for row in result.fetchall()}
-            logger.info(f"Found {len(needs[QueueType.FACES])} photos needing face detection")
-
-    # Captioning: photos missing caption
-    if settings.ENABLE_CAPTIONING:
-        async with async_session() as session:
-            result = await session.execute(
-                select(Photo.file_hash).where(
-                    ~Photo.file_hash.in_(select(Caption.file_hash)),
-                    not_video,
-                )
-            )
-            needs[QueueType.CAPTIONING] = {row[0] for row in result.fetchall()}
-            logger.info(f"Found {len(needs[QueueType.CAPTIONING])} photos needing captioning")
-
-    # Photos with a recorded permanent failure for a stage must not be
-    # re-queued for it — they would fail again on every restart.
-    failures: dict[str, set[str]] = {}
-    async with async_session() as session:
-        result = await session.execute(select(StageFailure.stage, StageFailure.file_hash))
-        for stage_name, file_hash in result.all():
-            failures.setdefault(stage_name, set()).add(file_hash)
-    if failures:
-        total_failed = sum(len(s) for s in failures.values())
-        logger.info(f"Skipping {total_failed} photo/stage pairs with recorded failures")
-
-    # Deduplicate: queue each photo at its earliest incomplete stage only.
-    # Pipeline routing carries it through subsequent stages.
-    stage_order = [QueueType.EXIF, QueueType.GEOCODING, QueueType.THUMBNAILS,
-                   QueueType.HASHING, QueueType.FACES, QueueType.CAPTIONING]
-    already_queued: set[str] = set()
     queued_count = 0
-
-    for stage in stage_order:
-        if stage not in needs:
-            continue
-        to_queue = needs[stage] - already_queued - failures.get(stage.value, set())
-        for file_hash in to_queue:
+    for stage in ENTRY_STAGES:
+        hashes = by_entry.get(stage, [])
+        for file_hash in hashes:
             await pipeline.add_file_at(file_hash, stage)
-            queued_count += 1
-        already_queued |= needs[stage]
-        if to_queue:
-            logger.info(f"Queued {len(to_queue)} photos at {stage.value} (earliest incomplete stage)")
+        queued_count += len(hashes)
+        if hashes:
+            logger.info(
+                "Queued %d photos at %s (earliest incomplete stage)", len(hashes), stage.value
+            )
 
     if queued_count > 0:
-        logger.info(f"Total: {queued_count} photos queued for processing")
+        logger.info("Total: %d photos queued for processing", queued_count)
     else:
         logger.info("All photos are fully processed")
 
@@ -184,48 +123,86 @@ async def resume_incomplete_processing() -> int:
 
 
 class FileEventHandler(FileSystemEventHandler):
-    """Handle file system events for new/modified photos."""
+    """Debounced indexing of photos the watcher sees being written.
+
+    A copy produces a created event and then a modified event per write, and
+    sync tools (Syncthing, rsync) write a temp file and rename it into place.
+    Each path is indexed once, after QUIET_SECONDS without new events for it,
+    so a half-copied file is not hashed and indexed under a partial hash.
+    Watchdog calls the on_* methods from its own thread.
+    """
+
+    QUIET_SECONDS = 3.0
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
         self.loop = loop
+        self._pending: dict[Path, asyncio.TimerHandle] = {}  # touched on the loop only
+        self._tasks: set[asyncio.Task] = set()
 
-    def on_created(self, event):
-        if event.is_directory:
+    def on_created(self, event: FileSystemEvent) -> None:
+        self._touch(event, event.src_path)
+
+    def on_modified(self, event: FileSystemEvent) -> None:
+        self._touch(event, event.src_path)
+
+    def on_closed(self, event: FileSystemEvent) -> None:
+        self._touch(event, event.src_path)
+
+    def on_moved(self, event: FileSystemEvent) -> None:
+        self._touch(event, event.dest_path)
+
+    def _touch(self, event: FileSystemEvent, path) -> None:
+        if event.is_directory or not path:
             return
-        filepath = Path(event.src_path)
+        filepath = Path(path if isinstance(path, str) else path.decode())
         if is_supported_photo(filepath):
-            asyncio.run_coroutine_threadsafe(self._queue_file(filepath), self.loop)
+            self.loop.call_soon_threadsafe(self._schedule, filepath)
 
-    def on_modified(self, event):
-        if event.is_directory:
-            return
-        filepath = Path(event.src_path)
-        if is_supported_photo(filepath):
-            asyncio.run_coroutine_threadsafe(self._queue_file(filepath), self.loop)
+    def _schedule(self, filepath: Path) -> None:
+        handle = self._pending.pop(filepath, None)
+        if handle:
+            handle.cancel()
+        self._pending[filepath] = self.loop.call_later(
+            self.QUIET_SECONDS, self._fire, filepath
+        )
 
-    async def _queue_file(self, filepath: Path):
+    def _fire(self, filepath: Path) -> None:
+        self._pending.pop(filepath, None)
+        task = self.loop.create_task(self._queue_file(filepath))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _queue_file(self, filepath: Path) -> None:
+        if not filepath.exists():
+            return  # moved on or deleted again; the sweep settles it
         result = await index_single_file(filepath)
         if result:
-            file_hash, entry_queue = result
-            queue_type = STAGE_TO_QUEUE.get(entry_queue)
-            if queue_type:
-                await pipeline.add_file_at(file_hash, queue_type)
-                logger.info(f"Indexed new file: {filepath} ({file_hash})")
+            file_hash, entry_stage = result
+            await _queue_at(file_hash, entry_stage)
+            logger.info("Indexed new file: %s (%s)", filepath, file_hash)
 
 
 # True once the inotify observer is running. Note: inotify events don't cross
-# Docker bind mounts on Windows/macOS hosts — there the periodic sweep is what
+# Docker bind mounts on Windows/macOS hosts; there the periodic sweep is what
 # actually detects changes.
 watcher_active = False
 
 
 async def start_file_watcher():
-    """Start watching the photos directory for new files."""
+    """Start watching the photos directory for new files.
+
+    Returns the observer, or None when the directory cannot be watched (the
+    periodic sweep still runs).
+    """
     global watcher_active
     handler = FileEventHandler(asyncio.get_running_loop())
     observer = Observer()
-    observer.schedule(handler, str(settings.photos_dir), recursive=True)
-    observer.start()
+    try:
+        observer.schedule(handler, str(settings.photos_dir), recursive=True)
+        observer.start()
+    except OSError as e:
+        logger.error("File watcher not started for %s: %s", settings.photos_dir, e)
+        return None
     watcher_active = True
-    logger.info(f"File watcher started for {settings.photos_dir}")
+    logger.info("File watcher started for %s", settings.photos_dir)
     return observer

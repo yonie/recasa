@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
@@ -46,8 +47,9 @@ class Settings(BaseSettings):
     # GPU is freed an hour after the last photo.
     ollama_keep_alive: str = "1h"
 
-    # Processing stages (enable/disable per stage)
-    # EXIF, Thumbnails, and Hashing are always enabled (core functionality)
+    # Processing stages that can be switched off. EXIF, thumbnails, motion
+    # photos and hashing always run: timeline order, every grid and duplicate
+    # detection depend on them (see ignored_stage_switches below).
     ENABLE_GEOCODING: bool = True
     ENABLE_FACE_DETECTION: bool = False
     ENABLE_CAPTIONING: bool = False
@@ -84,3 +86,25 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# Older compose files and .env templates carried switches for the stages that
+# always run. Nothing ever read them, so a "false" there silently did nothing.
+_ALWAYS_ON_STAGE_SWITCHES = (
+    "ENABLE_EXIF_EXTRACTION",
+    "ENABLE_THUMBNAILS",
+    "ENABLE_MOTION_PHOTOS",
+    "ENABLE_HASHING",
+)
+
+
+def ignored_stage_switches() -> list[str]:
+    """Always-on stage switches that are set to a false value in the environment.
+
+    Used to warn at startup instead of pretending the stage was turned off.
+    """
+    falsy = {"0", "false", "no", "off"}
+    return [
+        name for name in _ALWAYS_ON_STAGE_SWITCHES
+        if os.environ.get(name, "").strip().lower() in falsy
+    ]
