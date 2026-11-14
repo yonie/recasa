@@ -98,7 +98,7 @@ async def test_changed_file_is_rehashed(db, photos_dir):
     # must not trip over the path now holding two photos.
     stats = await scan_directory()
     assert stats["errors"] == 0
-    assert set((await _photos(db))) == {old, new}
+    assert set(await _photos(db)) == {old, new}
 
 
 @pytest.mark.asyncio

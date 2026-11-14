@@ -2,7 +2,12 @@ import logging
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import event, text
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from backend.app.config import settings
 
@@ -101,8 +106,10 @@ _ADDED_INDEXES = (
     # Covering index for "join to photos by hash, skip flagged ones": the tag
     # counts probe photos once per photo_tags row (590k on the live index)
     # and no longer have to read the wide photos rows. /api/tags 1.8s -> 1.2s.
-    "CREATE INDEX IF NOT EXISTS idx_photos_hash_flagged"
-    " ON photos (file_hash, flagged_for_removal)",
+    (
+        "CREATE INDEX IF NOT EXISTS idx_photos_hash_flagged"
+        " ON photos (file_hash, flagged_for_removal)"
+    ),
 )
 
 

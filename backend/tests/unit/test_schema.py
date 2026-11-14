@@ -79,9 +79,11 @@ async def test_init_db_adds_late_columns_to_an_old_index():
     """An index from before the late columns gets them, with the live DDL."""
     old = BASELINE.read_text()
     for fragment in (
-        ", marked_for_print BOOLEAN DEFAULT 0 NOT NULL, exported_at DATETIME, "
-        "flagged_for_removal BOOLEAN DEFAULT 0 NOT NULL, is_video BOOLEAN DEFAULT 0 NOT NULL, "
-        "duration REAL",
+        (
+            ", marked_for_print BOOLEAN DEFAULT 0 NOT NULL, exported_at DATETIME, "
+            "flagged_for_removal BOOLEAN DEFAULT 0 NOT NULL, is_video BOOLEAN DEFAULT 0 NOT NULL, "
+            "duration REAL"
+        ),
         ", cover_file_hash TEXT, summary TEXT",
         ", ignored BOOLEAN DEFAULT 0",
     ):

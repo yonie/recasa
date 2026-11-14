@@ -1,6 +1,7 @@
 """Queue routing and the state /api/pipeline/* reads from the pipeline."""
 
 import re
+from itertools import pairwise
 
 import pytest
 
@@ -14,7 +15,7 @@ def test_every_stage_routes_to_the_next():
         "exif", "geocoding", "thumbnails", "motion_photos",
         "hashing", "faces", "captioning", "events",
     ]
-    for a, b in zip(PIPELINE_ORDER, PIPELINE_ORDER[1:], strict=False):
+    for a, b in pairwise(PIPELINE_ORDER):
         assert p.get_next_queues(a) == [b]
     assert p.get_next_queues(QueueType.EVENTS) == []
 

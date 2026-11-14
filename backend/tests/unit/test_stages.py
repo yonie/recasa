@@ -124,12 +124,12 @@ async def test_resume_queues_each_photo_once_at_its_first_needed_stage(db, monke
     monkeypatch.setattr(pipeline_mod, "pipeline", fresh)
 
     fh_complete, fh_no_exif, fh_no_thumb, fh_unreadable, fh_video = (h(i) for i in range(1, 6))
-    full = lambda fh: [  # noqa: E731
+    full = lambda fh: [
         PhotoHash(file_hash=fh, phash="0" * 16),
         Face(file_hash=fh, bbox_x=0, bbox_y=0, bbox_w=0, bbox_h=0, encoding=None),
         Caption(file_hash=fh, caption="c", model="m"),
     ]
-    failed = lambda fh, stage: StageFailure(  # noqa: E731
+    failed = lambda fh, stage: StageFailure(
         file_hash=fh, stage=stage, error="cannot read image (UnidentifiedImageError)",
         failed_at=datetime(2026, 1, 1),
     )

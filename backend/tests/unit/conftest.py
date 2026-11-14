@@ -20,13 +20,13 @@ os.environ["WATCH_INTERVAL"] = "0"
 (_ROOT / "data" / "db").mkdir(parents=True)
 (_ROOT / "photos").mkdir()
 
-import pytest  # noqa: E402
-import pytest_asyncio  # noqa: E402
+import pytest
+import pytest_asyncio
 
-from backend.app import database  # noqa: E402
-from backend.app.config import settings  # noqa: E402
-from backend.app.models import Base  # noqa: E402
-from backend.app.services import scanner  # noqa: E402
+from backend.app import database
+from backend.app.config import settings
+from backend.app.models import Base
+from backend.app.services import scanner
 
 
 def pytest_sessionfinish(session, exitstatus):
