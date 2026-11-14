@@ -71,7 +71,7 @@ async def list_photos(
     date_to: datetime | None = None,
     country: str | None = None,
     city: str | None = None,
-    search: str | None = None,
+    search: Annotated[str | None, Query(max_length=500)] = None,
 ):
     """List photos with pagination and filtering."""
     stmt = summary_select().where(

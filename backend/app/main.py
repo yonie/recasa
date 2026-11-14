@@ -21,6 +21,7 @@ from backend.app.api import (
     timeline,
     user_data,
 )
+from backend.app.api.guards import CrossSiteGuardMiddleware
 from backend.app.api.limits import BodySizeLimitMiddleware
 from backend.app.config import settings
 from backend.app.database import init_db
@@ -100,9 +101,11 @@ app = FastAPI(
 # proxies /api), and the Vite dev server proxies /api too, so no browser ever
 # needs a cross-origin grant. The wildcard-with-credentials policy this app
 # used to send let any website the owner visited read the whole photo API
-# with the browser's cached nginx basic-auth credentials.
+# with the browser's cached nginx basic-auth credentials. The guard below
+# closes the other direction: other sites making the browser write to it.
 
 app.add_middleware(BodySizeLimitMiddleware)
+app.add_middleware(CrossSiteGuardMiddleware)
 
 for module in (
     photos,

@@ -20,7 +20,7 @@ HEIC_MIME_TYPES = {"image/heic", "image/heif"}
 # RAW formats - print services don't accept these, convert to JPEG.
 RAW_SUFFIXES = {".orf"}
 
-# Photos are already compressed — ZIP_STORED avoids pointless recompression.
+# Photos are already compressed; ZIP_STORED avoids pointless recompression.
 _ZIP_MODE = zipfile.ZIP_STORED
 
 
@@ -96,7 +96,13 @@ def _convert_raw_to_jpeg(filepath: Path) -> bytes | None:
 
 
 def _zip_name(file_name: str, date_taken: datetime | None, used: set[str]) -> str:
-    """Date-prefixed, collision-free name for a file inside the zip."""
+    """Date-prefixed, collision-free name for a file inside the zip.
+
+    Slashes and backslashes become "_": on Linux a backslash is an ordinary
+    file name character, but Windows unzip tools read it as a separator, so
+    a file named "..\\x.jpg" would otherwise extract outside the target folder.
+    """
+    file_name = file_name.replace("/", "_").replace("\\", "_")
     name = f"{date_taken:%Y-%m-%d}_{file_name}" if date_taken else file_name
     if name in used:
         stem, dot, ext = name.rpartition(".")

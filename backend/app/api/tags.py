@@ -9,7 +9,7 @@ from backend.app.api.deps import Page, PageSize, SessionDep
 from backend.app.api.responses import json_response
 from backend.app.models import Photo, PhotoTag, Tag
 from backend.app.queries.photos import NEWEST_FIRST, VISIBLE, photo_page, summary_select
-from backend.app.queries.tags import tag_counts_query
+from backend.app.queries.tags import tag_counts
 from backend.app.schemas.photo import PhotoPage
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
@@ -27,7 +27,7 @@ async def list_tags(
     this endpoint a multi-MB response and the page a 74k-button DOM. Clients
     get the top `limit` by count plus the total, and search server-side.
     """
-    rows = (await session.execute(tag_counts_query(limit=limit, name_contains=q))).all()
+    rows = await tag_counts(session, limit=limit, name_contains=q)
     # Rows of a tag id that has no tags row sort last and only carry the
     # total; see tag_counts_query.
     items = [

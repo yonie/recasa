@@ -8,11 +8,11 @@ The export format is a JSON file containing:
   base64-encoded (the actual identity signal)
 - hidden_groups (optional): list of {members: [{encodings: [...]}, ...]} for
   the Together tiles hid on the people page. A tile has no stable identity of
-  its own — person ids do not survive a rebuild — so it travels as its
+  its own (person ids do not survive a rebuild), so it travels as its
   members' faceprints and is re-keyed on import to whatever ids exist then.
 
 On import, favorites are restored by file_hash immediately. Person names are
-stored as pending and applied whenever face clusters exist — either right away
+stored as pending and applied whenever face clusters exist: either right away
 or automatically after face detection + clustering finishes. Hidden groups
 resolve the same way, and whatever cannot be matched yet waits as pending too.
 
@@ -357,7 +357,7 @@ def _match_hidden_groups(
     """Resolve hidden-group members to current person_ids.
 
     Returns (restored_keys, unresolved). A group restores when every member
-    matches a current person and at least two distinct people remain — if two
+    matches a current person and at least two distinct people remain; if two
     members merged into one cluster, there is no two-person tile left to hide.
     """
     current_matrix, current_person_ids = _current_face_matrix(current_faces)
@@ -436,7 +436,7 @@ async def _try_apply_hidden_groups(
 ) -> tuple[int, list]:
     """Match hidden-tile members to current persons and store the tiles.
 
-    Returns (applied count, unresolved groups) — the unresolved ones are meant
+    Returns (applied count, unresolved groups); the unresolved ones are meant
     for the pending row that the post-clustering pass picks up.
     """
     if current_faces is None:

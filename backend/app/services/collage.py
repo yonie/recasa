@@ -14,7 +14,7 @@ def _hamming(a: int, b: int) -> int:
 
 
 # Photos within this phash distance are the same shot (mirrors
-# DUPLICATE_THRESHOLD in the hasher service) — never show both in one collage.
+# DUPLICATE_THRESHOLD in the hasher service): never show both in one collage.
 DUPLICATE_HAMMING = 4
 
 

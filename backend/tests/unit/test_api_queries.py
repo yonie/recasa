@@ -3,14 +3,14 @@
 import sys
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from api_fixtures import h, run_with_client, run_with_session  # noqa: E402
 
 from backend.app.api.directories import build_directory_tree  # noqa: E402
-from backend.app.models import Photo  # noqa: E402
+from backend.app.models import Photo, PhotoTag  # noqa: E402
 from backend.app.queries.filters import (  # noqa: E402
     date_search_condition,
     library_conditions,
@@ -22,7 +22,11 @@ from backend.app.queries.photos import (  # noqa: E402
     summary_select,
     to_summary,
 )
-from backend.app.queries.tags import tag_counts_query  # noqa: E402
+from backend.app.queries.tags import (  # noqa: E402
+    hidden_tagged_hashes,
+    tag_counts,
+    tag_counts_query,
+)
 
 
 def _matching(**filters) -> set[int]:
@@ -144,10 +148,32 @@ def test_photo_page_counts_and_pages():
 
 
 def _tag_rows(**kw):
+    """Rows by both routes, checked to agree."""
+
     async def body(session):
-        return (await session.execute(tag_counts_query(**kw))).all()
+        fast = await tag_counts(session, **kw)
+        joined = (await session.execute(tag_counts_query(**kw))).all()
+        assert [tuple(r) for r in fast] == [tuple(r) for r in joined]
+        return fast
 
     return run_with_session(body)
+
+
+def test_tag_counts_subtract_orphans_and_flagged():
+    async def body(session):
+        # A tag row for a photo that is no longer indexed must not count.
+        session.add(PhotoTag(file_hash=h(99), tag_id=3))
+        session.add(PhotoTag(file_hash=h(99), tag_id=7))  # and an unknown tag id
+        await session.commit()
+        hidden = await hidden_tagged_hashes(session)
+        fast = await tag_counts(session, limit=10)
+        joined = (await session.execute(tag_counts_query(limit=10))).all()
+        return hidden, fast, joined
+
+    hidden, fast, joined = run_with_session(body)
+    assert hidden == [h(4), h(99)]
+    assert [tuple(r) for r in fast] == [tuple(r) for r in joined]
+    assert [(r.name, r.count) for r in fast] == [("dog", 2), ("beach", 1), ("sunny beach", 1)]
 
 
 def test_tag_counts_skip_flagged_and_rank():
@@ -268,3 +294,18 @@ def test_event_cover_hidden_when_flagged():
 
     listing, single = run_with_client(body)
     assert listing[0]["cover_photo"] is None and single["cover_photo"] is None
+
+
+def test_tag_counts_with_nothing_hidden():
+    async def body(session):
+        await session.execute(update(Photo).values(flagged_for_removal=False))
+        await session.commit()
+        hidden = await hidden_tagged_hashes(session)
+        fast = await tag_counts(session, limit=10)
+        joined = (await session.execute(tag_counts_query(limit=10))).all()
+        return hidden, fast, joined
+
+    hidden, fast, joined = run_with_session(body)
+    assert hidden == []
+    assert [tuple(r) for r in fast] == [tuple(r) for r in joined]
+    assert [(r.name, r.count) for r in fast] == [("beach", 2), ("dog", 2), ("sunny beach", 1)]

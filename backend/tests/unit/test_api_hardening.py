@@ -262,3 +262,44 @@ def test_import_rejects_shapes_without_500():
     assert typed["status"] == "ok" and typed["favorites_restored"] == 0
     assert nested["status"] == "error"
     assert restored["status"] == "ok" and restored["favorites_restored"] == 1
+
+
+# --- cross-site writes ------------------------------------------------------
+
+
+def _guarded(method: str, headers: dict[str, str]) -> int:
+    from backend.app.api.guards import CrossSiteGuardMiddleware
+
+    app = CrossSiteGuardMiddleware(_echo_app)
+
+    async def main():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://velvet:7000") as c:
+            return (await c.request(method, "/api/scan/clear-index", headers=headers)).status_code
+
+    return asyncio.run(main())
+
+
+def test_cross_site_writes_are_refused():
+    assert _guarded("POST", {"Sec-Fetch-Site": "cross-site"}) == 403
+    assert _guarded("POST", {"Sec-Fetch-Site": "same-site"}) == 403
+    assert _guarded("POST", {"Origin": "https://evil.example"}) == 403
+    assert _guarded("POST", {"Origin": "null"}) == 403
+    assert _guarded("PUT", {"Sec-Fetch-Site": "cross-site", "Origin": "http://velvet:7000"}) == 403
+
+
+def test_own_and_non_browser_writes_pass():
+    assert _guarded("POST", {"Sec-Fetch-Site": "same-origin"}) == 200
+    assert _guarded("POST", {}) == 200  # curl, scripts
+    # nginx forwards Host without the port; the page's Origin keeps it.
+    assert _guarded("POST", {"Origin": "http://velvet:7000", "Host": "velvet"}) == 200
+    assert _guarded("GET", {"Sec-Fetch-Site": "cross-site"}) == 200
+
+
+def test_zip_names_cannot_escape():
+    from backend.app.services.print_export import _zip_name
+
+    used: set[str] = set()
+    assert _zip_name("..\\..\\x.jpg", None, used) == ".._.._x.jpg"
+    assert _zip_name("a.jpg", None, used) == "a.jpg"
+    assert _zip_name("a.jpg", None, used) == "a_2.jpg"

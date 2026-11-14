@@ -1,7 +1,7 @@
 """Full-view previews for formats browsers can't decode.
 
 The photo viewer shows the original file directly, which works for JPEG/PNG/
-WebP but not for RAW (ORF) — no browser has a LibRaw decoder — nor for HEIC
+WebP but not for RAW (ORF), since no browser has a LibRaw decoder, nor for HEIC
 outside Safari. For those the <img> simply fails to load, so we render a JPEG
 once and cache it on disk, keyed by file hash.
 
