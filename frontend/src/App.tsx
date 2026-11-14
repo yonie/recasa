@@ -23,15 +23,11 @@ import { Tags, TagDetail } from "./pages/Tags";
 import { PhotoPage } from "./pages/PhotoPage";
 import { ExportImport } from "./pages/ExportImport";
 
-import { useScanStatus } from "./hooks/useScanStatus";
 import { useStore } from "./store/useStore";
 import { api } from "./api/client";
 
 function AppContent() {
   const setStats = useStore((s) => s.setStats);
-
-  // Connect to scan WebSocket
-  useScanStatus();
 
   // Load library stats
   useEffect(() => {

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PhotoDetail, PhotoSummary, ScanStatus, LibraryStats } from "../api/client";
+import type { PhotoDetail, PhotoSummary, LibraryStats } from "../api/client";
 
 export type GridSize = "S" | "M" | "L";
 export type GridFit = "square" | "full";
@@ -14,10 +14,6 @@ interface AppStore {
   closeViewer: () => void;
   setViewerPhoto: (photo: PhotoDetail) => void;
   setViewerIndex: (index: number) => void;
-
-  // Scan status
-  scanStatus: ScanStatus | null;
-  setScanStatus: (status: ScanStatus) => void;
 
   // Stats
   stats: LibraryStats | null;
@@ -54,10 +50,6 @@ export const useStore = create<AppStore>((set) => ({
     set({ viewerPhoto: null, viewerOpen: false, viewerPhotoList: [], viewerIndex: -1 }),
   setViewerPhoto: (photo) => set({ viewerPhoto: photo }),
   setViewerIndex: (index) => set({ viewerIndex: index }),
-
-  // Scan
-  scanStatus: null,
-  setScanStatus: (status) => set({ scanStatus: status }),
 
   // Stats
   stats: null,
