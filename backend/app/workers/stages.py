@@ -59,8 +59,11 @@ def stage_applies(stage: QueueType, *, is_video: bool, has_gps: bool) -> bool:
 
 def has_coordinates(photo: Photo) -> bool:
     """Geocoding needs both halves: a latitude alone would be queued on
-    every scan and never produce a location."""
-    return photo.gps_latitude is not None and photo.gps_longitude is not None
+    every scan and never produce a location. Exactly (0, 0) is what many
+    cameras write when they have no fix, so it counts as no position; a
+    single zero (the equator, the prime meridian) is a real coordinate."""
+    lat, lon = photo.gps_latitude, photo.gps_longitude
+    return lat is not None and lon is not None and (lat, lon) != (0.0, 0.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +92,11 @@ _FACT_COLUMNS = (
     Photo.file_hash,
     Photo.is_video,
     (Photo.camera_make.is_not(None) | Photo.date_taken.is_not(None)).label("has_exif"),
-    (Photo.gps_latitude.is_not(None) & Photo.gps_longitude.is_not(None)).label("has_gps"),
+    (
+        Photo.gps_latitude.is_not(None)
+        & Photo.gps_longitude.is_not(None)
+        & ~((Photo.gps_latitude == 0.0) & (Photo.gps_longitude == 0.0))
+    ).label("has_gps"),
     Photo.location_city.is_not(None).label("has_city"),
 )
 

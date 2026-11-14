@@ -242,9 +242,10 @@ async def test_geocoding_takes_zero_coordinates_and_skips_half_a_position(
     from backend.app.services import geocoder
     from backend.app.workers.stages import load_photo_facts, load_stage_outputs
 
-    equator, lat_only = h(9), h(10)
+    equator, lat_only, no_fix = h(9), h(10), h(11)
     await _add(db, photo_row(equator, gps_latitude=0.0, gps_longitude=9.5),
-               photo_row(lat_only, gps_latitude=52.0))
+               photo_row(lat_only, gps_latitude=52.0),
+               photo_row(no_fix, gps_latitude=0.0, gps_longitude=0.0))
 
     # Half a position never enters geocoding, so it is not re-queued forever.
     async with db() as session:
@@ -252,6 +253,8 @@ async def test_geocoding_takes_zero_coordinates_and_skips_half_a_position(
         outputs = await load_stage_outputs(session)
     assert outputs.first_needed_stage(facts[equator]) is QueueType.GEOCODING
     assert outputs.first_needed_stage(facts[lat_only]) is QueueType.THUMBNAILS
+    # Exactly (0, 0) is a camera without a fix, not a place in the Gulf of Guinea.
+    assert outputs.first_needed_stage(facts[no_fix]) is QueueType.THUMBNAILS
     svc = FakeService()
     w, _ = _worker(monkeypatch, QueueType.GEOCODING, svc)
     await w.process_item(lat_only)
@@ -266,6 +269,7 @@ async def test_geocoding_takes_zero_coordinates_and_skips_half_a_position(
     monkeypatch.setattr(geocoder, "_geocoder", FakeGeocoder)
     assert await geocoder.geocode_photo(equator)
     assert not await geocoder.geocode_photo(lat_only)
+    assert not await geocoder.geocode_photo(no_fix)
     async with db() as session:
         photo = await session.get(worker_mod.Photo, equator)
     assert photo.location_address == "Libreville, Estuaire, GA"

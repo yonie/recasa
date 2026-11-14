@@ -5,6 +5,7 @@ import logging
 
 from backend.app.database import async_session
 from backend.app.models import Photo
+from backend.app.workers.stages import has_coordinates
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,7 @@ async def geocode_photo(file_hash: str) -> bool:
         photo = await session.get(Photo, file_hash)
         if not photo:
             return False
-        # 0.0 is a coordinate (the equator, the prime meridian), not "no GPS".
-        if (
-            photo.location_country
-            or photo.gps_latitude is None
-            or photo.gps_longitude is None
-        ):
+        if photo.location_country or not has_coordinates(photo):
             return False
         coords = (photo.gps_latitude, photo.gps_longitude)
 
