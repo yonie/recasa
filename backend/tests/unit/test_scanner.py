@@ -6,13 +6,13 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from backend.app.models import Caption, Face, Photo, PhotoHash, PhotoPath
+from backend.app.models import Caption, Face, Photo, PhotoHash, PhotoPath, PhotoTag, Tag
 from backend.app.services import scanner
 from backend.app.services.scanner import (
     _is_live_photo_companion,
     compute_file_hash,
     index_single_file,
-    is_hidden_path,
+    is_library_path,
     scan_directory,
 )
 
@@ -123,6 +123,25 @@ async def test_cleanup_refuses_an_empty_library(db, photos_dir):
 
 
 @pytest.mark.asyncio
+async def test_multi_path_hash_loses_only_the_vanished_path(db, photos_dir):
+    a = write_jpeg(photos_dir / "one" / "a.jpg", seed=19)
+    b = photos_dir / "two" / "a.jpg"
+    b.parent.mkdir()
+    shutil.copy2(a, b)
+    await scan_directory()
+    fh = compute_file_hash(a)
+    async with db() as session:
+        session.add(Caption(file_hash=fh, caption="keep me", model="m"))
+        await session.commit()
+    b.unlink()
+    await scan_directory(fast=True)
+    assert set(await _paths(db)) == {"one/a.jpg"}
+    async with db() as session:
+        assert (await session.get(Caption, fh)).caption == "keep me"
+        assert (await session.get(Photo, fh)).file_path == "one/a.jpg"
+
+
+@pytest.mark.asyncio
 async def test_moved_primary_copy_is_repointed(db, photos_dir):
     a = write_jpeg(photos_dir / "x" / "a.jpg", seed=9)
     await scan_directory()
@@ -153,17 +172,98 @@ async def test_sweep_with_no_directory_changes_skips_db_work(db, photos_dir, mon
     assert stats["total"] == 1 and stats["errors"] == 0
 
 
+@pytest.mark.parametrize(
+    ("path", "ok"),
+    [
+        ("2024/IMG_1.jpg", True),
+        ("2024/~not-syncthing.jpg", True),
+        (".stversions/2026/P9123781~20260918-072229.ORF", False),
+        ("2024/.hidden/a.jpg", False),
+        ("2024/.a.jpg", False),
+        ("2024/._IMG_1.jpg", False),  # macOS AppleDouble
+        ("2024/~syncthing~IMG_1.jpg.tmp", False),
+        ("2024/.syncthing.IMG_1.jpg.tmp", False),
+    ],
+)
+def test_library_path_predicate(path, ok):
+    assert is_library_path(path) is ok
+
+
 @pytest.mark.asyncio
-async def test_hidden_directories_are_not_indexed(db, photos_dir):
+async def test_hidden_and_temp_files_are_not_indexed(db, photos_dir):
     write_jpeg(photos_dir / ".stversions" / "old.jpg", seed=11)
-    visible = write_jpeg(photos_dir / "new.jpg", seed=12)
+    write_jpeg(photos_dir / "2024" / ".hidden.jpg", seed=14)
+    visible = write_jpeg(photos_dir / "2024" / "new.jpg", seed=12)
     stats = await scan_directory()
-    assert stats["total"] == 1
-    hidden = photos_dir / ".stversions" / "old.jpg"
-    assert await index_single_file(hidden) is None
-    assert is_hidden_path(".stversions/x.jpg") and not is_hidden_path("2024/x.jpg")
-    assert set(await _paths(db)) == {"new.jpg"}
+    assert stats["total"] == 1 and stats["errors"] == 0
+    assert await index_single_file(photos_dir / ".stversions" / "old.jpg") is None
+    assert await index_single_file(photos_dir / "2024" / ".hidden.jpg") is None
+    assert set(await _paths(db)) == {"2024/new.jpg"}
     assert visible.exists()
+
+
+@pytest.mark.asyncio
+async def test_already_indexed_hidden_photo_goes_through_removed_file_cleanup(db, photos_dir):
+    """The live index has one .stversions photo (indexed by the old watcher).
+    It is dropped exactly like a deleted file, even though it is still on
+    disk, with its derived rows; a hash that also lives at a normal path
+    only loses the hidden path."""
+    hidden = write_jpeg(photos_dir / ".stversions" / "2026" / "P1~old.jpg", seed=15)
+    dual = write_jpeg(photos_dir / "keep" / "a.jpg", seed=16)
+    dual_hidden = photos_dir / ".stversions" / "a~old.jpg"
+    shutil.copy2(dual, dual_hidden)
+    fh_hidden, fh_dual = compute_file_hash(hidden), compute_file_hash(dual)
+    async with db() as session:
+        session.add_all([
+            Photo(file_hash=fh_hidden, file_path=".stversions/2026/P1~old.jpg",
+                  file_name="P1~old.jpg", file_size=hidden.stat().st_size),
+            PhotoPath(file_hash=fh_hidden, file_path=".stversions/2026/P1~old.jpg"),
+            PhotoHash(file_hash=fh_hidden, phash="0" * 16),
+            Face(file_hash=fh_hidden, bbox_x=0, bbox_y=0, bbox_w=0, bbox_h=0, encoding=None),
+            Caption(file_hash=fh_hidden, caption="old", model="m"),
+            Tag(tag_id=1, name="tree"),
+            PhotoTag(file_hash=fh_hidden, tag_id=1),
+            # Primary path is the hidden copy: must move to the visible one.
+            Photo(file_hash=fh_dual, file_path=".stversions/a~old.jpg", file_name="a.jpg",
+                  file_size=dual.stat().st_size, is_favorite=True),
+            PhotoPath(file_hash=fh_dual, file_path=".stversions/a~old.jpg"),
+            PhotoPath(file_hash=fh_dual, file_path="keep/a.jpg"),
+            Caption(file_hash=fh_dual, caption="kept", model="m"),
+        ])
+        await session.commit()
+
+    await scan_directory(fast=True)
+
+    async with db() as session:
+        photos = {p.file_hash: p for p in (await session.execute(select(Photo))).scalars()}
+        paths = (await session.execute(select(PhotoPath.file_path))).scalars().all()
+        derived = {
+            model.__tablename__: (await session.execute(
+                select(model.file_hash).where(model.file_hash == fh_hidden))).all()
+            for model in (PhotoHash, Face, Caption, PhotoTag)
+        }
+        dual_caption = await session.get(Caption, fh_dual)
+    assert set(photos) == {fh_dual}
+    assert photos[fh_dual].file_path == "keep/a.jpg"
+    assert photos[fh_dual].is_favorite
+    assert dual_caption.caption == "kept"
+    assert sorted(paths) == ["keep/a.jpg"]
+    assert all(rows == [] for rows in derived.values()), derived
+    assert hidden.exists()  # files on disk are never touched
+
+
+@pytest.mark.asyncio
+async def test_symlinks_out_of_the_library_are_not_followed(db, photos_dir, tmp_path):
+    outside = write_jpeg(tmp_path / "outside" / "secret.jpg", seed=17)
+    inside = write_jpeg(photos_dir / "real" / "in.jpg", seed=18)
+    (photos_dir / "links").mkdir()
+    (photos_dir / "links" / "out.jpg").symlink_to(outside)
+    (photos_dir / "links" / "in.jpg").symlink_to(inside)
+    (photos_dir / "outdir").symlink_to(outside.parent, target_is_directory=True)
+    stats = await scan_directory()
+    assert stats["errors"] == 0
+    assert set(await _paths(db)) == {"real/in.jpg", "links/in.jpg"}
+    assert await index_single_file(photos_dir / "links" / "out.jpg") is None
 
 
 @pytest.mark.asyncio

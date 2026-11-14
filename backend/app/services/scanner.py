@@ -12,6 +12,8 @@ import hashlib
 import logging
 import mimetypes
 import os
+import re
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
@@ -182,15 +184,73 @@ _seen_snapshot: set[str] = set()
 _MTIME_TOLERANCE = 1.0
 
 
-def is_hidden_path(relative_path: str | Path) -> bool:
-    """True if any component of a library-relative path is a dot-directory or
-    dot-file. Sweeps never descend into those (Syncthing's .stversions,
-    NAS thumbnail caches), so the watcher must not index them either."""
-    return any(part.startswith(".") for part in Path(relative_path).parts)
+# Syncthing's in-flight downloads. The ".syncthing.*" form is already hidden.
+_SYNCTHING_TEMP = re.compile(r"^(~syncthing~|\.syncthing\.).*\.tmp$", re.IGNORECASE)
+
+
+def is_library_name(name: str) -> bool:
+    """Whether a single path component can be part of the library.
+
+    Dot-files and dot-directories are not: Syncthing keeps old versions in
+    .stversions, NAS boxes keep thumbnail caches in dot-directories, macOS
+    writes ._ AppleDouble files. Neither are Syncthing temp files.
+    """
+    return not name.startswith(".") and not _SYNCTHING_TEMP.match(name)
+
+
+def is_library_path(relative_path: str | Path) -> bool:
+    """The one test for "may this library-relative path be indexed?".
+
+    Shared by the sweep, the file watcher and cleanup: an indexed path that
+    fails it is removed from the index like a deleted file.
+    """
+    return all(is_library_name(part) for part in Path(relative_path).parts)
+
+
+def _inside_library(entry_path: str, library_root: Path) -> bool:
+    """False for a symlink that leads out of the library. Never follows one
+    out of /photos, whatever a link inside it points at."""
+    try:
+        return Path(entry_path).resolve().is_relative_to(library_root)
+    except (OSError, RuntimeError):
+        return False
 
 
 def _mtime_equal(a: float, b: float) -> bool:
     return abs(a - b) < _MTIME_TOLERANCE
+
+
+def _walk_library(photos_dir: Path) -> Iterator[tuple[str, list[os.DirEntry]]]:
+    """Top-down walk yielding (directory, library files in it).
+
+    Like os.walk(followlinks=False) in the same order, minus hidden and temp
+    entries, and handing out DirEntry objects so symlinks are recognised
+    without an extra stat per file. Unreadable directories are skipped.
+    """
+    stack = [str(photos_dir)]
+    while stack:
+        root = stack.pop()
+        try:
+            with os.scandir(root) as it:
+                entries = list(it)
+        except OSError:
+            continue
+        subdirs: list[str] = []
+        files: list[os.DirEntry] = []
+        for entry in entries:
+            if not is_library_name(entry.name):
+                continue
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                continue
+            if is_dir:
+                if not entry.is_symlink():  # never descend through a link
+                    subdirs.append(entry.path)
+            else:
+                files.append(entry)
+        yield root, files
+        stack.extend(reversed(subdirs))
 
 
 def _collect_photo_files(
@@ -213,8 +273,8 @@ def _collect_photo_files(
     to_check: list[tuple[Path, os.stat_result]] = []
     seen: set[str] = set()
     new_snapshot: dict[str, float] = {}
-    for root, dirs, files in os.walk(photos_dir):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
+    library_root = photos_dir.resolve()
+    for root, files in _walk_library(photos_dir):
         try:
             dir_mtime = os.stat(root).st_mtime
         except OSError:
@@ -222,10 +282,12 @@ def _collect_photo_files(
         new_snapshot[root] = dir_mtime
         prev_mtime = dir_snapshot.get(root) if dir_snapshot is not None else None
         dir_unchanged = prev_mtime is not None and _mtime_equal(prev_mtime, dir_mtime)
-        siblings = set(files)
-        for f in files:
-            filepath = Path(root) / f
+        siblings = {entry.name for entry in files}
+        for entry in files:
+            filepath = Path(entry.path)
             if not is_indexable(filepath):
+                continue
+            if entry.is_symlink() and not _inside_library(entry.path, library_root):
                 continue
             # Never index Apple Live Photo movies as standalone videos: those
             # beside their still (same folder) OR carrying the Live Photo
@@ -552,12 +614,18 @@ async def _index_photo(
     return (file_hash, "exif")
 
 
-def _missing_on_disk(candidates: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    return [(h, p) for h, p in candidates if not (settings.photos_dir / p).exists()]
+def _removed_from_library(candidates: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Indexed paths that are gone: deleted from disk, or no longer library
+    paths at all (see is_library_path)."""
+    return [
+        (h, p) for h, p in candidates
+        if not is_library_path(p) or not (settings.photos_dir / p).exists()
+    ]
 
 
 async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> None:
-    """Remove database entries for files that no longer exist on disk.
+    """Remove database entries for files that no longer exist on disk, or
+    that are no longer library paths (hidden or temp, see is_library_path).
 
     When the caller provides the set of paths seen during its walk, only the
     paths missing from that set are stat-checked: at 40k photos, exists()
@@ -574,7 +642,7 @@ async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> None:
     del rows
     if not candidates:
         return
-    removed_paths = await asyncio.to_thread(_missing_on_disk, candidates)
+    removed_paths = await asyncio.to_thread(_removed_from_library, candidates)
     if not removed_paths:
         return
 
@@ -650,7 +718,9 @@ async def index_single_file(filepath: Path) -> tuple[str, str] | None:
         relative_path = filepath.relative_to(settings.photos_dir)
     except ValueError:
         return None
-    if is_hidden_path(relative_path):
+    if not is_library_path(relative_path):
+        return None
+    if filepath.is_symlink() and not _inside_library(str(filepath), settings.photos_dir.resolve()):
         return None
 
     if not await asyncio.to_thread(is_valid_image, filepath):

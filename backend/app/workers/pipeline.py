@@ -16,7 +16,12 @@ from watchdog.observers import Observer
 
 from backend.app.config import settings
 from backend.app.database import async_session
-from backend.app.services.scanner import index_single_file, is_supported_photo, scan_directory
+from backend.app.services.scanner import (
+    index_single_file,
+    is_library_path,
+    is_supported_photo,
+    scan_directory,
+)
 from backend.app.workers.queues import QueueType, pipeline
 from backend.app.workers.stages import (
     ENTRY_STAGES,
@@ -155,7 +160,11 @@ class FileEventHandler(FileSystemEventHandler):
         if event.is_directory or not path:
             return
         filepath = Path(path if isinstance(path, str) else path.decode())
-        if is_supported_photo(filepath):
+        try:
+            relative = filepath.relative_to(settings.photos_dir)
+        except ValueError:
+            return
+        if is_supported_photo(filepath) and is_library_path(relative):
             self.loop.call_soon_threadsafe(self._schedule, filepath)
 
     def _schedule(self, filepath: Path) -> None:
