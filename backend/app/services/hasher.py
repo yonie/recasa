@@ -1,26 +1,29 @@
 """Perceptual hashing service for duplicate detection."""
 
 import asyncio
+import hashlib
 import logging
 from pathlib import Path
 
 import imagehash
-from PIL import Image
-
+import numpy as np
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.exceptions import PermanentStageError
-from backend.app.models import Photo, PhotoHash, DuplicateGroup, DuplicateMember
-from backend.app.services.image_loader import open_image_cm, PermanentReadError
+from backend.app.models import DuplicateGroup, DuplicateMember, Photo, PhotoHash
+from backend.app.services.image_loader import PermanentReadError, open_image_cm
 
 logger = logging.getLogger(__name__)
 
 # Hamming distance threshold for considering photos as duplicates.
 # 0 = identical, 1-3 = same photo different resolution/compression, 4-6 = similar with edits.
 DUPLICATE_THRESHOLD = 4
+
+# Rows compared per step in _find_duplicate_groups. Bounds the temporary
+# distance matrix to BLOCK x library size (64 x 40k bytes, plus the XOR).
+_COMPARE_BLOCK = 64
 
 
 def _compute_perceptual_hashes(filepath: Path) -> dict:
@@ -33,11 +36,15 @@ def _compute_perceptual_hashes(filepath: Path) -> dict:
         with open_image_cm(filepath) as img:
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
+            # Each imagehash function starts with convert("L"); doing it once
+            # here gives them the very same grayscale pixels at a third of the
+            # cost of three full-size conversions.
+            gray = img.convert("L")
 
             return {
-                "phash": str(imagehash.phash(img)),
-                "ahash": str(imagehash.average_hash(img)),
-                "dhash": str(imagehash.dhash(img)),
+                "phash": str(imagehash.phash(gray)),
+                "ahash": str(imagehash.average_hash(gray)),
+                "dhash": str(imagehash.dhash(gray)),
             }
     except PermanentReadError as e:
         raise PermanentStageError(str(e)) from e
@@ -52,37 +59,51 @@ async def compute_hashes(file_hash: str) -> bool:
         photo = await session.get(Photo, file_hash)
         if not photo:
             return False
-
-        # Check if hash already exists
-        existing = await session.get(PhotoHash, file_hash)
-        if existing:
+        if await session.get(PhotoHash, file_hash):
             return True
+        file_path = photo.file_path
 
-        filepath = settings.photos_dir / photo.file_path
-        if not filepath.exists():
-            raise PermanentStageError("file not found on disk")
+    filepath = settings.photos_dir / file_path
+    if not filepath.exists():
+        raise PermanentStageError("file not found on disk")
 
-        hashes = await asyncio.to_thread(_compute_perceptual_hashes, filepath)
-        if not hashes:
-            raise PermanentStageError("no hashes could be computed")
+    hashes = await asyncio.to_thread(_compute_perceptual_hashes, filepath)
+    if not hashes:
+        raise PermanentStageError("no hashes could be computed")
 
+    async with async_session() as session:
         session.add(PhotoHash(file_hash=file_hash, **hashes))
         await session.commit()
 
-        logger.debug("Computed perceptual hashes for %s", file_hash)
-        return True
+    logger.debug("Computed perceptual hashes for %s", file_hash)
+    return True
+
+
+def _popcount64(arr: np.ndarray) -> np.ndarray:
+    """Per-element set-bit count of a uint64 array (numpy < 2 fallback)."""
+    c1 = np.uint64(0x5555555555555555)
+    c2 = np.uint64(0x3333333333333333)
+    c4 = np.uint64(0x0F0F0F0F0F0F0F0F)
+    cm = np.uint64(0x0101010101010101)
+    arr = arr - ((arr >> np.uint64(1)) & c1)
+    arr = (arr & c2) + ((arr >> np.uint64(2)) & c2)
+    arr = (arr + (arr >> np.uint64(4))) & c4
+    return (arr * cm) >> np.uint64(56)
+
+
+_popcount = getattr(np, "bitwise_count", _popcount64)
 
 
 def _find_duplicate_groups(
     file_hashes: list[str], phash_hexes: list[str], threshold: int
 ) -> list[list[str]]:
-    """CPU-bound duplicate detection using numpy-vectorized hamming distance.
+    """Group photos whose perceptual hashes are within `threshold` bits.
 
-    Compares all pairs of perceptual hashes and groups photos within the
-    hamming distance threshold using union-find.
+    Every pair is compared (vectorized, a block of rows at a time) and pairs
+    within the threshold are joined with union-find. Groups come out ordered
+    by their first member's position in the input, members in input order,
+    so the result depends only on which pairs match.
     """
-    import numpy as np
-
     n = len(file_hashes)
     if n < 2:
         return []
@@ -98,37 +119,43 @@ def _find_duplicate_groups(
             x = parent[x]
         return x
 
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
-
-    # Vectorized popcount for uint64 arrays (Hamming weight via bit manipulation)
-    def _popcount64(arr: np.ndarray) -> np.ndarray:
-        c1 = np.uint64(0x5555555555555555)
-        c2 = np.uint64(0x3333333333333333)
-        c4 = np.uint64(0x0F0F0F0F0F0F0F0F)
-        cm = np.uint64(0x0101010101010101)
-        arr = arr - ((arr >> np.uint64(1)) & c1)
-        arr = (arr & c2) + ((arr >> np.uint64(2)) & c2)
-        arr = (arr + (arr >> np.uint64(4))) & c4
-        return (arr * cm) >> np.uint64(56)
-
-    # For each photo, vectorized comparison against all subsequent photos
-    for i in range(n - 1):
-        xor = phash_ints[i + 1 :] ^ phash_ints[i]
-        distances = _popcount64(xor)
-        matches = np.where(distances <= threshold)[0]
-        for j_offset in matches:
-            union(i, int(i + 1 + j_offset))
+    for start in range(0, n - 1, _COMPARE_BLOCK):
+        block = phash_ints[start : start + _COMPARE_BLOCK]
+        later = phash_ints[start + 1 :]
+        distances = _popcount(block[:, None] ^ later[None, :])
+        rows, cols = np.nonzero(distances <= threshold)
+        for r, c in zip(rows.tolist(), cols.tolist(), strict=True):
+            i, j = start + r, start + 1 + c
+            if j <= i:
+                continue  # each pair once, and never a photo with itself
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[ri] = rj
 
     # Collect groups with 2+ members
     group_map: dict[int, list[str]] = {}
     for i in range(n):
-        root = find(i)
-        group_map.setdefault(root, []).append(file_hashes[i])
+        group_map.setdefault(find(i), []).append(file_hashes[i])
 
     return [g for g in group_map.values() if len(g) > 1]
+
+
+def _phash_query():
+    return select(PhotoHash.file_hash, PhotoHash.phash).where(PhotoHash.phash.is_not(None))
+
+
+async def phash_signature() -> bytes:
+    """Digest of exactly the input find_duplicates would read.
+
+    Equal digests mean a rerun would store identical groups, which lets the
+    batch worker skip the all-pairs comparison when nothing was hashed or
+    removed since its last run.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    async with async_session() as session:
+        for file_hash, phash in await session.execute(_phash_query()):
+            digest.update(f"{file_hash}:{phash};".encode())
+    return digest.digest()
 
 
 async def find_duplicates() -> list[list[str]]:
@@ -138,16 +165,13 @@ async def find_duplicates() -> list[list[str]]:
     Returns list of groups, where each group is a list of file_hashes.
     """
     async with async_session() as session:
-        result = await session.execute(
-            select(PhotoHash).where(PhotoHash.phash.is_not(None))
-        )
-        all_hashes = result.scalars().all()
+        rows = (await session.execute(_phash_query())).all()
 
-    if len(all_hashes) < 2:
+    if len(rows) < 2:
         return []
 
-    file_hashes = [h.file_hash for h in all_hashes]
-    phash_hexes = [h.phash for h in all_hashes]
+    file_hashes = [fh for fh, _ in rows]
+    phash_hexes = [ph for _, ph in rows]
 
     logger.info("Finding duplicates among %d photos...", len(file_hashes))
 

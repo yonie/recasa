@@ -5,13 +5,17 @@ An "event" is a group of photos taken within a short time window
 at the same or nearby location (e.g., a party, vacation day, wedding).
 """
 
+import asyncio
 import logging
+from collections import Counter
 from datetime import datetime, timedelta
+from itertools import pairwise
+from typing import Any
 
-from sqlalchemy import select, func, delete
+from sqlalchemy import delete, select
 
 from backend.app.database import async_session
-from backend.app.models import Photo, Event, EventPhoto, Face
+from backend.app.models import Event, EventPhoto, Face, Photo
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,103 @@ MIN_PHOTOS_PER_EVENT = 3
 # Maximum distance in degrees to consider "same location"
 # ~0.05 degrees ≈ 5.5km
 LOCATION_PROXIMITY_DEGREES = 0.05
+
+# The photo columns the clustering and cover scoring read. Rows carry them as
+# attributes, so the helpers below work on rows exactly as on Photo objects.
+_PHOTO_COLUMNS = (
+    Photo.file_hash,
+    Photo.date_taken,
+    Photo.width,
+    Photo.height,
+    Photo.gps_latitude,
+    Photo.gps_longitude,
+    Photo.location_city,
+    Photo.location_country,
+)
+
+# A photo as the helpers see it: a Photo or a row of _PHOTO_COLUMNS.
+PhotoLike = Any
+
+
+def _cluster_photos(photos: list[PhotoLike]) -> list[list[PhotoLike]]:
+    """Phases 1 and 2: split the date-sorted photos into candidate events."""
+    # Phase 1: Split by time gaps
+    time_clusters: list[list[PhotoLike]] = []
+    current_cluster: list[PhotoLike] = [photos[0]]
+
+    for prev, curr in pairwise(photos):
+        if not prev.date_taken or not curr.date_taken:
+            continue
+
+        gap = (curr.date_taken - prev.date_taken).total_seconds() / 3600
+        if gap > EVENT_TIME_GAP_HOURS:
+            if len(current_cluster) >= MIN_PHOTOS_PER_EVENT:
+                time_clusters.append(current_cluster)
+            current_cluster = [curr]
+        else:
+            current_cluster.append(curr)
+
+    if len(current_cluster) >= MIN_PHOTOS_PER_EVENT:
+        time_clusters.append(current_cluster)
+
+    # Phase 2: Sub-split by location
+    final_clusters: list[list[PhotoLike]] = []
+    for cluster in time_clusters:
+        for sc in _split_by_location(cluster):
+            if len(sc) >= MIN_PHOTOS_PER_EVENT:
+                final_clusters.append(sc)
+    return final_clusters
+
+
+def _cluster_location(cluster: list[PhotoLike]) -> str | None:
+    """Most common city in the cluster, with its country when known."""
+    cities = [p.location_city for p in cluster if p.location_city]
+    if not cities:
+        return None
+    most_common_city = Counter(cities).most_common(1)[0][0]
+    # Country from the first photo in that city
+    for p in cluster:
+        if p.location_city == most_common_city:
+            parts = [most_common_city]
+            if p.location_country:
+                parts.append(p.location_country)
+            return ", ".join(parts)
+    return None
+
+
+def _plan_events(
+    final_clusters: list[list[PhotoLike]],
+    face_counts: dict[str, int],
+    face_positions: dict[str, list[tuple[int, int, int, int]]],
+) -> list[tuple[dict, list[str]]]:
+    """Phases 3 and 4 minus the writes: merge into trips, name, pick covers.
+
+    Returns (event column values, member file_hashes) per event, in order.
+    """
+    # Phase 3: Merge nearby consecutive events into "trips"
+    # Events within 36h and ~50km of each other are the same trip/holiday.
+    planned: list[tuple[dict, list[str]]] = []
+    for cluster in _merge_nearby_events(final_clusters):
+        dates = [p.date_taken for p in cluster if p.date_taken]
+        if not dates:
+            continue
+
+        start_date = min(dates)
+        end_date = max(dates)
+        location = _cluster_location(cluster)
+
+        planned.append((
+            {
+                "name": _generate_event_name(start_date, end_date, location),
+                "start_date": start_date,
+                "end_date": end_date,
+                "location": location,
+                "photo_count": len(cluster),
+                "cover_file_hash": _pick_cover_photo(cluster, face_counts, face_positions),
+            },
+            [p.file_hash for p in cluster],
+        ))
+    return planned
 
 
 async def detect_events() -> int:
@@ -41,44 +142,24 @@ async def detect_events() -> int:
     async with async_session() as session:
         # Get all photos with dates, sorted by date
         result = await session.execute(
-            select(Photo)
+            select(*_PHOTO_COLUMNS)
             .where(Photo.date_taken.is_not(None))
             .where(Photo.date_source == "exif")
             .order_by(Photo.date_taken.asc())
         )
-        photos = result.scalars().all()
+        photos = result.all()
 
     if len(photos) < MIN_PHOTOS_PER_EVENT:
         return 0
 
-    # Phase 1: Split by time gaps
-    time_clusters: list[list[Photo]] = []
-    current_cluster: list[Photo] = [photos[0]]
+    # Pure CPU over the whole library: keep it off the event loop.
+    final_clusters = await asyncio.to_thread(_cluster_photos, photos)
 
-    for prev, curr in zip(photos[:-1], photos[1:]):
-        if not prev.date_taken or not curr.date_taken:
-            continue
-
-        gap = (curr.date_taken - prev.date_taken).total_seconds() / 3600
-        if gap > EVENT_TIME_GAP_HOURS:
-            if len(current_cluster) >= MIN_PHOTOS_PER_EVENT:
-                time_clusters.append(current_cluster)
-            current_cluster = [curr]
-        else:
-            current_cluster.append(curr)
-
-    if len(current_cluster) >= MIN_PHOTOS_PER_EVENT:
-        time_clusters.append(current_cluster)
-
-    # Phase 2: Sub-split by location
-    final_clusters: list[list[Photo]] = []
-    for cluster in time_clusters:
-        sub_clusters = _split_by_location(cluster)
-        for sc in sub_clusters:
-            if len(sc) >= MIN_PHOTOS_PER_EVENT:
-                final_clusters.append(sc)
-
-    # Fetch face data per photo for cover photo selection
+    # Fetch face data per photo for cover photo selection. Every detected face
+    # is read and filtered here rather than with IN (...) over the event
+    # photos: that list passes 30k on a big library, near SQLite's
+    # 32766-variable limit. face_id order keeps each photo's faces in the
+    # order the cover scoring has always summed them.
     all_hashes = {p.file_hash for cluster in final_clusters for p in cluster}
     face_counts: dict[str, int] = {}
     face_positions: dict[str, list[tuple[int, int, int, int]]] = {}
@@ -86,16 +167,17 @@ async def detect_events() -> int:
         async with async_session() as session:
             result = await session.execute(
                 select(Face.file_hash, Face.bbox_x, Face.bbox_y, Face.bbox_w, Face.bbox_h)
-                .where(Face.file_hash.in_(all_hashes), Face.encoding.is_not(None))
+                .where(Face.encoding.is_not(None))
+                .order_by(Face.face_id)
             )
-            for file_hash, bx, by, bw, bh in result.all():
+            for file_hash, bx, by, bw, bh in result:
+                if file_hash not in all_hashes:
+                    continue
                 face_counts[file_hash] = face_counts.get(file_hash, 0) + 1
                 if bx is not None and by is not None and bw is not None and bh is not None:
                     face_positions.setdefault(file_hash, []).append((bx, by, bw, bh))
 
-    # Phase 3: Merge nearby consecutive events into "trips"
-    # Events within 36h and ~50km of each other are the same trip/holiday.
-    final_clusters = _merge_nearby_events(final_clusters)
+    planned = await asyncio.to_thread(_plan_events, final_clusters, face_counts, face_positions)
 
     # Phase 4: Store events in database
     async with async_session() as session:
@@ -103,55 +185,18 @@ async def detect_events() -> int:
         await session.execute(delete(EventPhoto))
         await session.execute(delete(Event))
 
-        for cluster in final_clusters:
-            dates = [p.date_taken for p in cluster if p.date_taken]
-            if not dates:
-                continue
-
-            start_date = min(dates)
-            end_date = max(dates)
-
-            # Determine location from most common city in cluster
-            cities = [p.location_city for p in cluster if p.location_city]
-            location = None
-            if cities:
-                # Most common city
-                from collections import Counter
-                most_common_city = Counter(cities).most_common(1)[0][0]
-                # Find country for this city
-                for p in cluster:
-                    if p.location_city == most_common_city:
-                        parts = [most_common_city]
-                        if p.location_country:
-                            parts.append(p.location_country)
-                        location = ", ".join(parts)
-                        break
-
-            # Generate event name and pick cover photo
-            name = _generate_event_name(start_date, end_date, location)
-            cover_hash = _pick_cover_photo(cluster, face_counts, face_positions)
-
-            event = Event(
-                name=name,
-                start_date=start_date,
-                end_date=end_date,
-                location=location,
-                photo_count=len(cluster),
-                cover_file_hash=cover_hash,
-            )
+        for values, member_hashes in planned:
+            event = Event(**values)
             session.add(event)
             await session.flush()
 
-            for photo in cluster:
-                session.add(EventPhoto(
-                    event_id=event.event_id,
-                    file_hash=photo.file_hash,
-                ))
+            for file_hash in member_hashes:
+                session.add(EventPhoto(event_id=event.event_id, file_hash=file_hash))
 
         await session.commit()
 
-    logger.info("Detected %d events from %d photos", len(final_clusters), len(photos))
-    return len(final_clusters)
+    logger.info("Detected %d events from %d photos", len(planned), len(photos))
+    return len(planned)
 
 
 # Maximum hours between consecutive events to consider merging
@@ -164,7 +209,7 @@ MERGE_LOCATION_DEGREES = 0.5
 MAX_EVENT_DAYS = 4
 
 
-def _cluster_centroid(cluster: list[Photo]) -> tuple[float | None, float | None]:
+def _cluster_centroid(cluster: list[PhotoLike]) -> tuple[float | None, float | None]:
     """Average GPS coordinates of photos with location data."""
     lats = [p.gps_latitude for p in cluster if p.gps_latitude is not None]
     lons = [p.gps_longitude for p in cluster if p.gps_longitude is not None]
@@ -173,7 +218,7 @@ def _cluster_centroid(cluster: list[Photo]) -> tuple[float | None, float | None]
     return sum(lats) / len(lats), sum(lons) / len(lons)
 
 
-def _merge_nearby_events(clusters: list[list[Photo]]) -> list[list[Photo]]:
+def _merge_nearby_events(clusters: list[list[PhotoLike]]) -> list[list[PhotoLike]]:
     """Merge consecutive events that are close in time and location.
 
     This turns per-half-day fine-grained events into multi-day trip events.
@@ -181,7 +226,7 @@ def _merge_nearby_events(clusters: list[list[Photo]]) -> list[list[Photo]]:
     if len(clusters) < 2:
         return clusters
 
-    merged: list[list[Photo]] = [clusters[0]]
+    merged: list[list[PhotoLike]] = [clusters[0]]
 
     for cluster in clusters[1:]:
         prev = merged[-1]
@@ -222,7 +267,7 @@ def _merge_nearby_events(clusters: list[list[Photo]]) -> list[list[Photo]]:
     return merged
 
 
-def _split_by_location(photos: list[Photo]) -> list[list[Photo]]:
+def _split_by_location(photos: list[PhotoLike]) -> list[list[PhotoLike]]:
     """Split a time-based cluster further by location jumps."""
     if not photos:
         return []
@@ -232,10 +277,10 @@ def _split_by_location(photos: list[Photo]) -> list[list[Photo]]:
     if len(gps_photos) < 2:
         return [photos]
 
-    clusters: list[list[Photo]] = []
-    current: list[Photo] = [photos[0]]
+    clusters: list[list[PhotoLike]] = []
+    current: list[PhotoLike] = [photos[0]]
 
-    for prev, curr in zip(photos[:-1], photos[1:]):
+    for prev, curr in pairwise(photos):
         if (
             prev.gps_latitude is not None
             and curr.gps_latitude is not None
@@ -257,7 +302,7 @@ def _split_by_location(photos: list[Photo]) -> list[list[Photo]]:
 
 
 def _pick_cover_photo(
-    photos: list[Photo],
+    photos: list[PhotoLike],
     face_counts: dict[str, int],
     face_positions: dict[str, list[tuple[int, int, int, int]]],
 ) -> str:
@@ -284,7 +329,7 @@ def _pick_cover_photo(
         h = photo.height or 0
 
         # Landscape bonus (strong — landscape photos fill the card much better)
-        if w > h and h > 0:
+        if w > h > 0:
             score += 4
         elif h > w:
             score -= 2  # penalize portrait

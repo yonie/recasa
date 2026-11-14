@@ -2,20 +2,20 @@
 
 import asyncio
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 
 from PIL import Image
 from PIL.ExifTags import GPSTAGS, TAGS
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.models import Photo
-from backend.app.services.image_loader import is_raw
+from backend.app.services.image_loader import (
+    extract_raw_exif_tags,
+    get_raw_dimensions,
+    is_raw,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -197,11 +197,6 @@ def _extract_pil_exif(filepath: Path, result: dict) -> None:
 
 def _extract_raw_exif(filepath: Path, result: dict) -> None:
     """Extract EXIF from RAW (ORF) files via exifread, and dimensions via rawpy."""
-    from backend.app.services.image_loader import (
-        get_raw_dimensions,
-        extract_raw_exif_tags,
-    )
-
     try:
         result["width"], result["height"] = get_raw_dimensions(filepath)
     except Exception as e:
@@ -270,20 +265,23 @@ async def extract_exif(file_hash: str) -> bool:
         # Check if EXIF already extracted (data exists)
         if photo.camera_make is not None or photo.date_taken is not None:
             return True
+        file_path = photo.file_path
 
-        filepath = settings.photos_dir / photo.file_path
-        if not filepath.exists():
-            logger.warning("File not found: %s", filepath)
+    filepath = settings.photos_dir / file_path
+    if not filepath.exists():
+        logger.warning("File not found: %s", filepath)
+        return False
+
+    exif_data = await asyncio.to_thread(_extract_exif_data, filepath)
+
+    async with async_session() as session:
+        photo = await session.get(Photo, file_hash)
+        if not photo:
             return False
-
-        exif_data = await asyncio.to_thread(_extract_exif_data, filepath)
-
-        # Update photo record
         for key, value in exif_data.items():
             if value is not None:
                 setattr(photo, key, value)
-
         await session.commit()
 
-        logger.debug("Extracted EXIF for %s", file_hash)
-        return True
+    logger.debug("Extracted EXIF for %s", file_hash)
+    return True

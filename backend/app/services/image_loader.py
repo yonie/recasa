@@ -12,9 +12,9 @@ instead of ``Image.open(filepath)``. For the non-RAW path this just wraps
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from PIL import Image
 

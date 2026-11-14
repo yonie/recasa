@@ -9,8 +9,6 @@ import asyncio
 import logging
 from pathlib import Path
 
-from sqlalchemy import select
-
 from backend.app.config import settings
 from backend.app.database import async_session
 from backend.app.models import Photo
@@ -81,24 +79,27 @@ async def extract_motion_video(file_hash: str) -> bool:
         photo = await session.get(Photo, file_hash)
         if not photo:
             return False
-
         if not photo.motion_photo:
             return False
-
         # Skip if we already have a video path
         if photo.live_photo_video:
             return True
+        file_path = photo.file_path
 
-        filepath = settings.photos_dir / photo.file_path
-        if not filepath.exists():
-            return False
-
-        video_path = await asyncio.to_thread(_extract_motion_photo_video, filepath)
-        if video_path:
-            # Store relative to data_dir since it's extracted data
-            photo.live_photo_video = f"_motion/{filepath.stem[:2]}/{filepath.stem}_motion.mp4"
-            await session.commit()
-            logger.debug("Extracted motion video for %s", file_hash)
-            return True
-
+    filepath = settings.photos_dir / file_path
+    if not filepath.exists():
         return False
+
+    video_path = await asyncio.to_thread(_extract_motion_photo_video, filepath)
+    if not video_path:
+        return False
+
+    async with async_session() as session:
+        photo = await session.get(Photo, file_hash)
+        if not photo:
+            return False
+        # Store relative to data_dir since it's extracted data
+        photo.live_photo_video = f"_motion/{filepath.stem[:2]}/{filepath.stem}_motion.mp4"
+        await session.commit()
+    logger.debug("Extracted motion video for %s", file_hash)
+    return True

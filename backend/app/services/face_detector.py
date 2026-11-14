@@ -10,18 +10,17 @@ Uses the insightface library (ONNX Runtime) to:
 import asyncio
 import logging
 import pickle
-from io import BytesIO
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
-
-from sqlalchemy import select, func
+from PIL import Image, ImageOps
+from sqlalchemy import func, select, update
 
 from backend.app.config import settings
 from backend.app.database import async_session
-from backend.app.models import Photo, Face, Person
-from backend.app.services.image_loader import open_image_cm
+from backend.app.models import Face, Person, Photo
+from backend.app.services.image_loader import is_raw, open_image_cm
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +43,18 @@ FACE_MAX_ROLL = 45.0
 # Using cosine distance since insightface produces normalized embeddings
 CLUSTER_DISTANCE_THRESHOLD = 0.3  # Cosine distance; lower = stricter matching
 CLUSTER_MIN_SAMPLES = 1  # Allow single-appearance faces to form their own cluster
+
+# Bound on ids per IN (...) list; SQLite allows at most 32766 variables.
+_IN_CHUNK = 10000
+
+
+class FaceModelUnavailable(Exception):
+    """insightface could not be loaded, so nothing was actually examined.
+
+    Deliberately not a PermanentStageError and not an empty result: either
+    would mark photos as "checked, no faces" for good. Left unprocessed they
+    are detected once the model loads (after a restart).
+    """
 
 
 def _compute_roll_from_kps(kps: np.ndarray) -> float | None:
@@ -96,28 +107,24 @@ def _load_insightface():
 def _detect_faces(filepath: Path) -> list[dict]:
     """Detect faces in an image and compute encodings.
 
-    Returns list of dicts with keys: bbox, encoding.
-    bbox is (x, y, w, h), encoding is 512-dim numpy array.
+    Returns list of dicts with keys: bbox, encoding, confidence.
+    bbox is (x, y, w, h), encoding is 512-dim numpy array. An unreadable image
+    gives [] (stored as "no faces"); a missing model raises FaceModelUnavailable.
     """
     if not _load_insightface():
-        return []
-
-    if _face_app is False:
-        return []
+        raise FaceModelUnavailable("insightface model is not available")
 
     try:
         # Load image - OpenCV reads most formats (JPEG/PNG/TIFF/BMP) directly
         # to BGR, which is the fastest path. HEIC/HEIF and RAW (ORF) must go
         # through the central image loader (pillow-heif / rawpy).
         import cv2
-        from backend.app.services.image_loader import is_raw
 
         ext = filepath.suffix.lower()
         needs_pil_path = ext in ('.heic', '.heif') or is_raw(filepath)
 
         if needs_pil_path:
             try:
-                from backend.app.services.image_loader import open_image_cm
                 with open_image_cm(filepath) as pil_img:
                     pil_img = pil_img.convert('RGB')
                     img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
@@ -180,51 +187,66 @@ def _detect_faces(filepath: Path) -> list[dict]:
         return []
 
 
-def _generate_face_thumbnail(filepath: Path, bbox: tuple, file_hash: str, face_idx: int) -> str | None:
-    """Generate a thumbnail crop of a face. Returns the relative path to the thumbnail."""
+def _crop_face(img: Image.Image, bbox: tuple, file_hash: str, face_idx: int) -> str:
+    """Save a padded square-ish crop of one face; returns its path under data_dir."""
+    x, y, w, h = bbox
+
+    # Add padding around the face (30% on each side)
+    pad_x = int(w * 0.3)
+    pad_y = int(h * 0.3)
+
+    # Crop with padding (clamp to image bounds)
+    left = max(0, x - pad_x)
+    top = max(0, y - pad_y)
+    right = min(img.width, x + w + pad_x)
+    bottom = min(img.height, y + h + pad_y)
+
+    face_crop = img.crop((left, top, right, bottom))
+    face_crop = face_crop.convert("RGB")
+    face_crop.thumbnail((FACE_THUMB_SIZE, FACE_THUMB_SIZE), Image.Resampling.LANCZOS)
+
+    faces_dir = settings.data_dir / "faces" / file_hash[:2]
+    faces_dir.mkdir(parents=True, exist_ok=True)
+    thumb_path = faces_dir / f"{file_hash}_face{face_idx}.webp"
+    face_crop.save(thumb_path, "WEBP", quality=85)
+
+    return str(thumb_path.relative_to(settings.data_dir))
+
+
+def _generate_face_thumbnails(
+    filepath: Path, bboxes: list[tuple], file_hash: str
+) -> list[str | None]:
+    """Crop every detected face from one decode of the photo.
+
+    Returns one relative thumbnail path per bbox, None where that crop failed.
+    """
     try:
-        x, y, w, h = bbox
-
-        # Add padding around the face (30% on each side)
-        pad_x = int(w * 0.3)
-        pad_y = int(h * 0.3)
-
         with open_image_cm(filepath) as img:
-            # Handle EXIF orientation
             try:
-                from PIL import ImageOps
                 img = ImageOps.exif_transpose(img)
             except Exception:
                 pass
+            img.load()
 
-            # Crop with padding (clamp to image bounds)
-            left = max(0, x - pad_x)
-            top = max(0, y - pad_y)
-            right = min(img.width, x + w + pad_x)
-            bottom = min(img.height, y + h + pad_y)
-
-            face_crop = img.crop((left, top, right, bottom))
-            face_crop = face_crop.convert("RGB")
-            face_crop.thumbnail((FACE_THUMB_SIZE, FACE_THUMB_SIZE), Image.Resampling.LANCZOS)
-
-            # Save to faces directory
-            faces_dir = settings.data_dir / "faces" / file_hash[:2]
-            faces_dir.mkdir(parents=True, exist_ok=True)
-
-            thumb_filename = f"{file_hash}_face{face_idx}.webp"
-            thumb_path = faces_dir / thumb_filename
-            face_crop.save(thumb_path, "WEBP", quality=85)
-
-            return str(thumb_path.relative_to(settings.data_dir))
-
+            paths: list[str | None] = []
+            for idx, bbox in enumerate(bboxes):
+                try:
+                    paths.append(_crop_face(img, bbox, file_hash, idx))
+                except Exception as e:
+                    logger.warning(
+                        "Face thumbnail failed for %s face %d: %s",
+                        file_hash, idx, type(e).__name__,
+                    )
+                    paths.append(None)
+            return paths
     except Exception as e:
-        logger.warning("Face thumbnail failed for %s face %d: %s", file_hash, face_idx, type(e).__name__)
-        return None
+        logger.warning("Face thumbnails failed for %s: %s", file_hash, type(e).__name__)
+        return [None] * len(bboxes)
 
 
 async def detect_faces(file_hash: str) -> bool:
     """Detect faces in a photo and store them in the database.
-    
+
     Even when no faces are found, we store a marker record to prevent
     re-processing on restart. The marker has encoding=NULL to indicate
     "checked but no faces".
@@ -236,56 +258,98 @@ async def detect_faces(file_hash: str) -> bool:
 
         # Check if faces already processed (including marker record for no faces)
         result = await session.execute(
-            select(Face).where(Face.file_hash == file_hash).limit(1)
+            select(Face.face_id).where(Face.file_hash == file_hash).limit(1)
         )
-        if result.scalar_one_or_none():
+        if result.first() is not None:
             return True
+        file_path = photo.file_path
 
-        filepath = settings.photos_dir / photo.file_path
-        if not filepath.exists():
-            return False
+    filepath = settings.photos_dir / file_path
+    if not filepath.exists():
+        return False
 
-        faces = await asyncio.to_thread(_detect_faces, filepath)
+    faces = await asyncio.to_thread(_detect_faces, filepath)
+    thumb_paths = (
+        await asyncio.to_thread(
+            _generate_face_thumbnails, filepath, [f["bbox"] for f in faces], file_hash
+        )
+        if faces
+        else []
+    )
 
+    async with async_session() as session:
         if faces:
-            for i, face_data in enumerate(faces):
+            for face_data, thumb_path in zip(faces, thumb_paths, strict=True):
                 x, y, w, h = face_data["bbox"]
-                encoding = face_data["encoding"]
-                confidence = face_data.get("confidence")
-
-                thumb_path = await asyncio.to_thread(
-                    _generate_face_thumbnail, filepath, face_data["bbox"], file_hash, i
-                )
-
-                face = Face(
+                session.add(Face(
                     file_hash=file_hash,
                     bbox_x=x,
                     bbox_y=y,
                     bbox_w=w,
                     bbox_h=h,
-                    encoding=pickle.dumps(encoding),
+                    encoding=pickle.dumps(face_data["encoding"]),
                     face_thumbnail=thumb_path,
-                    confidence=confidence,
-                )
-                session.add(face)
-
+                    confidence=face_data.get("confidence"),
+                ))
             logger.info("Detected %d face(s) in %s", len(faces), file_hash)
         else:
             # Store a marker record to indicate "processed, no faces found"
             # This prevents re-processing on restart
-            marker = Face(
+            session.add(Face(
                 file_hash=file_hash,
                 bbox_x=0,
                 bbox_y=0,
                 bbox_w=0,
                 bbox_h=0,
                 encoding=None,  # NULL encoding = no faces, just checked
-            )
-            session.add(marker)
+            ))
             logger.debug("No faces detected in %s (marked as processed)", file_hash)
 
         await session.commit()
-        return True
+    return True
+
+
+def _cluster_encodings(
+    rows: list[tuple[int, int | None, bytes]],
+) -> tuple[list[int], np.ndarray, dict[int, int | None]] | None:
+    """Unpickle encodings and run DBSCAN. CPU-bound: runs in a worker thread.
+
+    Returns (face_ids, labels, existing_person_map), or None when there is
+    nothing to cluster or clustering failed.
+    """
+    face_ids: list[int] = []
+    encodings = []
+    existing_person_map: dict[int, int | None] = {}  # face_id -> person_id
+    for face_id, person_id, blob in rows:
+        try:
+            # Our own rows, written by detect_faces; an unreadable one is skipped.
+            encoding = pickle.loads(blob)
+        except Exception:
+            continue
+        face_ids.append(face_id)
+        encodings.append(encoding)
+        existing_person_map[face_id] = person_id
+
+    if len(encodings) < CLUSTER_MIN_SAMPLES:
+        return None
+
+    # DBSCAN clustering with cosine distance (insightface produces normalized embeddings)
+    try:
+        from sklearn.cluster import DBSCAN
+
+        clustering = DBSCAN(
+            eps=CLUSTER_DISTANCE_THRESHOLD,
+            min_samples=CLUSTER_MIN_SAMPLES,
+            metric="cosine",
+        ).fit(np.array(encodings))
+    except ImportError:
+        logger.warning("scikit-learn not installed, cannot cluster faces")
+        return None
+    except Exception as e:
+        logger.warning("Face clustering failed: %s", type(e).__name__)
+        return None
+
+    return face_ids, clustering.labels_, existing_person_map
 
 
 async def cluster_faces() -> int:
@@ -297,79 +361,53 @@ async def cluster_faces() -> int:
     Returns the number of new person clusters created.
     """
     async with async_session() as session:
-        # Check if there are any unassigned faces to process
-        unassigned_result = await session.execute(
+        unassigned_count = await session.scalar(
             select(func.count(Face.face_id)).where(
                 Face.encoding.is_not(None),
                 Face.person_id.is_(None),
             )
-        )
-        unassigned_count = unassigned_result.scalar() or 0
+        ) or 0
 
     if unassigned_count == 0:
         return 0
 
+    # Load ALL faces with encodings (assigned + unassigned) so DBSCAN can
+    # group new faces with existing persons. Only the three columns needed:
+    # whole Face rows for 50k+ faces is a lot of objects on a Pi. face_id
+    # order is the table's natural order, which the person assignment below
+    # depends on (cluster order decides new person ids).
     async with async_session() as session:
-        # Load ALL faces with encodings (assigned + unassigned) so DBSCAN
-        # can group new faces with existing persons
-        result = await session.execute(
-            select(Face).where(Face.encoding.is_not(None))
-        )
-        all_faces = result.scalars().all()
+        rows = (
+            await session.execute(
+                select(Face.face_id, Face.person_id, Face.encoding)
+                .where(Face.encoding.is_not(None))
+                .order_by(Face.face_id)
+            )
+        ).all()
 
-    if len(all_faces) < CLUSTER_MIN_SAMPLES:
+    if len(rows) < CLUSTER_MIN_SAMPLES:
         return 0
 
-    # Deserialize encodings, tracking which faces are already assigned
-    face_ids = []
-    encodings = []
-    existing_person_map: dict[int, int | None] = {}  # face_id -> person_id
-    for face in all_faces:
-        try:
-            encoding = pickle.loads(face.encoding)
-            face_ids.append(face.face_id)
-            encodings.append(encoding)
-            existing_person_map[face.face_id] = face.person_id
-        except Exception:
-            continue
-
-    if len(encodings) < CLUSTER_MIN_SAMPLES:
+    # Unpickling and DBSCAN over every face take seconds to minutes on a Pi;
+    # off the event loop so the API stays responsive meanwhile.
+    clustered = await asyncio.to_thread(_cluster_encodings, rows)
+    del rows
+    if clustered is None:
         return 0
+    face_ids, labels, existing_person_map = clustered
+    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
 
-    # DBSCAN clustering with cosine distance (insightface produces normalized embeddings)
-    try:
-        from sklearn.cluster import DBSCAN
-
-        encodings_array = np.array(encodings)
-        clustering = DBSCAN(
-            eps=CLUSTER_DISTANCE_THRESHOLD,
-            min_samples=CLUSTER_MIN_SAMPLES,
-            metric="cosine",
-        ).fit(encodings_array)
-
-        labels = clustering.labels_
-        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-
-    except ImportError:
-        logger.warning("scikit-learn not installed, cannot cluster faces")
-        return 0
-    except Exception as e:
-        logger.warning("Face clustering failed: %s", type(e).__name__)
-        return 0
-
-    # Build cluster -> face_ids mapping
+    # Build cluster -> face_ids mapping, clusters in order of their first face
     cluster_map: dict[int, list[int]] = {}
-    for face_id, label in zip(face_ids, labels):
+    for face_id, label in zip(face_ids, labels, strict=True):
         if label == -1:
             continue  # Noise point - not assigned to any cluster
-        if label not in cluster_map:
-            cluster_map[label] = []
-        cluster_map[label].append(face_id)
+        cluster_map.setdefault(label, []).append(face_id)
 
     # Store clusters as persons
     new_persons = 0
     async with async_session() as session:
-        for cluster_label, cluster_face_ids in cluster_map.items():
+        for cluster_face_ids in cluster_map.values():
             # Check if any faces in this cluster already belong to a person
             existing_person_ids = [
                 existing_person_map[fid]
@@ -384,16 +422,15 @@ async def cluster_faces() -> int:
             ]
 
             if not unassigned_face_ids:
-                # All faces already assigned — nothing to do
+                # All faces already assigned, nothing to do
                 continue
 
             if existing_person_ids:
                 # Use the most common existing person
-                from collections import Counter
                 person_id = Counter(existing_person_ids).most_common(1)[0][0]
                 person = await session.get(Person, person_id)
             else:
-                # All faces are new — create a new person
+                # All faces are new: create a new person
                 person = Person(
                     photo_count=0,
                     representative_face_id=unassigned_face_ids[0],
@@ -403,27 +440,27 @@ async def cluster_faces() -> int:
                 new_persons += 1
 
             # Assign only the unassigned faces to the person
-            face_result = await session.execute(
-                select(Face).where(Face.face_id.in_(unassigned_face_ids))
-            )
-            for face in face_result.scalars().all():
-                face.person_id = person.person_id
+            for i in range(0, len(unassigned_face_ids), _IN_CHUNK):
+                await session.execute(
+                    update(Face)
+                    .where(Face.face_id.in_(unassigned_face_ids[i : i + _IN_CHUNK]))
+                    .values(person_id=person.person_id)
+                )
 
             # Update person photo count (all faces in cluster, not just new)
-            all_face_result = await session.execute(
-                select(Face).where(Face.person_id == person.person_id)
-            )
-            all_person_faces = all_face_result.scalars().all()
-            unique_photos = set(f.file_hash for f in all_person_faces)
-            person.photo_count = len(unique_photos)
+            person.photo_count = await session.scalar(
+                select(func.count(func.distinct(Face.file_hash))).where(
+                    Face.person_id == person.person_id
+                )
+            ) or 0
             if not person.representative_face_id:
                 person.representative_face_id = unassigned_face_ids[0]
 
         await session.commit()
 
-    noise_count = sum(1 for l in labels if l == -1)
+    noise_count = int(np.count_nonzero(labels == -1))
     logger.info(
         "Face clustering: %d total faces (%d unassigned), %d clusters, %d noise, %d new persons",
-        len(encodings), unassigned_count, n_clusters, noise_count, new_persons,
+        len(face_ids), unassigned_count, n_clusters, noise_count, new_persons,
     )
     return new_persons

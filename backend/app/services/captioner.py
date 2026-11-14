@@ -8,15 +8,18 @@ since it's the slowest step in the pipeline.
 import asyncio
 import base64
 import logging
+import re
+from io import BytesIO
 from pathlib import Path
 
 import httpx
-
+from PIL import Image, ImageOps
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from backend.app.config import settings
 from backend.app.database import async_session
-from backend.app.models import Photo, Caption, Tag, PhotoTag
+from backend.app.models import Caption, Photo, PhotoTag, Tag
 from backend.app.services.image_loader import open_image_cm
 
 logger = logging.getLogger(__name__)
@@ -35,17 +38,19 @@ CAPTION: [your caption here]
 TAGS: [tag1, tag2, tag3, ...]"""
 
 
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+_CAPTION_RE = re.compile(r"CAPTION:\s*(.+?)(?=TAGS:|$)", re.DOTALL | re.IGNORECASE)
+_TAGS_RE = re.compile(r"TAGS:\s*(.+?)$", re.DOTALL | re.IGNORECASE)
+
+
 def _strip_think_blocks(text: str) -> str:
     """Strip <think>...</think> blocks from qwen3-vl responses."""
-    import re
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    return _THINK_BLOCK.sub("", text).strip()
 
 
 def _prepare_image_base64(filepath: Path) -> str | None:
     """Load and resize an image, returning base64-encoded JPEG."""
     try:
-        from PIL import Image, ImageOps
-
         with open_image_cm(filepath) as img:
             # Handle EXIF orientation
             try:
@@ -62,7 +67,6 @@ def _prepare_image_base64(filepath: Path) -> str | None:
                 img.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), Image.Resampling.LANCZOS)
 
             # Encode as JPEG
-            from io import BytesIO
             buffer = BytesIO()
             img.save(buffer, format="JPEG", quality=85)
             return base64.b64encode(buffer.getvalue()).decode("utf-8")
@@ -123,14 +127,12 @@ async def _generate_caption_and_tags(image_base64: str) -> tuple[str | None, lis
 def _parse_combined_response(raw: str) -> tuple[str | None, list[str] | None]:
     caption = None
     tags = None
-    
-    import re
-    
-    caption_match = re.search(r"CAPTION:\s*(.+?)(?=TAGS:|$)", raw, re.DOTALL | re.IGNORECASE)
+
+    caption_match = _CAPTION_RE.search(raw)
     if caption_match:
         caption = caption_match.group(1).strip()
-    
-    tags_match = re.search(r"TAGS:\s*(.+?)$", raw, re.DOTALL | re.IGNORECASE)
+
+    tags_match = _TAGS_RE.search(raw)
     if tags_match:
         tags_raw = tags_match.group(1).strip()
         tag_list = [t.strip().lower() for t in tags_raw.split(",")]
@@ -142,7 +144,7 @@ def _parse_combined_response(raw: str) -> tuple[str | None, list[str] | None]:
                 seen.add(t)
                 tags.append(t)
         tags = tags[:15]
-    
+
     return caption, tags
 
 
@@ -152,9 +154,6 @@ async def _ensure_tag_ids(tag_names: list[str]) -> dict[str, int]:
     Uses a separate session to isolate tag creation from the caller's transaction,
     so that IntegrityError retries don't roll back unrelated pending changes.
     """
-    from sqlalchemy.exc import IntegrityError, OperationalError
-    from backend.app.models import Tag
-
     result_map: dict[str, int] = {}
 
     async with async_session() as tag_session:
@@ -209,44 +208,50 @@ async def _ensure_tag_ids(tag_names: list[str]) -> dict[str, int]:
 
 async def caption_photo(file_hash: str) -> bool:
     """Generate caption and tags for a photo.
-    
-    Even if captioning fails, we store a marker record (caption=NULL)
-    to prevent re-processing on restart.
+
+    A Caption row is this stage's "done" marker, so one is written even when
+    no caption came back (caption=NULL): an image that cannot be prepared, or
+    a model that answered without a usable caption. The one exception is an
+    unreachable Ollama, see below. No database session is held while the
+    model runs; a caption can take minutes.
     """
     async with async_session() as session:
         photo = await session.get(Photo, file_hash)
         if not photo:
             return False
-
-        existing_caption = await session.get(Caption, file_hash)
-        if existing_caption:
+        if await session.get(Caption, file_hash):
             return True
+        file_path = photo.file_path
 
-        filepath = settings.photos_dir / photo.file_path
-        if not filepath.exists():
-            return False
+    filepath = settings.photos_dir / file_path
+    if not filepath.exists():
+        return False
 
-        image_base64 = await asyncio.to_thread(_prepare_image_base64, filepath)
-        if not image_base64:
-            # Store marker to prevent re-processing
+    image_base64 = await asyncio.to_thread(_prepare_image_base64, filepath)
+    if not image_base64:
+        # Store marker to prevent re-processing
+        async with async_session() as session:
             session.add(Caption(file_hash=file_hash, caption=None, model=None))
             await session.commit()
-            return False
+        return False
 
-        caption_text, tag_list = await _generate_caption_and_tags(image_base64)
+    caption_text, tag_list = await _generate_caption_and_tags(image_base64)
 
-        if caption_text is None and not await _check_ollama_available():
-            # Ollama is unreachable: a transient outage, not a photo that cannot
-            # be captioned. The marker below is keyed off "a Caption row exists"
-            # meaning "this stage is done", so writing one here would make the
-            # miss permanent — the photo would never be retried even after the
-            # service came back. Leave no row and let a later sweep pick it up.
-            logger.warning(
-                "Captioning deferred for %s: Ollama unreachable at %s",
-                file_hash, settings.ollama_url,
-            )
-            return False
+    if caption_text is None and not await _check_ollama_available():
+        # Ollama is unreachable: a transient outage, not a photo that cannot
+        # be captioned. The marker below is keyed off "a Caption row exists"
+        # meaning "this stage is done", so writing one here would make the
+        # miss permanent: the photo would never be retried even after the
+        # service came back. Leave no row and let a later sweep pick it up.
+        logger.warning(
+            "Captioning deferred for %s: Ollama unreachable at %s",
+            file_hash, settings.ollama_url,
+        )
+        return False
 
+    tag_id_map = await _ensure_tag_ids(tag_list) if tag_list else {}
+
+    async with async_session() as session:
         # Always store a Caption record (marker) to prevent re-processing
         session.add(Caption(
             file_hash=file_hash,
@@ -255,9 +260,6 @@ async def caption_photo(file_hash: str) -> bool:
         ))
 
         if tag_list:
-            tag_id_map = await _ensure_tag_ids(tag_list)
-
-            from backend.app.models import PhotoTag
             for tag_name in tag_list:
                 tag_id = tag_id_map.get(tag_name)
                 if tag_id is None:
@@ -269,16 +271,15 @@ async def caption_photo(file_hash: str) -> bool:
                     )
                 )
                 if not existing.scalar_one_or_none():
-                    session.add(PhotoTag(
-                        file_hash=file_hash,
-                        tag_id=tag_id,
-                    ))
-            logger.debug("Tagged %s with %d tags: %s", file_hash, len(tag_list), ", ".join(tag_list[:5]))
+                    session.add(PhotoTag(file_hash=file_hash, tag_id=tag_id))
+            logger.debug(
+                "Tagged %s with %d tags: %s", file_hash, len(tag_list), ", ".join(tag_list[:5])
+            )
 
         await session.commit()
 
-        if caption_text:
-            logger.debug("Captioned %s: %s", file_hash, caption_text[:80])
-        else:
-            logger.debug("No caption generated for %s (marked as processed)", file_hash)
-        return True
+    if caption_text:
+        logger.debug("Captioned %s: %s", file_hash, caption_text[:80])
+    else:
+        logger.debug("No caption generated for %s (marked as processed)", file_hash)
+    return True
