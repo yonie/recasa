@@ -2,13 +2,29 @@
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, BackgroundTasks
+from sqlalchemy import update
 
-from backend.app.workers.pipeline import run_initial_scan, resume_incomplete_processing
-from backend.app.workers.queues import pipeline
 from backend.app.database import async_session
-from backend.app.models import Photo, PhotoPath, PhotoHash, Face, Person, Tag, PhotoTag, Event, EventPhoto, Caption, DuplicateGroup, DuplicateMember, StageFailure
+from backend.app.models import (
+    Caption,
+    DuplicateGroup,
+    DuplicateMember,
+    Event,
+    EventPhoto,
+    Face,
+    Person,
+    Photo,
+    PhotoHash,
+    PhotoPath,
+    PhotoTag,
+    StageFailure,
+    Tag,
+)
+from backend.app.workers.pipeline import resume_incomplete_processing, run_initial_scan
+from backend.app.workers.queues import pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +57,7 @@ async def _run_scan_background(fast: bool = False):
 
     try:
         stats = await run_initial_scan(fast=fast)
-        from datetime import datetime, timezone
-
-        _last_scan_at = datetime.now(timezone.utc).isoformat()
+        _last_scan_at = datetime.now(UTC).isoformat()
         _last_scan_stats = {
             k: v for k, v in stats.items() if k in ("total", "new", "updated", "errors")
         }
@@ -75,10 +89,9 @@ async def periodic_rescan_loop(interval: int) -> None:
 @router.post("/trigger")
 async def trigger_scan(background_tasks: BackgroundTasks):
     """Trigger a rescan of the photos directory (non-blocking)."""
-    global _is_scanning
     if _is_scanning:
         return {"status": "already_scanning", "progress": _scan_progress}
-    
+
     background_tasks.add_task(_run_scan_background)
     return {"status": "scan_started"}
 
@@ -95,7 +108,6 @@ async def stop_pipeline():
 @router.post("/clear-index")
 async def clear_index():
     """Clear all indexed data and reset the pipeline."""
-    global _is_scanning
     if _is_scanning:
         return {"status": "cannot_clear_while_scanning"}
 
@@ -122,11 +134,8 @@ async def clear_index():
 @router.post("/clear-stage/{stage}")
 async def clear_stage(stage: str):
     """Clear data for a single pipeline stage, allowing it to be re-processed."""
-    global _is_scanning
     if _is_scanning:
         return {"status": "cannot_clear_while_scanning"}
-
-    from sqlalchemy import update
 
     async with async_session() as session:
         if stage == "geocoding":

@@ -1,15 +1,17 @@
 """Pipeline status and statistics API endpoints."""
 
 import asyncio
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
-from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.database import get_session
-from backend.app.models import Photo, PhotoHash, Face, Caption, Event, StageFailure
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlalchemy import func, select
+
+from backend.app.api import scan as scan_api
+from backend.app.api.deps import SessionDep
+from backend.app.config import settings
+from backend.app.models import Caption, Event, Face, Photo, PhotoHash, StageFailure
+from backend.app.workers import pipeline as pipeline_workers
 from backend.app.workers.queues import pipeline
 from backend.app.workers.worker import pipeline_logs
-from backend.app.config import settings
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 
@@ -17,9 +19,6 @@ router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 @router.get("/status")
 async def get_pipeline_status():
     """Get current pipeline status."""
-    from backend.app.api import scan as scan_api
-    from backend.app.workers import pipeline as pipeline_workers
-
     queue_info = pipeline.get_queue_info()
     queue_sizes = pipeline.get_queue_sizes()
     has_work = any(size > 0 for size in queue_sizes.values())
@@ -49,7 +48,7 @@ async def get_pipeline_status():
 
 
 @router.get("/failures")
-async def get_stage_failures(session: AsyncSession = Depends(get_session)):
+async def get_stage_failures(session: SessionDep):
     """List photos with a permanently-failed pipeline stage."""
     result = await session.execute(
         select(StageFailure, Photo.file_path, Photo.file_name)
@@ -70,20 +69,28 @@ async def get_stage_failures(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/processing-stats")
-async def get_processing_stats(session: AsyncSession = Depends(get_session)):
+async def get_processing_stats(session: SessionDep):
     """Get photo processing completion stats from the database.
 
     Completion is queried from actual DB state, not inferred from queue sizes.
     This gives accurate progress even during initial scan when not all photos
     have been queued yet.
     """
-    total = await session.execute(select(func.count(Photo.file_hash)))
-    total_all = total.scalar() or 0
-    videos = (
+    # The pipeline page polls this every few seconds, so each table is read
+    # once with all its counts together rather than once per figure.
+    total_all, videos, exif_completed, geo_total, geo_completed = (
         await session.execute(
-            select(func.count(Photo.file_hash)).where(Photo.is_video == True)  # noqa: E712
+            select(
+                func.count(),
+                func.count().filter(Photo.is_video == True),  # noqa: E712
+                func.count().filter(
+                    (Photo.camera_make.is_not(None)) | (Photo.date_taken.is_not(None))
+                ),
+                func.count().filter(Photo.gps_latitude.is_not(None)),
+                func.count().filter(Photo.location_city.is_not(None)),
+            ).select_from(Photo)
         )
-    ).scalar() or 0
+    ).one()
     # Image-only stages apply to photos only; videos never reach them, so
     # counting them in the denominator would peg those stages below 100%.
     total_photos = total_all - videos
@@ -93,33 +100,16 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
     failures_result = await session.execute(
         select(StageFailure.stage, func.count()).group_by(StageFailure.stage)
     )
-    failed_by_stage: dict[str, int] = {stage: count for stage, count in failures_result.all()}
+    failed_by_stage: dict[str, int] = dict(failures_result.tuples().all())
 
-    def get_stage_status(enabled: bool, queued: int, completed: int, total: int) -> str:
+    def get_stage_status(enabled: bool, queued: int) -> str:
         if not enabled:
             return "disabled"
-        if queued > 0:
-            return "processing"
-        if completed >= total and total > 0:
-            return "done"
-        return "done"
+        return "processing" if queued > 0 else "done"
 
-    # EXIF: count photos that have camera_make OR date_taken
     exif_queued = queue_sizes.get("exif", 0)
-    exif_completed = (await session.execute(
-        select(func.count(Photo.file_hash)).where(
-            (Photo.camera_make.is_not(None)) | (Photo.date_taken.is_not(None))
-        )
-    )).scalar() or 0
-
     # Geocoding: only photos with GPS are eligible
     geo_queued = queue_sizes.get("geocoding", 0)
-    geo_total = (await session.execute(
-        select(func.count(Photo.file_hash)).where(Photo.gps_latitude.is_not(None))
-    )).scalar() or 0
-    geo_completed = (await session.execute(
-        select(func.count(Photo.file_hash)).where(Photo.location_city.is_not(None))
-    )).scalar() or 0
 
     # Thumbnails/posters apply to photos AND videos, so use the full total.
     thumbs_queued = queue_sizes.get("thumbnails", 0)
@@ -131,29 +121,35 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
 
     # Hashing: count PhotoHash rows
     hash_queued = queue_sizes.get("hashing", 0)
-    hash_completed = (await session.execute(
-        select(func.count(PhotoHash.file_hash))
-    )).scalar() or 0
+    hash_completed = (
+        await session.execute(select(func.count(PhotoHash.file_hash)))
+    ).scalar() or 0
 
-    # Faces: count distinct photos that have been processed (any Face row, including markers)
+    # Faces: distinct photos processed (any Face row, including no-face markers)
+    # and distinct photos with an actual detected face.
     faces_queued = queue_sizes.get("faces", 0)
-    faces_with_detected = (await session.execute(
-        select(func.count(func.distinct(Face.file_hash))).where(Face.encoding.is_not(None))
-    )).scalar() or 0
-    faces_processed = (await session.execute(
-        select(func.count(func.distinct(Face.file_hash)))
-    )).scalar() or 0
-    faces_completed = max(faces_processed, total_photos - faces_queued) if faces_queued > 0 else faces_processed
+    faces_processed = (
+        await session.execute(select(func.count(func.distinct(Face.file_hash))))
+    ).scalar() or 0
+    faces_with_detected = (
+        await session.execute(
+            select(func.count(func.distinct(Face.file_hash))).where(Face.encoding.is_not(None))
+        )
+    ).scalar() or 0
+    faces_completed = (
+        max(faces_processed, total_photos - faces_queued) if faces_queued > 0 else faces_processed
+    )
 
-    # Captioning: count Caption rows
+    # Captioning: Caption rows, and those with actual text
     caption_queued = queue_sizes.get("captioning", 0)
-    captions_generated = (await session.execute(
-        select(func.count(Caption.file_hash)).where(Caption.caption.is_not(None))
-    )).scalar() or 0
-    caption_processed = (await session.execute(
-        select(func.count(Caption.file_hash))
-    )).scalar() or 0
-    caption_completed = max(caption_processed, total_photos - caption_queued) if caption_queued > 0 else caption_processed
+    caption_processed, captions_generated = (
+        await session.execute(select(func.count(), func.count(Caption.caption)).select_from(Caption))
+    ).one()
+    caption_completed = (
+        max(caption_processed, total_photos - caption_queued)
+        if caption_queued > 0
+        else caption_processed
+    )
 
     # Events: batch-processed
     event_count = (await session.execute(select(func.count(Event.event_id)))).scalar() or 0
@@ -170,42 +166,42 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
                 "enabled": True,
             },
             "exif": {
-                "status": get_stage_status(True, exif_queued, exif_completed, total_photos),
+                "status": get_stage_status(True, exif_queued),
                 "queued": exif_queued,
                 "completed": exif_completed,
                 "total": total_photos,
                 "enabled": True,
             },
             "geocoding": {
-                "status": get_stage_status(settings.ENABLE_GEOCODING, geo_queued, geo_completed, geo_total),
+                "status": get_stage_status(settings.ENABLE_GEOCODING, geo_queued),
                 "queued": geo_queued if settings.ENABLE_GEOCODING else 0,
                 "completed": geo_completed,
                 "total": geo_total,
                 "enabled": settings.ENABLE_GEOCODING,
             },
             "thumbnails": {
-                "status": get_stage_status(True, thumbs_queued, thumbs_completed, total_all),
+                "status": get_stage_status(True, thumbs_queued),
                 "queued": thumbs_queued,
                 "completed": thumbs_completed,
                 "total": total_all,
                 "enabled": True,
             },
             "motion_photos": {
-                "status": get_stage_status(True, motion_queued, motion_completed, total_photos),
+                "status": get_stage_status(True, motion_queued),
                 "queued": motion_queued,
                 "completed": motion_completed,
                 "total": total_photos,
                 "enabled": True,
             },
             "hashing": {
-                "status": get_stage_status(True, hash_queued, hash_completed, total_photos),
+                "status": get_stage_status(True, hash_queued),
                 "queued": hash_queued,
                 "completed": hash_completed,
                 "total": total_photos,
                 "enabled": True,
             },
             "faces": {
-                "status": get_stage_status(settings.ENABLE_FACE_DETECTION, faces_queued, faces_completed, total_photos),
+                "status": get_stage_status(settings.ENABLE_FACE_DETECTION, faces_queued),
                 "queued": faces_queued if settings.ENABLE_FACE_DETECTION else 0,
                 "completed": faces_completed,
                 "total": total_photos,
@@ -213,7 +209,7 @@ async def get_processing_stats(session: AsyncSession = Depends(get_session)):
                 "faces_found": faces_with_detected,
             },
             "captioning": {
-                "status": get_stage_status(settings.ENABLE_CAPTIONING, caption_queued, caption_completed, total_photos),
+                "status": get_stage_status(settings.ENABLE_CAPTIONING, caption_queued),
                 "queued": caption_queued if settings.ENABLE_CAPTIONING else 0,
                 "completed": caption_completed,
                 "total": total_photos,

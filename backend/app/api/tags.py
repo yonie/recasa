@@ -1,37 +1,25 @@
 """Tags API endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Annotated
 
-from backend.app.database import get_session
-from backend.app.models import Photo, Tag, PhotoTag
-from backend.app.schemas.photo import PhotoPage, PhotoSummary
+from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import func, select
+
+from backend.app.api.deps import Page, PageSize, SessionDep
+from backend.app.api.responses import json_response
+from backend.app.models import Photo, PhotoTag, Tag
+from backend.app.queries.photos import NEWEST_FIRST, VISIBLE, photo_page, summary_select
+from backend.app.queries.tags import tag_counts_query
+from backend.app.schemas.photo import PhotoPage
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
 
 
-def _photo_to_summary(photo: Photo) -> PhotoSummary:
-    return PhotoSummary(
-        file_hash=photo.file_hash,
-        file_path=photo.file_path,
-        file_name=photo.file_name,
-        file_size=photo.file_size,
-        mime_type=photo.mime_type,
-        width=photo.width,
-        height=photo.height,
-        date_taken=photo.date_taken,
-        is_favorite=photo.is_favorite,
-        thumbnail_url=f"/api/photos/{photo.file_hash}/thumbnail/600",
-        has_live_photo=bool(photo.live_photo_video or photo.motion_photo),
-    )
-
-
 @router.get("")
 async def list_tags(
-    limit: int = Query(300, ge=1, le=1000),
-    q: str | None = Query(None, max_length=100),
-    session: AsyncSession = Depends(get_session),
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 300,
+    q: Annotated[str | None, Query(max_length=100)] = None,
 ):
     """List the most-used tags (optionally filtered by name), with photo counts.
 
@@ -39,58 +27,19 @@ async def list_tags(
     this endpoint a multi-MB response and the page a 74k-button DOM. Clients
     get the top `limit` by count plus the total, and search server-side.
     """
-    counts = (
-        select(
-            PhotoTag.tag_id,
-            func.count(PhotoTag.file_hash).label("count"),
-        )
-        .join(Photo, Photo.file_hash == PhotoTag.file_hash)
-        .where(Photo.flagged_for_removal == False)  # noqa: E712
-        .group_by(PhotoTag.tag_id)
-        .subquery()
-    )
-
-    query = (
-        select(Tag.tag_id, Tag.name, Tag.category, counts.c.count)
-        .join(counts, counts.c.tag_id == Tag.tag_id)
-        .order_by(counts.c.count.desc(), Tag.name.asc())
-        .limit(limit)
-    )
-    total_query = (
-        select(func.count(func.distinct(PhotoTag.tag_id)))
-        .join(Photo, Photo.file_hash == PhotoTag.file_hash)
-        .where(Photo.flagged_for_removal == False)  # noqa: E712
-    )
-    if q:
-        pattern = f"%{q}%"
-        query = query.where(Tag.name.ilike(pattern))
-        total_query = (
-            select(func.count(func.distinct(PhotoTag.tag_id)))
-            .join(Tag, Tag.tag_id == PhotoTag.tag_id)
-            .join(Photo, Photo.file_hash == PhotoTag.file_hash)
-            .where(Tag.name.ilike(pattern))
-            .where(Photo.flagged_for_removal == False)  # noqa: E712
-        )
-
-    total = (await session.execute(total_query)).scalar() or 0
-    result = await session.execute(query)
-
-    return {
-        "items": [
-            {
-                "tag_id": row.tag_id,
-                "name": row.name,
-                "category": row.category,
-                "count": row.count,
-            }
-            for row in result.all()
-        ],
-        "total": total,
-    }
+    rows = (await session.execute(tag_counts_query(limit=limit, name_contains=q))).all()
+    # Rows of a tag id that has no tags row sort last and only carry the
+    # total; see tag_counts_query.
+    items = [
+        {"tag_id": r.tag_id, "name": r.name, "category": r.category, "count": r.count}
+        for r in rows
+        if r.known
+    ]
+    return json_response({"items": items, "total": rows[0].total if rows else 0})
 
 
 @router.get("/{tag_id}")
-async def get_tag(tag_id: int, session: AsyncSession = Depends(get_session)):
+async def get_tag(tag_id: int, session: SessionDep):
     """Get a single tag with its photo count."""
     tag = await session.get(Tag, tag_id)
     if not tag:
@@ -100,8 +49,7 @@ async def get_tag(tag_id: int, session: AsyncSession = Depends(get_session)):
         await session.execute(
             select(func.count(PhotoTag.file_hash))
             .join(Photo, Photo.file_hash == PhotoTag.file_hash)
-            .where(PhotoTag.tag_id == tag_id)
-            .where(Photo.flagged_for_removal == False)  # noqa: E712
+            .where(PhotoTag.tag_id == tag_id, VISIBLE)
         )
     ).scalar() or 0
 
@@ -111,35 +59,20 @@ async def get_tag(tag_id: int, session: AsyncSession = Depends(get_session)):
 @router.get("/{tag_id}/photos", response_model=PhotoPage)
 async def get_tag_photos(
     tag_id: int,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(get_session),
+    session: SessionDep,
+    page: Page = 1,
+    page_size: PageSize = 50,
 ):
     """Get all photos with a specific tag."""
     tag = await session.get(Tag, tag_id)
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
-    query = (
-        select(Photo)
+    stmt = (
+        summary_select()
         .join(PhotoTag, PhotoTag.file_hash == Photo.file_hash)
-        .where(PhotoTag.tag_id == tag_id)
-        .where(Photo.flagged_for_removal == False)  # noqa: E712
+        .where(PhotoTag.tag_id == tag_id, VISIBLE)
     )
-
-    count_query = select(func.count()).select_from(query.subquery())
-    total = (await session.execute(count_query)).scalar() or 0
-
-    offset = (page - 1) * page_size
-    query = query.order_by(Photo.date_taken.desc().nullslast()).offset(offset).limit(page_size)
-
-    result = await session.execute(query)
-    photos = result.scalars().all()
-
-    return PhotoPage(
-        items=[_photo_to_summary(p) for p in photos],
-        total=total,
-        page=page,
-        page_size=page_size,
-        has_more=offset + page_size < total,
+    return await photo_page(
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
     )

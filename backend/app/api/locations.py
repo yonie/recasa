@@ -2,62 +2,43 @@
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.database import get_session
+from backend.app.api.deps import Page, PageSize, SessionDep
+from backend.app.api.responses import json_response
 from backend.app.models import Photo
-from backend.app.schemas.photo import PhotoPage, PhotoSummary
+from backend.app.queries.photos import (
+    NEWEST_FIRST,
+    VISIBLE,
+    photo_page,
+    summary_select,
+    thumbnail_url,
+)
+from backend.app.schemas.photo import PhotoPage
 
 router = APIRouter(prefix="/api/locations", tags=["locations"])
 
-
-def _photo_to_summary(photo: Photo) -> PhotoSummary:
-    return PhotoSummary(
-        file_hash=photo.file_hash,
-        file_path=photo.file_path,
-        file_name=photo.file_name,
-        file_size=photo.file_size,
-        mime_type=photo.mime_type,
-        width=photo.width,
-        height=photo.height,
-        date_taken=photo.date_taken,
-        is_favorite=photo.is_favorite,
-        thumbnail_url=f"/api/photos/{photo.file_hash}/thumbnail/600",
-        has_live_photo=bool(photo.live_photo_video or photo.motion_photo),
-    )
-
-
-class LocationCluster:
-    """Not a Pydantic model - just used internally."""
-    pass
+# Map points and trail stops group photos on a grid of this many decimal
+# degrees (2 places is about 1.1 km).
+CLUSTER_PRECISION = 2
+MAX_PHOTOS_PER_STOP = 4
 
 
 @router.get("/countries")
-async def list_countries(session: AsyncSession = Depends(get_session)):
+async def list_countries(session: SessionDep):
     """List all countries with photo counts."""
     result = await session.execute(
-        select(
-            Photo.location_country,
-            func.count(Photo.file_hash).label("count"),
-        )
-        .where(Photo.location_country.is_not(None))
-        .where(Photo.flagged_for_removal == False)  # noqa: E712
+        select(Photo.location_country, func.count(Photo.file_hash).label("count"))
+        .where(Photo.location_country.is_not(None), VISIBLE)
         .group_by(Photo.location_country)
         .order_by(func.count(Photo.file_hash).desc())
     )
-    return [
-        {"country": row.location_country, "count": row.count}
-        for row in result.all()
-    ]
+    return [{"country": row.location_country, "count": row.count} for row in result]
 
 
 @router.get("/cities")
-async def list_cities(
-    country: str | None = None,
-    session: AsyncSession = Depends(get_session),
-):
+async def list_cities(session: SessionDep, country: str | None = None):
     """List all cities with photo counts, optionally filtered by country."""
     query = (
         select(
@@ -65,84 +46,68 @@ async def list_cities(
             Photo.location_country,
             func.count(Photo.file_hash).label("count"),
         )
-        .where(Photo.location_city.is_not(None))
-        .where(Photo.flagged_for_removal == False)  # noqa: E712
+        .where(Photo.location_city.is_not(None), VISIBLE)
         .group_by(Photo.location_city, Photo.location_country)
         .order_by(func.count(Photo.file_hash).desc())
     )
-
     if country:
         query = query.where(Photo.location_country == country)
 
     result = await session.execute(query)
     return [
-        {
-            "city": row.location_city,
-            "country": row.location_country,
-            "count": row.count,
-        }
-        for row in result.all()
+        {"city": row.location_city, "country": row.location_country, "count": row.count}
+        for row in result
     ]
 
 
+def _grid_key(latitude: float, longitude: float) -> str:
+    return f"{round(latitude, CLUSTER_PRECISION)},{round(longitude, CLUSTER_PRECISION)}"
+
+
 @router.get("/map-points")
-async def get_map_points(
-    session: AsyncSession = Depends(get_session),
-):
+async def get_map_points(session: SessionDep):
     """Get all photos with GPS coordinates for map display.
 
     Returns clustered points with representative photo for each cluster.
     For large libraries, photos at the same approximate location are grouped.
     """
-    result = await session.execute(
+    rows = await session.execute(
         select(
             Photo.file_hash,
-            Photo.file_name,
             Photo.gps_latitude,
             Photo.gps_longitude,
             Photo.location_city,
             Photo.location_country,
-            Photo.date_taken,
         )
-        .where(
-            Photo.gps_latitude.is_not(None),
-            Photo.gps_longitude.is_not(None),
-            Photo.flagged_for_removal == False,  # noqa: E712
-        )
-        .order_by(Photo.date_taken.desc().nullslast())
+        .where(Photo.gps_latitude.is_not(None), Photo.gps_longitude.is_not(None), VISIBLE)
+        .order_by(*NEWEST_FIRST)
     )
-    rows = result.all()
 
-    # Simple grid-based clustering for map display
-    # Group photos within ~1km of each other
-    CLUSTER_PRECISION = 2  # decimal places (~1.1km resolution)
+    # The newest photo in each grid cell represents it.
     clusters: dict[str, dict] = {}
-
-    for row in rows:
-        lat_key = round(row.gps_latitude, CLUSTER_PRECISION)
-        lon_key = round(row.gps_longitude, CLUSTER_PRECISION)
-        key = f"{lat_key},{lon_key}"
-
-        if key not in clusters:
-            clusters[key] = {
-                "latitude": row.gps_latitude,
-                "longitude": row.gps_longitude,
+    for file_hash, lat, lon, city, country in rows:
+        key = _grid_key(lat, lon)
+        cluster = clusters.get(key)
+        if cluster is None:
+            cluster = clusters[key] = {
+                "latitude": lat,
+                "longitude": lon,
                 "count": 0,
-                "representative_hash": row.file_hash,
-                "city": row.location_city,
-                "country": row.location_country,
-                "thumbnail_url": f"/api/photos/{row.file_hash}/thumbnail/200",
+                "representative_hash": file_hash,
+                "city": city,
+                "country": country,
+                "thumbnail_url": thumbnail_url(file_hash, 200),
             }
-        clusters[key]["count"] += 1
+        cluster["count"] += 1
 
-    return list(clusters.values())
+    return json_response(list(clusters.values()))
 
 
 @router.get("/trail")
 async def get_trail(
+    session: SessionDep,
     date_from: date | None = None,
     date_to: date | None = None,
-    session: AsyncSession = Depends(get_session),
 ):
     """Get chronological trail of geotagged photos grouped by day and location.
 
@@ -162,7 +127,7 @@ async def get_trail(
             Photo.gps_latitude.is_not(None),
             Photo.gps_longitude.is_not(None),
             Photo.date_taken.is_not(None),
-            Photo.flagged_for_removal == False,  # noqa: E712
+            VISIBLE,
         )
         .order_by(Photo.date_taken.asc())
     )
@@ -170,74 +135,46 @@ async def get_trail(
         query = query.where(Photo.date_taken >= date_from.isoformat())
     if date_to:
         query = query.where(Photo.date_taken < (date_to.isoformat() + "T23:59:59"))
-    result = await session.execute(query)
-    rows = result.all()
 
-    # Group by day + approximate location (~1km grid)
-    CLUSTER_PRECISION = 2
-    MAX_PHOTOS_PER_STOP = 4
+    # Group by day + approximate location
     stops: dict[str, dict] = {}
-
-    for row in rows:
-        day = row.date_taken.strftime("%Y-%m-%d")
-        lat_key = round(row.gps_latitude, CLUSTER_PRECISION)
-        lon_key = round(row.gps_longitude, CLUSTER_PRECISION)
-        key = f"{day}|{lat_key},{lon_key}"
-
-        if key not in stops:
-            stops[key] = {
+    for file_hash, lat, lon, city, country, taken in await session.execute(query):
+        day = taken.strftime("%Y-%m-%d")
+        key = f"{day}|{_grid_key(lat, lon)}"
+        stop = stops.get(key)
+        if stop is None:
+            stop = stops[key] = {
                 "date": day,
-                "latitude": row.gps_latitude,
-                "longitude": row.gps_longitude,
-                "city": row.location_city,
-                "country": row.location_country,
+                "latitude": lat,
+                "longitude": lon,
+                "city": city,
+                "country": country,
                 "photos": [],
                 "total_count": 0,
             }
-        stops[key]["total_count"] += 1
-        if len(stops[key]["photos"]) < MAX_PHOTOS_PER_STOP:
-            stops[key]["photos"].append({
-                "file_hash": row.file_hash,
-                "thumbnail_url": f"/api/photos/{row.file_hash}/thumbnail/200",
-            })
+        stop["total_count"] += 1
+        if len(stop["photos"]) < MAX_PHOTOS_PER_STOP:
+            stop["photos"].append(
+                {"file_hash": file_hash, "thumbnail_url": thumbnail_url(file_hash, 200)}
+            )
 
-    # Return sorted by date
-    trail = sorted(stops.values(), key=lambda s: s["date"])
-    return trail
+    return json_response(sorted(stops.values(), key=lambda s: s["date"]))
 
 
 @router.get("/photos", response_model=PhotoPage)
 async def get_location_photos(
+    session: SessionDep,
     country: str | None = None,
     city: str | None = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(get_session),
+    page: Page = 1,
+    page_size: PageSize = 50,
 ):
     """Get photos from a specific location."""
-    query = select(Photo).where(
-        Photo.location_city.is_not(None),
-        Photo.flagged_for_removal == False,  # noqa: E712
-    )
-
+    stmt = summary_select().where(Photo.location_city.is_not(None), VISIBLE)
     if country:
-        query = query.where(Photo.location_country == country)
+        stmt = stmt.where(Photo.location_country == country)
     if city:
-        query = query.where(Photo.location_city == city)
-
-    count_query = select(func.count()).select_from(query.subquery())
-    total = (await session.execute(count_query)).scalar() or 0
-
-    offset = (page - 1) * page_size
-    query = query.order_by(Photo.date_taken.desc().nullslast()).offset(offset).limit(page_size)
-
-    result = await session.execute(query)
-    photos = result.scalars().all()
-
-    return PhotoPage(
-        items=[_photo_to_summary(p) for p in photos],
-        total=total,
-        page=page,
-        page_size=page_size,
-        has_more=offset + page_size < total,
+        stmt = stmt.where(Photo.location_city == city)
+    return await photo_page(
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
     )
