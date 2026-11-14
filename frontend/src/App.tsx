@@ -29,6 +29,9 @@ const pageLoaders = {
   pipeline: () => import("./pages/pipeline"),
   tags: () => import("./pages/Tags"),
   exportImport: () => import("./pages/ExportImport"),
+  // Not a route of its own: the Locations page loads it lazily. Preloading it
+  // too saves a second chunk round-trip on the first visit to the map.
+  map: () => import("./pages/map/MapView"),
 };
 
 /** A lazily loaded named export. */
