@@ -45,7 +45,7 @@ export function TogetherDetail() {
             <div className="ml-auto">
               <CollageButton
                 url={collageUrl.together(persons.map((p) => p.person_id))}
-                label={`${groupNames(persons)} — Collage`}
+                label={`${groupNames(persons)}: Collage`}
                 photoCount={photos.length}
               />
             </div>

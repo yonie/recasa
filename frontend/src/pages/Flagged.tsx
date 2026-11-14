@@ -43,7 +43,7 @@ export function Flagged() {
           Flagged for removal
         </PageTitle>
         <p className="text-xs text-gray-500 mt-0.5">
-          Recasa never deletes files. Remove these from disk yourself — the index cleans up
+          Recasa never deletes files. Remove these from disk yourself. The index cleans up
           automatically on the next sweep.
         </p>
       </PageHeader>
@@ -69,7 +69,7 @@ export function Flagged() {
               onClick={() => handleUnflag(photo)}
               className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border border-gray-200
                          text-gray-600 hover:bg-gray-100 transition-colors"
-              title="Remove flag — photo returns to normal views"
+              title="Remove flag (photo returns to normal views)"
             >
               <X className="w-3.5 h-3.5" />
               Unflag

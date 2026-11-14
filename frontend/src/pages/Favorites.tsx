@@ -41,7 +41,7 @@ export function Favorites() {
           <div className="ml-auto">
             <CollageButton
               url={collageUrl.favorites()}
-              label="Favorites — Collage"
+              label="Favorites: Collage"
               photoCount={photos.length}
             />
           </div>

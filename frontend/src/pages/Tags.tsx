@@ -53,7 +53,7 @@ export function TagDetail() {
             <div className="ml-auto">
               <CollageButton
                 url={collageUrl.tag(tag.name)}
-                label={`${tag.name} — Collage`}
+                label={`${tag.name}: Collage`}
                 photoCount={tag.count}
               />
             </div>

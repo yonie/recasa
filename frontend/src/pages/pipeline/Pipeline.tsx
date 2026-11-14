@@ -96,7 +96,7 @@ export function Pipeline() {
       {wsState === "lost" && (
         <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 flex items-center gap-2 text-sm text-amber-700">
           <AlertTriangle className="w-4 h-4 shrink-0" />
-          Live updates interrupted — reconnecting automatically. Shown status may lag a few seconds.
+          Live updates interrupted, reconnecting automatically. Shown status may lag a few seconds.
         </div>
       )}
 

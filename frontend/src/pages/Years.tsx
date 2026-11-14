@@ -85,7 +85,7 @@ function YearDetail({ year, photoCount }: { year: number; photoCount: number }) 
         </button>
         <h1 className="text-lg font-semibold">{year}</h1>
         <div className="ml-auto">
-          <CollageButton url={collageUrl.year(year)} label={`${year} — Collage`} photoCount={photoCount} />
+          <CollageButton url={collageUrl.year(year)} label={`${year}: Collage`} photoCount={photoCount} />
         </div>
       </div>
 

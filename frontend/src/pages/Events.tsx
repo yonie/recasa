@@ -71,7 +71,7 @@ export function EventDetail() {
           <div className="ml-auto">
             <CollageButton
               url={collageUrl.event(event.event_id)}
-              label={`${event.name} — Collage`}
+              label={`${event.name}: Collage`}
               photoCount={photos.length}
             />
           </div>

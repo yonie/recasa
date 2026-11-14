@@ -115,7 +115,7 @@ export function CollageButton({ url, label = "Collage", photoCount }: CollagePop
                   }}
                   disabled={loading}
                   className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50"
-                  title="Shuffle — different combination"
+                  title="Shuffle (different combination)"
                 >
                   <RefreshCw className={`w-4 h-4 text-gray-500 ${loading ? "animate-spin" : ""}`} />
                 </button>
@@ -150,7 +150,7 @@ export function CollageButton({ url, label = "Collage", photoCount }: CollagePop
                     title={
                       available
                         ? `${size}x${size} (${size * size} photos)`
-                        : `Not enough photos — need ${size * size}, have ${photoCount}`
+                        : `Not enough photos: need ${size * size}, have ${photoCount}`
                     }
                     className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
                       !available

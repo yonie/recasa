@@ -10,7 +10,7 @@ export function FailuresDrawer({ failures }: { failures: StageFailureItem[] }) {
         <Eye className="w-4 h-4 text-amber-600" />
         <span className="text-sm font-medium text-amber-800">Files that could not be processed</span>
         <span className="text-xs text-amber-600 ml-auto">
-          won't be retried — fix or delete the file, or use a rebuild below
+          won't be retried: fix or delete the file, or use a rebuild below
         </span>
       </div>
       <div className="max-h-64 overflow-y-auto">

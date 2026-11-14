@@ -122,7 +122,7 @@ function StageRow({ name, stage }: { name: StageName; stage: StageStats }) {
         {stage.failed > 0 ? (
           <span className="font-medium text-amber-600">{fmt(stage.failed)}</span>
         ) : (
-          <span className="text-gray-200">—</span>
+          <span className="text-gray-200">-</span>
         )}
       </td>
       <td className="px-3 py-2">

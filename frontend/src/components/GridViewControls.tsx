@@ -32,8 +32,8 @@ function GridFitToggle() {
       className={BUTTON}
       title={
         square
-          ? "Showing cropped squares — click for full photos"
-          : "Showing full photos — click for cropped squares"
+          ? "Showing cropped squares (click for full photos)"
+          : "Showing full photos (click for cropped squares)"
       }
     >
       {square ? (

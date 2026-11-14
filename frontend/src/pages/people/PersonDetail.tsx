@@ -68,7 +68,7 @@ export function PersonDetail() {
           <div className="ml-auto flex items-center gap-1">
             <CollageButton
               url={collageUrl.person(person.person_id)}
-              label={`${personName(person)} — Collage`}
+              label={`${personName(person)}: Collage`}
               photoCount={photos.length}
             />
             <button

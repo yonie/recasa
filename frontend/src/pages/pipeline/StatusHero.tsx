@@ -100,7 +100,7 @@ function StateText({ stats, isActive }: { stats: PipelineStats; isActive: boolea
       </div>
       <div className="text-sm text-gray-500 truncate">
         {isActive && !scanning ? (
-          "Working through the processing queues — the app stays usable meanwhile."
+          "Working through the processing queues (the app stays usable meanwhile)."
         ) : scanning ? (
           "Sweeping the library for added, changed or removed files."
         ) : watcher && watcher.sweep_interval > 0 ? (
@@ -112,9 +112,9 @@ function StateText({ stats, isActive }: { stats: PipelineStats; isActive: boolea
                 {" "}Last check: {formatAgo(watcher.last_scan_at)}
                 {watcher.last_scan_stats &&
                   (watcher.last_scan_stats.new > 0 ? (
-                    <> — {watcher.last_scan_stats.new} new photos</>
+                    <>, {watcher.last_scan_stats.new} new photos</>
                   ) : (
-                    <> — nothing new</>
+                    <>, nothing new</>
                   ))}
               </>
             )}
