@@ -8,6 +8,7 @@ docs/TESTING.md, "Comparing two versions on a copy of the real index".
   golden.py capture  BASE urls.txt OUT  # fetch every URL, store normalized result
   golden.py diff     A B                # compare two captures
 """
+import difflib
 import hashlib
 import json
 import sys
@@ -209,7 +210,10 @@ def diff(a, b):
         if ta != tb:
             bad += 1
             print("DIFF", ta.splitlines()[0])
-            import difflib
+            if max(len(ta), len(tb)) > 200_000:
+                # difflib is quadratic; a whole-library timeline would stall it.
+                print(f"    (large response: {len(ta)} -> {len(tb)} chars, not diffed)")
+                continue
             for line in list(difflib.unified_diff(ta.splitlines(), tb.splitlines(), lineterm="", n=1))[2:30]:
                 print("   ", line[:200])
     ta = json.loads((a / "timings.json").read_text())
