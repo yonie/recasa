@@ -1,7 +1,7 @@
 # Recasa
 
 **A self-hosted photo & video manager that runs entirely on your own machine.**
-Browse your library by time, people, places, events, and tags — with face
+Browse your library by time, people, places, events, and tags, with face
 detection, duplicate finding, and AI tagging all processed locally. Nothing is
 ever uploaded; your photos are mounted read-only into the container.
 
@@ -35,7 +35,7 @@ you can jump straight to the era you're looking for.
 
 ### Hero Trail
 
-Watch your travels replay across the map in chronological order — the route
+Watch your travels replay across the map in chronological order: the route
 draws itself stop by stop, with the photos from each place, scrubbable by date.
 
 ![Hero Trail replaying a route across the map](docs/screenshots/hero-trail.jpg)
@@ -44,7 +44,7 @@ draws itself stop by stop, with the photos from each place, scrubbable by date.
 
 Collect photos for printing the way you favorite them, review print quality
 (resolution and effective DPI at common sizes) per photo, then download a
-print-ready zip — HEIC converted to JPEG — to upload to any print service.
+print-ready zip (HEIC converted to JPEG) to upload to any print service.
 
 ![To Print list with per-photo print-quality details](docs/screenshots/to-print.jpg)
 
@@ -85,37 +85,37 @@ docker compose up -d
 
 Open http://localhost:8080. Recasa scans your library and indexes it in the
 background; progress is shown on the Pipeline page. New, changed, and removed
-files are picked up automatically thereafter — including on Docker Desktop,
+files are picked up automatically thereafter, including on Docker Desktop,
 where filesystem events don't reach the container.
 
 ## All features
 
-- **Timeline** — photos and videos grouped by month and year
-- **Videos** — standalone videos indexed with poster frames and duration, on
+- **Timeline**: photos and videos grouped by month and year
+- **Videos**: standalone videos indexed with poster frames and duration, on
   their own page and inline in every view (Apple Live Photo movies are detected
   and kept attached to their photo, not listed separately)
-- **People** — face detection and clustering into renameable persons, plus
+- **People**: face detection and clustering into renameable persons, plus
   "appears together" groups
-- **Events** — automatic grouping by time and location
-- **Map** — geotagged photos on OpenStreetMap, with a Hero Trail mode that
+- **Events**: automatic grouping by time and location
+- **Map**: geotagged photos on OpenStreetMap, with a Hero Trail mode that
   replays your route chronologically
-- **Search** — file names, locations, tags, captions, people, and dates
+- **Search**: file names, locations, tags, captions, people, and dates
   (e.g. "2013 august")
-- **Tags** — AI-generated scene/object tags (requires Ollama)
-- **Captions** — natural-language descriptions per photo (requires Ollama)
-- **Duplicates** — perceptual-hash grouping (pHash/aHash/dHash), flag a copy
+- **Tags**: AI-generated scene/object tags (requires Ollama)
+- **Captions**: natural-language descriptions per photo (requires Ollama)
+- **Duplicates**: perceptual-hash grouping (pHash/aHash/dHash), flag a copy
   right from the group
-- **Favorites** — star photos from the grid or viewer
-- **To Print** — collect, quality-check, and export a print-ready zip
-- **Flag for removal** — mark photos to delete yourself; they're hidden from all
+- **Favorites**: star photos from the grid or viewer
+- **To Print**: collect, quality-check, and export a print-ready zip
+- **Flag for removal**: mark photos to delete yourself; they're hidden from all
   views and listed with their paths (recasa never deletes your files)
-- **Folders** — browse by original directory structure
-- **Years** — year cards with preview photos
-- **Live Photos** — hover-to-play for Apple Live Photos and Google Motion Photos
-- **EXIF** — camera, lens, exposure, GPS metadata
-- **Reverse geocoding** — GPS to city/country names, offline, no API keys
-- **Grid views** — three thumbnail sizes; cropped squares or full photos
-- **Collages** — generate a shareable collage from any view
+- **Folders**: browse by original directory structure
+- **Years**: year cards with preview photos
+- **Live Photos**: hover-to-play for Apple Live Photos and Google Motion Photos
+- **EXIF**: camera, lens, exposure, GPS metadata
+- **Reverse geocoding**: GPS to city/country names, offline, no API keys
+- **Grid views**: three thumbnail sizes; cropped squares or full photos
+- **Collages**: generate a shareable collage from any view
 
 ## Configuration
 
@@ -126,7 +126,9 @@ All settings go in `.env`:
 | `PHOTOS_PATH` | *(required)* | Path to your photo directory on the host |
 | `RECASA_DATA_PATH` | *(required)* | Host directory for the index: database, thumbnails, previews, face models |
 | `RECASA_PORT` | `8080` | Port for the web UI |
-| `OLLAMA_URL` | `http://ollama:11434` | URL for the Ollama API (optional) |
+| `OLLAMA_URL` | `http://host.docker.internal:11434` | URL for the Ollama API (optional) |
+| `OLLAMA_MODEL` | `qwen3.8:latest` | Vision model used for captions and tags |
+| `MAX_CONCURRENT` | `4` | Photos processed at once; `2` on a Raspberry Pi (see [docs/RASPBERRY-PI.md](docs/RASPBERRY-PI.md)) |
 | `WATCH_INTERVAL` | `300` | How often to check for new files (seconds, `0` disables) |
 | `LOG_LEVEL` | `info` | Logging level (`debug`, `info`, `warning`, `error`) |
 | `PREVIEW_MAX_DIMENSION` | `0` | Long-edge cap for RAW/HEIC previews in px; `0` keeps native resolution |
@@ -134,17 +136,15 @@ All settings go in `.env`:
 
 ### Processing stages
 
-Each stage can be toggled independently. Already-processed photos are skipped on rescan.
+Reading EXIF (camera, GPS, dates), WebP thumbnails at 200/600/1200px, motion
+photo extraction and perceptual hashing for duplicates always run. Three
+stages can be switched off. Already-processed photos are skipped on rescan.
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `ENABLE_EXIF_EXTRACTION` | `true` | Read camera metadata, GPS, and dates from photos |
 | `ENABLE_GEOCODING` | `true` | Convert GPS coordinates to city/country names (offline) |
-| `ENABLE_THUMBNAILS` | `true` | Generate WebP thumbnails at 200/600/1200px |
-| `ENABLE_MOTION_PHOTOS` | `true` | Extract video from Live Photos and Motion Photos |
-| `ENABLE_HASHING` | `true` | Perceptual hashing for duplicate detection |
 | `ENABLE_FACE_DETECTION` | `true` | Detect faces and cluster them into people |
-| `ENABLE_CAPTIONING` | `false` | Generate AI captions and tags (requires Ollama) |
+| `ENABLE_CAPTIONING` | `true` | Generate AI captions and tags (requires Ollama; photos wait while it is unreachable) |
 
 ### Ollama (optional)
 
@@ -173,7 +173,7 @@ from then on. Originals are never modified, and exports and prints still work
 from the original file.
 
 **Videos:** MP4, MOV, AVI, MKV (poster + metadata always work; in-browser
-playback depends on the codec — modern H.264/H.265 play directly, older
+playback depends on the codec: modern H.264/H.265 play directly, older
 formats offer a download link)
 
 **Live Photos:** Apple (HEIC+MOV paired), Google Motion Photos (embedded MP4)

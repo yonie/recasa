@@ -102,9 +102,10 @@ class PhotoPath(Base):
 class StageFailure(Base):
     """A pipeline stage that failed permanently for a photo.
 
-    Photos with a recorded failure are not re-queued for that stage by scans
-    or startup resume — a stage rebuild, a successful run, or removal of the
-    photo clears the record. Keyed by queue name (QueueType.value).
+    Photos with a recorded failure are not queued or run for that stage by
+    scans, startup resume or the workers. A stage rebuild (clear-stage) or
+    removal of the photo clears the record. Keyed by queue name
+    (QueueType.value).
     """
 
     __tablename__ = "stage_failures"

@@ -36,6 +36,10 @@ services:
       - WATCH_INTERVAL=${WATCH_INTERVAL:-300}
       - LOG_LEVEL=${LOG_LEVEL:-info}
 
+      # RAW/HEIC viewer previews (see README); defaults match the app's.
+      - PREVIEW_MAX_DIMENSION=${PREVIEW_MAX_DIMENSION:-0}
+      - PREVIEW_CONCURRENCY=${PREVIEW_CONCURRENCY:-2}
+
       # Lower this on a small box that also serves (2 on a Raspberry Pi 5);
       # face detection is CPU-bound. See docs/RASPBERRY-PI.md.
       - MAX_CONCURRENT=${MAX_CONCURRENT:-4}

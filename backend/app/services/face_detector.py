@@ -37,7 +37,7 @@ FACE_DET_THRESHOLD = 0.6
 # Minimum face bounding box size (pixels on shorter edge)
 FACE_MIN_SIZE = 40
 
-# Maximum roll angle (degrees) — faces tilted beyond this are filtered
+# Maximum roll angle (degrees): faces tilted beyond this are filtered
 FACE_MAX_ROLL = 45.0
 
 # DBSCAN clustering parameters

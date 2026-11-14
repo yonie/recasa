@@ -18,12 +18,13 @@ docker compose restart recasa    # restart without rebuilding
 
 - Never `docker compose down -v`, and never delete the data directory. Nightly snapshots are in `/mnt/ssd/recasa/backups`.
 - After any recreate, check it is the real index: `docker inspect recasa-recasa-1` must show `/mnt/ssd/recasa/data` on `/data`, and the startup log must not report tens of thousands of photos "needing captioning".
+- Schema changes are additive only (see Migration Strategy). Never drop, rebuild or "reset" the database to get a schema change in.
 
 ### Architecture
 
 - **Backend**: Python FastAPI app in `backend/`
 - **Frontend**: React/Vite/TypeScript app in `frontend/`
-- **Container**: one container with nginx (port 8080) reverse-proxying `/api/` to uvicorn (port 8000) and serving the frontend from `/app/frontend/dist`. The Dockerfile builds the frontend itself, so no host `npm run build` is needed.
+- **Container**: one container with nginx (port 8080) reverse-proxying `/api/` to uvicorn (port 8000) and serving the frontend from `/app/frontend/dist`. nginx also serves generated thumbnails straight from `/data/thumbs` and falls back to the API for anything else. The Dockerfile builds the frontend itself, so no host `npm run build` is needed.
 
 ### Making changes
 
@@ -41,6 +42,7 @@ curl -s http://localhost:7000/api/health
 
 ### Testing
 
+- Unit tests: `python -m pytest backend/tests/unit` (no Docker, network or ML models)
 - Integration tests: `docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit`
 - Consistency test: `docker exec -it recasa-recasa-1 python -m backend.tests.test_consistency`
 - Frontend tests: Located in `frontend/tests/` (Playwright)
@@ -59,20 +61,22 @@ curl -s http://localhost:7000/api/health
 
 ### Processing Stages
 
-Each stage is controlled by a config flag:
+Three stages can be switched off in `.env`; the rest always run:
 
 ```
-ENABLE_EXIF_EXTRACTION=true
 ENABLE_GEOCODING=true
-ENABLE_THUMBNAILS=true
-ENABLE_MOTION_PHOTOS=true
-ENABLE_HASHING=true
-ENABLE_FACE_DETECTION=false
-ENABLE_CAPTIONING=false
+ENABLE_FACE_DETECTION=true
+ENABLE_CAPTIONING=true
 ```
+
+EXIF, thumbnails, motion photos and hashing have no switch: timeline order,
+every grid and duplicate detection depend on them. Older `.env` files may still
+set `ENABLE_EXIF_EXTRACTION`, `ENABLE_THUMBNAILS`, `ENABLE_MOTION_PHOTOS` or
+`ENABLE_HASHING`; nothing reads them, and setting one to `false` is logged as
+ignored at startup.
 
 **Key behaviors:**
-- Even with ALL stages disabled, photos are visible in the app (sorted by file_modified)
+- Even with ALL optional stages disabled, photos are visible in the app (sorted by file_modified)
 - If a stage is enabled, rescan will process photos missing that stage's output
 - If output already exists for a stage, that stage is skipped (not the whole photo!)
 
@@ -99,22 +103,28 @@ Photo enters pipeline:
 
 ### How to Check if Stage Output Exists
 
+These rules live in one place, `backend/app/workers/stages.py`, used by the
+scanner, startup resume and the workers alike. Changing one means
+re-processing (or never processing) part of the library.
+
 | Stage | "Output Exists?" Check |
 |-------|----------------------|
-| EXIF | `camera_make IS NOT NULL` OR `date_taken IS NOT NULL` |
-| Geocoding | `location_city IS NOT NULL` |
-| Thumbnails | File exists: `/data/thumbs/{file_hash}_200.jpg` |
-| Motion Photos | DB field `motion_photo = true` (this is data, not a flag) |
+| EXIF | `camera_make IS NOT NULL` OR `date_taken IS NOT NULL` (a photo without EXIF gets its file date) |
+| Geocoding | `location_city IS NOT NULL` (only applies to photos with `gps_latitude`) |
+| Thumbnails | File exists: `/data/thumbs/{file_hash[:2]}/{file_hash}_200.webp` (written last of the three sizes) |
+| Motion Photos | No check: runs for every photo, a no-op unless `motion_photo` is set and `live_photo_video` is not |
 | Hashing | Record exists in `photo_hashes` table for this file_hash |
-| Faces | Record exists in `faces` table for this file_hash |
-| Captioning | Record exists in `captions` table for this file_hash |
+| Faces | Record exists in `faces` table for this file_hash (a row with NULL `encoding` is the "checked, no faces" marker) |
+| Captioning | Record exists in `captions` table for this file_hash (a row with NULL `caption` is the "done, nothing usable" marker; no row is written while Ollama is unreachable, so the photo is retried) |
+
+Videos only get a poster thumbnail; every other stage skips them.
 
 ### Processing Flow
 
 1. **Scan**: Walk filesystem, add photos to DB (minimal: hash, path, filename, size, file_modified)
-2. **Queue**: For each photo, for each enabled stage, check if output exists. If not → queue for that stage
+2. **Queue**: Queue each photo once, at its first stage that is enabled, applies, has no output and has no recorded failure
 3. **Worker**: Pick `file_hash` from queue, check output existence again (idempotent), process if needed
-4. **Flow**: After stage completes, photo proceeds to next stage in pipeline
+4. **Flow**: After a stage (processed or skipped), the photo proceeds to the next stage: EXIF, geocoding, thumbnails, motion photos, hashing, faces, captioning, then the batch step (face clustering, duplicates, events)
 5. **Dashboard**: Query actual data existence (COUNT where camera_make IS NOT NULL, etc.)
 
 ### No Memory State
@@ -132,22 +142,37 @@ The queue system keeps ONLY:
 ### Auto-Resume on Startup
 
 On app startup, auto-queue photos with incomplete processing:
-- For each enabled stage, query photos missing that stage's output
+- Load every stage's output in bulk and queue each photo at its first needed stage (same rules as the scanner)
+- The log reports "Found N photos needing <stage>" per stage, counting only photos that will really be processed
 - This handles crashes gracefully - processing resumes automatically
 - No user action needed
 
 ### Error Handling
 
 - Log errors per-photo when they happen (standard Python logging)
-- No retry counters, no error queues, no complex state
-- Failed photos simply don't have that stage's output - user can re-trigger scan to retry
+- Transient errors (a service down, network) are not stored: the photo simply
+  lacks that stage's output and a later scan or restart retries it
+- Permanent errors (the file itself is unreadable, a decoder hangs past 300s)
+  raise `PermanentStageError` and are recorded in `stage_failures`. Scans,
+  resume and the workers all skip a stage with a recorded failure, so a broken
+  file is not retried forever. The pipeline page lists them
+  (`/api/pipeline/failures`); rebuilding a stage (`/api/scan/clear-stage/...`)
+  clears its records and retries everything.
 
 ### Migration Strategy
 
-No migrations needed. When making schema changes:
-- Drop the database and rebuild from scratch
-- We are the only users of this app
-- Keep it simple
+The index is never dropped and rebuilt for a schema change: it holds weeks of
+face detection and captioning (see "The index is precious").
+
+- Schema changes are additive only: new tables, new nullable or defaulted
+  columns, new indexes. Never rename, drop or retype a column.
+- `init_db()` in `backend/app/database.py` applies them idempotently on every
+  startup: `create_all()` creates missing tables, `_ADDED_COLUMNS` adds columns
+  that older indexes lack, `_ADDED_INDEXES` creates indexes with
+  `CREATE INDEX IF NOT EXISTS`.
+- `backend/tests/unit/test_schema.py` pins the live schema
+  (`schema_baseline.sql`); update the baseline and the test's list of added
+  indexes together with any schema change, deliberately.
 
 ### Photo Visibility
 
@@ -206,6 +231,15 @@ The scanner (`backend/app/services/scanner.py`) has safeguards:
 1. **Skips corrupted files**: Files < 1KB or unopenable by PIL are skipped
 2. **Idempotent**: Running multiple times is safe - unchanged files are skipped
 3. **Resumable**: Interrupted scans can be resumed
+4. **Library paths only**: `is_library_path()` excludes every path with a
+   component starting with `.` (Syncthing's `.stversions`, NAS thumbnail
+   caches, macOS `._` files) and Syncthing temp files. The sweep, the file
+   watcher and cleanup share it; an indexed path that fails it is removed like
+   a deleted file.
+5. **Stays inside /photos**: symlinked directories are never descended into,
+   and a symlinked file is only indexed when it resolves inside the library.
+6. **Refuses to empty the index**: cleanup does nothing when the library is
+   unreadable or a sweep finds no photos at all (see docs/RASPBERRY-PI.md).
 
 ### Common Issues
 
@@ -225,29 +259,24 @@ For new folders (e.g., copying from phone):
 
 ---
 
-## Performance Issues (NEEDS FIX)
+## Performance Notes
 
-### Docker Build is SLOW
+### Docker build
 
-Docker builds take 1-2 minutes even for minor changes because:
-- No proper layer caching for Python dependencies
-- Frontend rebuilds even when only backend changed
-- `apt-get purge` runs on every build (should be in base image)
+The Dockerfile has three stages: the frontend build, a Python dependency
+stage with the compiler toolchain (insightface compiles from source on arm64),
+and a slim runtime that copies the dependency venv. A backend-only change
+re-copies `backend/` and nothing else; a frontend change re-runs only the npm
+build; only a `pyproject.toml` change re-installs dependencies.
 
-**Potential fixes:**
-1. Split Dockerfile into base + app stages
-2. Copy `pyproject.toml` and install deps BEFORE copying code
-3. Only rebuild frontend when `frontend/` changes
-4. Move `apt-get purge` to base image layer
+### Keeping the API responsive
 
-### API Blocking Issues
-
-The `/api/scan/trigger` endpoint is **blocking** - it runs the entire scan before returning. This means:
-- Frontend hangs waiting for response
-- Scan progress isn't visible
-- timeouts on large photo libraries
-
-**Fix:** Use BackgroundTasks to run scan async, return immediately with status.
+The API and the pipeline share one event loop. Anything CPU-bound or blocking
+(image decoding, face detection, DBSCAN clustering, event clustering,
+duplicate comparison, directory walks) runs in a thread, never inline in async
+code. SQLite is tuned per connection in `database.py` (WAL, mmap, larger page
+cache, in-memory temp storage); do not add `ANALYZE`, it changes the schema
+and can change query plans.
 
 ### Known Issues
 
@@ -260,24 +289,18 @@ The `/api/scan/trigger` endpoint is **blocking** - it runs the entire scan befor
 
 ---
 
-## Architecture Issues (TODO)
-
-### Docker Build Performance
-
-The Dockerfile rebuilds take 1-2 minutes because:
-1. No layer caching for Python dependencies
-2. `apt-get purge` runs on every build (should be in base layer)
-3. Frontend rebuilds even when only backend changed
-
-**Recommended fix:** Multi-stage Dockerfile with better layer caching.
-
-### File Watcher vs Scanner
+## File Watcher vs Scanner
 
 The app has two mechanisms for detecting new photos:
-1. **File watcher** (`watchdog`) - Detects new files in real-time
-2. **Scanner** - Walks filesystem on demand/trigger
+1. **File watcher** (`watchdog`, inotify): indexes a new or renamed-into-place
+   photo once it has been quiet for 3 seconds. inotify does not cross Docker
+   bind mounts on Windows/macOS hosts, so there it never fires.
+2. **Periodic sweep** (`WATCH_INTERVAL`, default 300s): walks the library,
+   stats only files in directories whose mtime changed, indexes new and changed
+   files and cleans up removed ones. A manual rescan (`POST /api/scan/trigger`)
+   also re-checks every unchanged photo for missing stage output.
 
-Current state: File watcher runs but the scanner must be manually triggered for initial indexing or after adding many new folders. The watcher may miss directories added while the app was down.
+Both write through the same lock, so they cannot index the same file twice.
 
 ---
 
@@ -294,6 +317,15 @@ Current state: File watcher runs but the scanner must be manually triggered for 
 ---
 
 ## Running Tests
+
+### Unit Tests
+
+```bash
+python -m pytest backend/tests/unit     # from the repo root; no Docker needed
+```
+
+They cover the stage rules, resume, workers, queues, the scanner and the
+schema guard. See docs/TESTING.md.
 
 ### Consistency Test
 

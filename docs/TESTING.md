@@ -1,8 +1,35 @@
 # Testing Guide
 
-This document describes how to run the integration tests for Recasa.
+Recasa has three test suites:
 
-## Overview
+- **Unit tests** (`backend/tests/unit/`): the pipeline's decision logic,
+  scanner, queues, schema migrations and media helpers, against temp dirs and
+  a throwaway SQLite index. No Docker, network or ML models.
+- **Integration tests** (`backend/tests/test_*.py`): the full pipeline in
+  Docker against fixture images.
+- **Frontend tests** (`frontend/tests/`): Playwright against a running instance.
+
+## Unit tests
+
+From the repository root, with the backend dependencies installed:
+
+```bash
+python -m pytest backend/tests/unit
+```
+
+`test_schema.py` checks that startup migrations never change the schema of an
+existing index: `schema_baseline.sql` is the live index's `sqlite_master`
+(`SELECT sql || ';' FROM sqlite_master WHERE sql IS NOT NULL ORDER BY sql`),
+and the only allowed difference is the indexes listed in the test. To also
+run it against a copy of a real index (it is copied, never opened in place):
+
+```bash
+RECASA_PRISTINE_DB=/path/to/copy/of/recasa.db python -m pytest backend/tests/unit/test_schema.py
+```
+
+## Integration tests
+
+### Overview
 
 Recasa includes a comprehensive integration test suite that validates the complete photo processing pipeline:
 
@@ -16,7 +43,7 @@ Recasa includes a comprehensive integration test suite that validates the comple
 
 Tests run against a Docker container with built-in fixture images, requiring no external dependencies.
 
-## Quick Start
+### Quick Start
 
 ```bash
 # Run the full test suite (autonomous)
@@ -39,17 +66,15 @@ Test fixtures are located in `backend/tests/fixtures/images/`:
 
 | Directory | Files | Purpose |
 |-----------|-------|---------|
-| `faces/historical/` | 8 | Historical figures (Einstein, Curie, Lincoln) |
-| `faces/alice/` | 4 | Same person, multiple angles (clustering test) |
-| `faces/bob/` | 3 | Same person, multiple angles |
-| `faces/carol/` | 3 | Same person, multiple angles |
-| `faces/group/` | 2 | Multiple people in one photo |
-| `landscapes/` | 10 | Nature photos (no faces) |
-| `city/` | 8 | Urban photos with GPS coordinates |
-| `portraits/` | 8 | Single-person portraits with EXIF |
-| `formats/` | 5 | Various formats (HEIC, WebP, PNG, TIFF) |
+| `faces/alice/` | 2 | Same person, multiple angles (clustering test) |
+| `faces/bob/` | 2 | Same person, multiple angles |
+| `faces/carol/` | 2 | Same person, multiple angles |
+| `faces/group/` | 1 | Multiple people in one photo |
+| `landscapes/` | 1 | Nature photo (no faces) |
+| `portraits/` | 1 | Single-person portrait |
+| `formats/` | 3 | Other formats (HEIC, WebP, PNG) |
 
-**Total: 51 test images**
+**Total: 12 test images** (all listed in `manifest.json`)
 
 ### Adding Test Images
 
@@ -79,17 +104,15 @@ The test configuration is in `docker-compose.test.yml`:
 
 ```yaml
 environment:
-  - ENABLE_EXIF_EXTRACTION=true
+  - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+  - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3-vl:235b-instruct-cloud}
   - ENABLE_GEOCODING=true
-  - ENABLE_THUMBNAILS=true
-  - ENABLE_MOTION_PHOTOS=true
-  - ENABLE_HASHING=true
   - ENABLE_FACE_DETECTION=true
   - ENABLE_CAPTIONING=true
-  - OLLAMA_MODEL=qwen3.5:cloud
+  - MAX_CONCURRENT=2
 ```
 
-All processing stages are enabled for comprehensive testing.
+Every stage is enabled (EXIF, thumbnails, motion photos and hashing always run).
 
 ## Running Specific Tests
 
@@ -200,7 +223,7 @@ docker-compose -f docker-compose.test.yml up
 open http://localhost:7001
 ```
 
-This shows the app with sample images including historical figures, portraits, landscapes, and city photos.
+This shows the app with the fixture images: portraits, a group photo, a landscape and a few other formats.
 
 ## Troubleshooting
 
@@ -246,7 +269,7 @@ if not await api_client.wait_for_idle(max_seconds=600):  # 10 minutes
 ## Frontend (Playwright) tests
 
 Browser tests live in `frontend/tests/` and run against a *running* instance on
-`localhost:7000` — they do not start the app themselves.
+`localhost:7000`; they do not start the app themselves.
 
 ```bash
 cd frontend
@@ -273,7 +296,7 @@ docker compose restart recasa
 ### Some tests require an idle pipeline
 
 Most of `pipeline.spec.ts` is gated on `waitForPipelineComplete`, so those tests
-cannot pass while a scan is running — and with `WATCH_INTERVAL` at its default a
+cannot pass while a scan is running, and with `WATCH_INTERVAL` at its default a
 scan runs often.
 
 Because of that, a failure here is often environmental rather than a real
@@ -284,8 +307,8 @@ not caused by the change.
 ### Prefer bounded queries when writing tests
 
 Tests that need a photo grid should drive it from a route backed by a paged
-query — `/search?q=...`, `/to-print`, `/favorites` (all `api.getPhotos`, ~10ms)
-— rather than the home timeline, which is the one endpoint that stalls under
+query (`/search?q=...`, `/to-print`, `/favorites`, all `api.getPhotos`, ~10ms)
+rather than the home timeline, which is the one endpoint that stalls under
 load. `viewer-swap.spec.ts` does this.
 
 Two other traps worth knowing:

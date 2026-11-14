@@ -328,7 +328,7 @@ def _pick_cover_photo(
         w = photo.width or 0
         h = photo.height or 0
 
-        # Landscape bonus (strong — landscape photos fill the card much better)
+        # Landscape bonus (strong: landscape photos fill the card much better)
         if w > h > 0:
             score += 4
         elif h > w:
