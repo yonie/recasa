@@ -244,6 +244,10 @@ The scanner (`backend/app/services/scanner.py`) has safeguards:
    is indexed under its new hash, and the old hash loses that path. An old
    version with no other copy left is removed like a deleted file; its
    favourite, print and flag marks move to the new version.
+8. **Self-repairing primary path**: a photo whose `file_path` is not one of
+   its own `photo_paths` (left by older code after a move) is pointed at its
+   first remaining path, and its "file not found / cannot read (OSError)"
+   stage failures are cleared so those stages run once more.
 
 ### Common Issues
 

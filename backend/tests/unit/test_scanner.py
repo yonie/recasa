@@ -7,7 +7,16 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from backend.app.models import Caption, Face, Photo, PhotoHash, PhotoPath, PhotoTag, Tag
+from backend.app.models import (
+    Caption,
+    Face,
+    Photo,
+    PhotoHash,
+    PhotoPath,
+    PhotoTag,
+    StageFailure,
+    Tag,
+)
 from backend.app.services import scanner
 from backend.app.services.scanner import (
     _is_live_photo_companion,
@@ -365,3 +374,38 @@ def test_file_hash_is_sha256(tmp_path: Path):
     p = tmp_path / "f"
     p.write_bytes(b"abc" * 100000)
     assert compute_file_hash(p) == hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_photo_pointing_at_a_vanished_path_is_repointed(db, photos_dir):
+    """Three live photos have photos.file_path at a deleted location while
+    photo_paths lists where they are. A sweep re-points them, clears the
+    failures about reaching the old file and queues the retried stage."""
+    a = write_jpeg(photos_dir / "fixme" / "R_DSC01945.JPG", seed=40)
+    fh = compute_file_hash(a)
+    st = a.stat()
+    rows = photo_row(fh, "fixme/R_DSC01945.JPG", file_size=st.st_size,
+                     file_modified=datetime.fromtimestamp(st.st_mtime))
+    rows[0].file_path = "Maarseveenseplassen/R_DSC01945.JPG"  # gone from disk
+    touch_thumb(fh)
+    async with db() as session:
+        session.add_all(rows)
+        session.add_all([
+            StageFailure(file_hash=fh, stage="hashing", error="cannot read image (OSError)"),
+            StageFailure(file_hash=fh, stage="faces",
+                         error="cannot read image (UnidentifiedImageError)"),
+        ])
+        await session.commit()
+
+    found = Discovered()
+    await scan_directory(on_file_discovered=found, fast=True)
+    async with db() as session:
+        assert (await session.get(Photo, fh)).file_path == "fixme/R_DSC01945.JPG"
+        failures = (await session.execute(select(StageFailure.stage))).scalars().all()
+    assert failures == ["faces"]  # a content error is not about the path
+    assert found.items == [(fh, "hashing")]
+
+    assert await scanner._repair_stored_paths() == []
+    found = Discovered()
+    await scan_directory(on_file_discovered=found, fast=True)
+    assert found.items == []

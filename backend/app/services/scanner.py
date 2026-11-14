@@ -17,12 +17,12 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config import settings
 from backend.app.database import async_session
-from backend.app.models import Photo, PhotoPath
+from backend.app.models import Photo, PhotoPath, StageFailure
 from backend.app.workers.stages import (
     PhotoFacts,
     StageOutputs,
@@ -478,6 +478,12 @@ async def scan_directory(
 
     if not cancelled:
         stats["removed"] += await _cleanup_removed_files(seen_paths)
+        for file_hash in await _repair_stored_paths():
+            async with async_session() as session:
+                photo = await session.get(Photo, file_hash)
+                entry_stage = await _entry_stage(session, photo) if photo else None
+            if entry_stage and on_file_discovered:
+                await on_file_discovered(file_hash, entry_stage)
         _dir_snapshot = {
             d: mtime for d, mtime in new_snapshot.items() if d not in error_dirs
         }
@@ -761,6 +767,60 @@ async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> int:
         await session.commit()
     logger.info("Cleaned up %d removed file paths", len(removed_paths))
     return len(removed)
+
+
+# Recorded stage failures that say the file could not be found or opened, as
+# opposed to its content being unreadable (see thumbnail.py and hasher.py).
+_FILE_ACCESS_ERROR = re.compile(
+    r"^(file not found on disk"
+    r"|cannot read image \((OSError|FileNotFoundError|PermissionError|IsADirectoryError)\))$"
+)
+
+
+async def _repair_stored_paths() -> list[str]:
+    """Re-point photos whose file_path is not one of their own paths.
+
+    Older code could leave photos.file_path at a location the photo had
+    moved away from while photo_paths listed where it really is, so every
+    stage read a missing file. Points each such photo at its first remaining
+    path (the same choice cleanup makes) and clears the failures that were
+    about reaching the old file, so those stages run once more. Idempotent:
+    a healthy index has no such photos and this is one query.
+
+    Returns the repaired file hashes.
+    """
+    async with _index_lock, async_session() as session:
+        photos = (
+            await session.execute(
+                select(Photo).where(
+                    ~exists().where(
+                        PhotoPath.file_hash == Photo.file_hash,
+                        PhotoPath.file_path == Photo.file_path,
+                    ),
+                    exists().where(PhotoPath.file_hash == Photo.file_hash),
+                )
+            )
+        ).scalars().all()
+        if not photos:
+            return []
+        for photo in photos:
+            paths = (
+                await session.execute(
+                    select(PhotoPath.file_path).where(PhotoPath.file_hash == photo.file_hash)
+                )
+            ).scalars().all()
+            logger.info("Re-pointing %s from %s to %s", photo.file_hash, photo.file_path, min(paths))
+            photo.file_path = min(paths)
+            failures = (
+                await session.execute(
+                    select(StageFailure).where(StageFailure.file_hash == photo.file_hash)
+                )
+            ).scalars().all()
+            for failure in failures:
+                if failure.error and _FILE_ACCESS_ERROR.match(failure.error):
+                    await session.delete(failure)
+        await session.commit()
+        return [photo.file_hash for photo in photos]
 
 
 async def index_single_file(filepath: Path) -> tuple[str, str] | None:
