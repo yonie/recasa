@@ -176,5 +176,5 @@ async def get_location_photos(
     if city:
         stmt = stmt.where(Photo.location_city == city)
     return await photo_page(
-        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size
     )

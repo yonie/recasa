@@ -81,5 +81,5 @@ async def get_directory_photos(
     # ASCII case is ignored.
     stmt = summary_select().where(Photo.file_path.like(f"{path}/%"), VISIBLE)
     return await photo_page(
-        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size
     )

@@ -36,7 +36,7 @@ def _photo_to_duplicate_summary(photo, people_names: list[str]) -> DuplicatePhot
     location_parts = [p for p in [photo.location_city, photo.location_country] if p]
     camera_parts = [p for p in [photo.camera_make, photo.camera_model] if p]
     return DuplicatePhotoSummary(
-        **to_summary(photo, full=False).model_dump(exclude_unset=True),
+        **to_summary(photo).model_dump(exclude_unset=True),
         location=", ".join(location_parts) if location_parts else None,
         camera=" ".join(camera_parts) if camera_parts else None,
         people=people_names,
@@ -136,5 +136,4 @@ async def get_large_files(
         order_by=(Photo.file_size.desc(),),
         page=page,
         page_size=page_size,
-        full=False,
     )

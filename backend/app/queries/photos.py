@@ -50,13 +50,11 @@ def thumbnail_url(file_hash: str, size: int = 600) -> str:
     return f"/api/photos/{file_hash}/thumbnail/{size}"
 
 
-def to_summary(row: Sequence[Any], *, full: bool = True) -> PhotoSummary:
+def to_summary(row: Sequence[Any]) -> PhotoSummary:
     """Grid-tile summary from a row that starts with the SUMMARY_COLUMNS.
 
-    ``full=False`` leaves out marked_for_print, flagged_for_removal, is_video
-    and duration, so they read as their schema defaults. That is what the
-    person, tag, event, place, folder, large-file, duplicate and together
-    grids have always returned; the library and timeline grids are full.
+    Every grid gets the same fields: the tile shows the video badge, the
+    print and flag state from them on every page, not just the library.
 
     Unpacks by position: this runs once per photo, 40k times for a whole
     library timeline, and named access on rows was a third of that request.
@@ -78,24 +76,6 @@ def to_summary(row: Sequence[Any], *, full: bool = True) -> PhotoSummary:
         live_photo_video,
         motion_photo,
     ) = row[:_N_SUMMARY_COLUMNS]
-    if full:
-        return PhotoSummary(
-            file_hash=file_hash,
-            file_path=file_path,
-            file_name=file_name,
-            file_size=file_size,
-            mime_type=mime_type,
-            width=width,
-            height=height,
-            date_taken=date_taken,
-            is_favorite=is_favorite,
-            marked_for_print=marked_for_print,
-            flagged_for_removal=flagged_for_removal,
-            is_video=is_video,
-            duration=duration,
-            thumbnail_url=f"/api/photos/{file_hash}/thumbnail/600",
-            has_live_photo=bool(live_photo_video or motion_photo),
-        )
     return PhotoSummary(
         file_hash=file_hash,
         file_path=file_path,
@@ -106,6 +86,10 @@ def to_summary(row: Sequence[Any], *, full: bool = True) -> PhotoSummary:
         height=height,
         date_taken=date_taken,
         is_favorite=is_favorite,
+        marked_for_print=marked_for_print,
+        flagged_for_removal=flagged_for_removal,
+        is_video=is_video,
+        duration=duration,
         thumbnail_url=f"/api/photos/{file_hash}/thumbnail/600",
         has_live_photo=bool(live_photo_video or motion_photo),
     )
@@ -118,7 +102,6 @@ async def photo_page(
     order_by: Sequence[Any],
     page: int,
     page_size: int,
-    full: bool = True,
 ) -> PhotoPage:
     """Count ``stmt`` and return one page of it as grid summaries.
 
@@ -131,7 +114,7 @@ async def photo_page(
     offset = (page - 1) * page_size
     rows = (await session.execute(stmt.order_by(*order_by).offset(offset).limit(page_size))).all()
     return PhotoPage(
-        items=[to_summary(row, full=full) for row in rows],
+        items=[to_summary(row) for row in rows],
         total=total,
         page=page,
         page_size=page_size,

@@ -103,18 +103,16 @@ def test_search_keeps_like_wildcards():
 # --- summaries and paging -------------------------------------------------
 
 
-def test_to_summary_full_and_short():
+def test_to_summary_carries_every_tile_field():
     async def body(session):
         row = (await session.execute(summary_select().where(Photo.file_hash == h(5)))).one()
-        return to_summary(row), to_summary(row, full=False)
+        return to_summary(row)
 
-    full, short = run_with_session(body)
-    assert full.is_video is True and full.duration == 4.5
-    assert full.thumbnail_url == f"/api/photos/{h(5)}/thumbnail/600"
-    # The short form leaves these at their defaults, as those grids always did.
-    assert short.is_video is False and short.duration is None
-    assert short.marked_for_print is False and short.flagged_for_removal is False
-    assert short.file_name == full.file_name == "clip.mp4"
+    summary = run_with_session(body)
+    assert summary.is_video is True and summary.duration == 4.5
+    assert summary.marked_for_print is False and summary.flagged_for_removal is False
+    assert summary.thumbnail_url == f"/api/photos/{h(5)}/thumbnail/600"
+    assert summary.file_name == "clip.mp4"
 
 
 def test_to_summary_live_photo():

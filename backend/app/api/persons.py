@@ -160,7 +160,7 @@ async def get_person_photos(
         .distinct()
     )
     return await photo_page(
-        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size
     )
 
 
@@ -318,7 +318,7 @@ async def list_person_groups(
             {
                 "persons": [_person_info(p) for p in persons_in_group],
                 "shared_photo_count": count,
-                "cover_photo": to_summary(cover, full=False) if cover else None,
+                "cover_photo": to_summary(cover) if cover else None,
             }
         )
 
@@ -450,7 +450,7 @@ async def _get_together_photos(
     """Get photos where EXACTLY the listed persons appear (no others)."""
     stmt = summary_select().where(*_together_conditions(person_ids))
     return await photo_page(
-        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size, full=False
+        session, stmt, order_by=NEWEST_FIRST, page=page, page_size=page_size
     )
 
 
