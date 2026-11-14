@@ -48,11 +48,15 @@ services:
     environment:
       - PYTHONPATH=/app
       - BASE_URL=http://app:8000
+      - PIPELINE_TIMEOUT=${PIPELINE_TIMEOUT:-900}
     depends_on:
       app:
         condition: service_healthy
     working_dir: /app
-    command: ["sh", "-c", "pip install pytest pytest-asyncio httpx && python -m pytest /tests/ -v --tb=short -s"]
+    # Integration tests only: tests/unit runs without Docker (see
+    # docs/TESTING.md), and test_consistency checks a real library from
+    # inside the app container. Versions as in pyproject.toml's dev extra.
+    command: ["sh", "-c", "pip install 'pytest>=8.0,<9' 'pytest-asyncio>=0.24,<1' httpx && python -m pytest -p no:cacheprovider /tests/ --ignore=/tests/unit --ignore=/tests/test_consistency.py -v --tb=short -s"]
     
 volumes:
   recasa_test_data:

@@ -1,14 +1,16 @@
-"""Consistency tests to verify DB matches filesystem."""
+"""Consistency tests to verify DB matches filesystem.
+
+Meant for the running app container, against the real library and index:
+
+    docker exec -it recasa-recasa-1 python -m backend.tests.test_consistency
+
+The app is imported inside the functions, not at module level: collecting this
+file must not create the app's settings, or tests collected with it (the unit
+tests point the app at a temp dir first) would run against the real /data.
+"""
 import asyncio
 import os
 from pathlib import Path
-
-import pytest
-
-from backend.app.database import async_session
-from backend.app.models import Photo
-from backend.app.config import settings
-from sqlalchemy import select, func
 
 
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif", ".cr2", ".nef", ".dng", ".arw", ".orf"}
@@ -16,6 +18,8 @@ PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif", ".cr2", "
 
 def count_photos_on_disk() -> dict[str, int]:
     """Count photos by year from filesystem."""
+    from backend.app.config import settings
+
     photos_dir = settings.photos_dir
     year_counts: dict[str, int] = {}
     
@@ -38,6 +42,11 @@ def count_photos_on_disk() -> dict[str, int]:
 
 async def count_photos_in_db() -> dict[str, int]:
     """Count photos by year from database."""
+    from sqlalchemy import func, select
+
+    from backend.app.database import async_session
+    from backend.app.models import Photo
+
     async with async_session() as session:
         result = await session.execute(
             select(

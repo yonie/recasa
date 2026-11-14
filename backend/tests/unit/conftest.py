@@ -28,6 +28,17 @@ from backend.app.config import settings
 from backend.app.models import Base
 from backend.app.services import scanner
 
+# The db fixture deletes the index in DATA_DIR. If anything imported the app
+# before this file ran (a test module importing it at collection time), the
+# settings point wherever the environment said, e.g. a real /data: refuse.
+if settings.data_dir != _ROOT / "data" or settings.photos_dir != _ROOT / "photos":
+    pytest.exit(
+        f"Unit tests refused: the app was imported before backend/tests/unit/conftest.py "
+        f"and uses DATA_DIR={settings.data_dir}. Run them on their own: "
+        f"python -m pytest backend/tests/unit",
+        returncode=4,
+    )
+
 
 def pytest_sessionfinish(session, exitstatus):
     shutil.rmtree(_ROOT, ignore_errors=True)

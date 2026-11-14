@@ -17,9 +17,12 @@ class TestFaces:
         if not config.get("ENABLE_FACE_DETECTION", True):
             pytest.skip("Face detection disabled")
         
+        # "completed" counts every photo face detection has looked at
+        # (photos without faces get a marker row); faces_found counts the
+        # photos where it found one.
         stats = setup_pipeline
         faces = stats.get("stages", {}).get("faces", {})
-        assert faces.get("completed", 0) > 0, "No faces detected"
+        assert faces.get("faces_found", 0) > 0, "No faces detected"
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_no_faces_in_landscapes(self, api_client: APIClient, setup_pipeline, manifest):
@@ -30,4 +33,4 @@ class TestFaces:
         stats = setup_pipeline
         faces = stats.get("stages", {}).get("faces", {})
         total = stats.get("total_photos", 0)
-        assert faces.get("completed", 0) < total, "Expected some photos without faces"
+        assert faces.get("faces_found", 0) < total, "Expected some photos without faces"

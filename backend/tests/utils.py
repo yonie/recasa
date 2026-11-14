@@ -76,18 +76,21 @@ class APIClient:
 
     async def stop_pipeline(self) -> dict[str, Any]:
         """Stop the pipeline."""
-        r = await self.post("/api/pipeline/stop")
+        r = await self.post("/api/scan/stop")
         r.raise_for_status()
         return r.json()
 
     async def wait_for_idle(self, max_seconds: int = 300, poll_interval: float = 2.0) -> bool:
-        """Wait for all queues to be empty (pipeline idle)."""
+        """Wait until no scan runs and every queue is empty (pipeline idle).
+
+        /api/pipeline/status reports `queues` as {stage: {"pending": n,
+        "processing": 0 or 1, ...}}. Two idle polls in a row are required:
+        a photo moving between stages is briefly in no queue at all.
+        """
         empty_count = 0
         for _ in range(int(max_seconds / poll_interval)):
             status = await self.get_pipeline_status()
-            queues = status.get("queues", {})
-            total_in_queues = sum(queues.values())
-            if total_in_queues == 0:
+            if status.get("state") == "idle" and busy_count(status) == 0:
                 empty_count += 1
                 if empty_count >= 2:
                     return True
@@ -108,6 +111,15 @@ class APIClient:
         r = await self.get("/api/config/status")
         r.raise_for_status()
         return r.json()
+
+
+def busy_count(status: dict[str, Any]) -> int:
+    """Photos waiting in or being processed by any stage, from a
+    /api/pipeline/status response."""
+    return sum(
+        q.get("pending", 0) + q.get("processing", 0)
+        for q in status.get("queues", {}).values()
+    )
 
 
 def load_manifest(manifest_path: Path | None = None) -> dict[str, Any]:

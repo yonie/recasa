@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -11,9 +12,13 @@ import pytest_asyncio
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from tests.utils import APIClient
+from tests.utils import APIClient, busy_count
 
 MANIFEST_PATH = Path(__file__).parent / "fixtures" / "manifest.json"
+
+# Seconds to wait for the whole fixture set to go through every stage.
+# Captioning dominates: each photo is a round trip to the vision model.
+PIPELINE_TIMEOUT = int(os.environ.get("PIPELINE_TIMEOUT", "900"))
 
 _pipeline_ready = False
 
@@ -52,9 +57,12 @@ async def setup_pipeline(api_client: APIClient, manifest: dict):
     await asyncio.sleep(1)
     await api_client.trigger_scan()
     
-    if not await api_client.wait_for_idle(max_seconds=300):
+    if not await api_client.wait_for_idle(max_seconds=PIPELINE_TIMEOUT):
         status = await api_client.get_pipeline_status()
-        pytest.fail(f"Pipeline timeout: {status.get('queues', {})}")
+        pytest.fail(
+            f"Pipeline not idle after {PIPELINE_TIMEOUT}s: state={status.get('state')}, "
+            f"{busy_count(status)} photos in stages: {status.get('queues', {})}"
+        )
     
     _pipeline_ready = True
     return await api_client.get_processing_stats()
