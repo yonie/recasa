@@ -1,7 +1,7 @@
 """Timeline API endpoints."""
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Query
 from sqlalchemy import extract, func, select, text
@@ -9,7 +9,7 @@ from sqlalchemy import extract, func, select, text
 from backend.app.api.deps import SessionDep
 from backend.app.api.responses import json_response
 from backend.app.models import Photo
-from backend.app.queries.photos import SUMMARY_COLUMNS, VISIBLE, to_summary
+from backend.app.queries.photos import VISIBLE, summary_select, to_summary
 from backend.app.schemas.photo import TimelineGroup
 
 router = APIRouter(prefix="/api/timeline", tags=["timeline"])
@@ -77,6 +77,27 @@ def _group_key(date: datetime | None, group_by: str) -> str:
     return date.strftime("%Y-%m-%d")
 
 
+# Bounded IN lists when fetching the photos of the requested groups
+_FETCH_CHUNK = 500
+
+
+async def _summary_rows(
+    session, conditions: list[Any], hashes: list[str], total: int
+) -> dict[str, Any]:
+    """Grid-tile rows by hash for ``hashes``, a subset of the ``total`` photos
+    matching ``conditions``."""
+    if len(hashes) * 2 > total:
+        # Most of the timeline: one filtered pass beats many lookups.
+        rows = await session.execute(summary_select().where(*conditions))
+        return {row[0]: row for row in rows}
+    found: dict[str, Any] = {}
+    for start in range(0, len(hashes), _FETCH_CHUNK):
+        chunk = hashes[start : start + _FETCH_CHUNK]
+        for row in await session.execute(summary_select().where(Photo.file_hash.in_(chunk))):
+            found[row[0]] = row
+    return found
+
+
 @router.get("", response_model=list[TimelineGroup])
 async def get_timeline(
     session: SessionDep,
@@ -88,33 +109,42 @@ async def get_timeline(
     offset: Annotated[int, Query(ge=0)] = 0,
 ):
     """Get photos grouped by time period."""
-    query = select(*SUMMARY_COLUMNS, Photo.file_modified).where(VISIBLE)
+    conditions = [VISIBLE]
     if video is not None:
-        query = query.where(Photo.is_video == video)
+        conditions.append(Photo.is_video == video)
     if year:
-        query = query.where(extract("year", _EFFECTIVE_DATE) == year)
+        conditions.append(extract("year", _EFFECTIVE_DATE) == year)
     if month:
-        query = query.where(extract("month", _EFFECTIVE_DATE) == month)
-    query = query.order_by(
-        Photo.date_taken.desc().nullslast(), Photo.file_modified.desc().nullslast()
+        conditions.append(extract("month", _EFFECTIVE_DATE) == month)
+    query = (
+        select(Photo.file_hash, Photo.date_taken, Photo.file_modified)
+        .where(*conditions)
+        .order_by(Photo.date_taken.desc().nullslast(), Photo.file_modified.desc().nullslast())
     )
 
-    # Group rows only; summaries are built for the requested page of groups.
-    groups: dict[str, list] = {}
-    for row in await session.execute(query):
-        groups.setdefault(_group_key(row.date_taken or row.file_modified, group_by), []).append(
-            row
-        )
+    # Group every matching photo by period using only its dates, in timeline
+    # order. The home page asks for 24 months of a 40k-photo library, so the
+    # full tile data is then fetched just for the photos of the requested
+    # groups instead of for the whole library.
+    groups: dict[str, list[str]] = {}
+    total = 0
+    for file_hash, date_taken, file_modified in await session.execute(query):
+        groups.setdefault(_group_key(date_taken or file_modified, group_by), []).append(file_hash)
+        total += 1
 
     # Newest group first, with "unknown" (no date at all) at the end
     dated_keys = sorted((k for k in groups if k != "unknown"), reverse=True)
     sorted_keys = dated_keys + (["unknown"] if "unknown" in groups else [])
+    page_keys = sorted_keys[offset : offset + limit]
 
+    wanted = [h for key in page_keys for h in groups[key]]
+    rows = await _summary_rows(session, conditions, wanted, total)
+    # A photo deleted between the two queries is simply left out.
     return [
         TimelineGroup(
             date=key,
             count=len(groups[key]),
-            photos=[to_summary(row) for row in groups[key]],
+            photos=[to_summary(rows[h]) for h in groups[key] if h in rows],
         )
-        for key in sorted_keys[offset : offset + limit]
+        for key in page_keys
     ]

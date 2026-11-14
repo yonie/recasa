@@ -38,6 +38,7 @@ SUMMARY_COLUMNS = (
     Photo.live_photo_video,
     Photo.motion_photo,
 )
+_N_SUMMARY_COLUMNS = len(SUMMARY_COLUMNS)
 
 
 def summary_select() -> Select[Any]:
@@ -49,37 +50,64 @@ def thumbnail_url(file_hash: str, size: int = 600) -> str:
     return f"/api/photos/{file_hash}/thumbnail/{size}"
 
 
-def to_summary(photo: Any, *, full: bool = True) -> PhotoSummary:
-    """Grid-tile summary from a Photo entity or a row of SUMMARY_COLUMNS.
+def to_summary(row: Sequence[Any], *, full: bool = True) -> PhotoSummary:
+    """Grid-tile summary from a row that starts with the SUMMARY_COLUMNS.
 
     ``full=False`` leaves out marked_for_print, flagged_for_removal, is_video
     and duration, so they read as their schema defaults. That is what the
     person, tag, event, place, folder, large-file, duplicate and together
     grids have always returned; the library and timeline grids are full.
+
+    Unpacks by position: this runs once per photo, 40k times for a whole
+    library timeline, and named access on rows was a third of that request.
     """
-    extra = (
-        {
-            "marked_for_print": photo.marked_for_print,
-            "flagged_for_removal": photo.flagged_for_removal,
-            "is_video": photo.is_video,
-            "duration": photo.duration,
-        }
-        if full
-        else {}
-    )
+    (
+        file_hash,
+        file_path,
+        file_name,
+        file_size,
+        mime_type,
+        width,
+        height,
+        date_taken,
+        is_favorite,
+        marked_for_print,
+        flagged_for_removal,
+        is_video,
+        duration,
+        live_photo_video,
+        motion_photo,
+    ) = row[:_N_SUMMARY_COLUMNS]
+    if full:
+        return PhotoSummary(
+            file_hash=file_hash,
+            file_path=file_path,
+            file_name=file_name,
+            file_size=file_size,
+            mime_type=mime_type,
+            width=width,
+            height=height,
+            date_taken=date_taken,
+            is_favorite=is_favorite,
+            marked_for_print=marked_for_print,
+            flagged_for_removal=flagged_for_removal,
+            is_video=is_video,
+            duration=duration,
+            thumbnail_url=f"/api/photos/{file_hash}/thumbnail/600",
+            has_live_photo=bool(live_photo_video or motion_photo),
+        )
     return PhotoSummary(
-        file_hash=photo.file_hash,
-        file_path=photo.file_path,
-        file_name=photo.file_name,
-        file_size=photo.file_size,
-        mime_type=photo.mime_type,
-        width=photo.width,
-        height=photo.height,
-        date_taken=photo.date_taken,
-        is_favorite=photo.is_favorite,
-        **extra,
-        thumbnail_url=thumbnail_url(photo.file_hash),
-        has_live_photo=bool(photo.live_photo_video or photo.motion_photo),
+        file_hash=file_hash,
+        file_path=file_path,
+        file_name=file_name,
+        file_size=file_size,
+        mime_type=mime_type,
+        width=width,
+        height=height,
+        date_taken=date_taken,
+        is_favorite=is_favorite,
+        thumbnail_url=f"/api/photos/{file_hash}/thumbnail/600",
+        has_live_photo=bool(live_photo_video or motion_photo),
     )
 
 

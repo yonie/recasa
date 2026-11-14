@@ -7,7 +7,13 @@ from sqlalchemy import select
 
 from backend.app.api.deps import Page, PageSize, SessionDep
 from backend.app.models import DuplicateGroup, DuplicateMember, Face, Person, Photo
-from backend.app.queries.photos import VISIBLE, photo_page, summary_select, to_summary
+from backend.app.queries.photos import (
+    SUMMARY_COLUMNS,
+    VISIBLE,
+    photo_page,
+    summary_select,
+    to_summary,
+)
 from backend.app.schemas.photo import DuplicateGroupSummary, DuplicatePhotoSummary, PhotoPage
 from backend.app.services.hasher import find_duplicates
 
@@ -16,7 +22,17 @@ router = APIRouter(prefix="/api", tags=["utilities"])
 _detecting = False
 
 
-def _photo_to_duplicate_summary(photo: Photo, people_names: list[str]) -> DuplicatePhotoSummary:
+# Grid-tile columns plus what the comparison view shows besides
+_MEMBER_COLUMNS = (
+    *SUMMARY_COLUMNS,
+    Photo.location_city,
+    Photo.location_country,
+    Photo.camera_make,
+    Photo.camera_model,
+)
+
+
+def _photo_to_duplicate_summary(photo, people_names: list[str]) -> DuplicatePhotoSummary:
     location_parts = [p for p in [photo.location_city, photo.location_country] if p]
     camera_parts = [p for p in [photo.camera_make, photo.camera_model] if p]
     return DuplicatePhotoSummary(
@@ -46,16 +62,16 @@ async def get_duplicates(
 
     # All members of the page's groups in one query, each group's members in
     # hash order as the per-group lookups returned them.
-    group_photos: dict[int, list[Photo]] = {gid: [] for gid in group_ids}
+    group_photos: dict[int, list] = {gid: [] for gid in group_ids}
     if group_ids:
         members = await session.execute(
-            select(DuplicateMember.group_id, Photo)
+            select(*_MEMBER_COLUMNS, DuplicateMember.group_id)
             .join(DuplicateMember, DuplicateMember.file_hash == Photo.file_hash)
             .where(DuplicateMember.group_id.in_(group_ids), VISIBLE)
             .order_by(DuplicateMember.group_id, DuplicateMember.file_hash)
         )
-        for group_id, photo in members:
-            group_photos[group_id].append(photo)
+        for row in members:
+            group_photos[row.group_id].append(row)
 
     # People names for every member photo in one query
     member_hashes = {p.file_hash for photos in group_photos.values() for p in photos}
