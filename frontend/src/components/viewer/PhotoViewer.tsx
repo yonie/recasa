@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, Flag, Info, Printer, Star, X } from "lucide-react";
 import { clsx } from "clsx";
-import { api, fullViewUrl, provisionalDetail, thumbnailUrl, videoUrl } from "../../api/client";
+import { useQueryClient } from "@tanstack/react-query";
+import { api, fullViewUrl, thumbnailUrl, videoUrl } from "../../api/client";
+import { queryKeys } from "../../api/queryKeys";
+import { bestDetail, fetchPhotoDetail } from "../../hooks/useOpenPhoto";
 import { usePhotoActions } from "../../hooks/usePhotoActions";
 import { useStore } from "../../store/useStore";
 import { gridThumbSize } from "../../lib/gridLayout";
@@ -31,6 +34,7 @@ export function PhotoViewer() {
   const setViewerIndex = useStore((s) => s.setViewerIndex);
   const gridSize = useStore((s) => s.gridSize);
   const actions = usePhotoActions();
+  const queryClient = useQueryClient();
 
   const [showInfo, setShowInfo] = useState(false);
   const [overrides, setOverrides] = useState<Overrides | null>(null);
@@ -51,15 +55,14 @@ export function PhotoViewer() {
       const photo = viewerPhotoList[newIndex];
       if (!photo) return;
 
-      // Switch photos synchronously from the list entry we already have.
-      // Awaiting the detail fetch first is what used to leave the previous
-      // photo on screen for the length of a round-trip.
-      setViewerPhoto(provisionalDetail(photo));
+      // Switch photos synchronously from what we already have: the prefetched
+      // detail, or else the list entry. Awaiting the detail fetch first is
+      // what used to leave the previous photo on screen for a round-trip.
+      setViewerPhoto(bestDetail(queryClient, photo));
       setViewerIndex(newIndex);
       window.history.replaceState({ viewerOpen: true }, "", `/photos/${photo.file_hash}`);
 
-      api
-        .getPhoto(photo.file_hash)
+      fetchPhotoDetail(queryClient, photo.file_hash)
         .then((fullDetail) => {
           // Drop a response that lost the race to a newer navigation.
           if (useStore.getState().viewerPhoto?.file_hash === fullDetail.file_hash) {
@@ -68,7 +71,7 @@ export function PhotoViewer() {
         })
         .catch(() => {});
     },
-    [viewerPhotoList, setViewerPhoto, setViewerIndex]
+    [queryClient, viewerPhotoList, setViewerPhoto, setViewerIndex]
   );
 
   const goPrev = () => canGoPrev && navigateTo(viewerIndex - 1);
@@ -128,17 +131,23 @@ export function PhotoViewer() {
   }, [viewerOpen]);
 
   // Warm the next/previous full views (and, for RAW and HEIC, the server-side
-  // render cache) so stepping through the list doesn't wait on a decode.
+  // render cache) and their details, so a step shows the photo and its info
+  // at once instead of waiting on a decode and a request.
   useEffect(() => {
     if (!viewerOpen || viewerIndex < 0) return;
     const t = setTimeout(() => {
       for (const i of [viewerIndex + 1, viewerIndex - 1]) {
         const p = viewerPhotoList[i];
-        if (p && !p.is_video) new Image().src = fullViewUrl(p);
+        if (!p) continue;
+        if (!p.is_video) new Image().src = fullViewUrl(p);
+        void queryClient.prefetchQuery({
+          queryKey: queryKeys.photo(p.file_hash),
+          queryFn: () => api.getPhoto(p.file_hash),
+        });
       }
     }, 200); // let the photo on screen finish first
     return () => clearTimeout(t);
-  }, [viewerOpen, viewerIndex, viewerPhotoList]);
+  }, [queryClient, viewerOpen, viewerIndex, viewerPhotoList]);
 
   // An image served from cache can finish before React attaches onLoad, which
   // would leave the placeholder up over a ready image.

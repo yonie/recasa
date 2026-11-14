@@ -1,7 +1,22 @@
 import { useCallback } from "react";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { useStore } from "../store/useStore";
-import { api, provisionalDetail, type PhotoSummary } from "../api/client";
+import { api, provisionalDetail, type PhotoDetail, type PhotoSummary } from "../api/client";
+import { queryKeys } from "../api/queryKeys";
+
+/**
+ * A photo's full detail through the query cache, so stepping back to a photo,
+ * or onto one the viewer prefetched, needs no request at all.
+ */
+export function fetchPhotoDetail(queryClient: QueryClient, hash: string): Promise<PhotoDetail> {
+  return queryClient.fetchQuery({ queryKey: queryKeys.photo(hash), queryFn: () => api.getPhoto(hash) });
+}
+
+/** The cached detail if there is one, else a stand-in built from the list entry. */
+export function bestDetail(queryClient: QueryClient, photo: PhotoSummary): PhotoDetail {
+  return queryClient.getQueryData<PhotoDetail>(queryKeys.photo(photo.file_hash)) ?? provisionalDetail(photo);
+}
 
 /**
  * Open the viewer on a photo without waiting for its detail request.
@@ -12,14 +27,14 @@ import { api, provisionalDetail, type PhotoSummary } from "../api/client";
  * and tags fill in when they land.
  */
 export function useOpenPhoto() {
+  const queryClient = useQueryClient();
   const openViewer = useStore((s) => s.openViewer);
   const setViewerPhoto = useStore((s) => s.setViewerPhoto);
 
   return useCallback(
     (photo: PhotoSummary, index: number, list: PhotoSummary[] = []) => {
-      openViewer(provisionalDetail(photo), list, index);
-      api
-        .getPhoto(photo.file_hash)
+      openViewer(bestDetail(queryClient, photo), list, index);
+      fetchPhotoDetail(queryClient, photo.file_hash)
         .then((full) => {
           // Drop a response the user has already navigated away from.
           const s = useStore.getState();
@@ -29,7 +44,7 @@ export function useOpenPhoto() {
         })
         .catch(() => {});
     },
-    [openViewer, setViewerPhoto]
+    [queryClient, openViewer, setViewerPhoto]
   );
 }
 
@@ -38,14 +53,14 @@ export function useOpenPhoto() {
  * is no list entry to draw from, so this waits for the detail.
  */
 export function useOpenPhotoByHash() {
+  const queryClient = useQueryClient();
   const openViewer = useStore((s) => s.openViewer);
   return useCallback(
     (hash: string) => {
-      api
-        .getPhoto(hash)
+      fetchPhotoDetail(queryClient, hash)
         .then((detail) => openViewer(detail))
         .catch(() => {});
     },
-    [openViewer]
+    [queryClient, openViewer]
   );
 }
