@@ -15,6 +15,7 @@ import {
   PhotoListLayout,
 } from "../components/Page";
 import { useScrollRestore } from "../hooks/useScrollRestore";
+import { useCardThumbSize } from "../lib/gridLayout";
 import { plural } from "../lib/format";
 
 // Event detail view (route: /events/:eventId)
@@ -83,6 +84,7 @@ export function EventDetail() {
 // Events list view (route: /events)
 export function Events() {
   const { scrollRef, restoreScroll } = useScrollRestore("events");
+  const coverSize = useCardThumbSize(EVENT_COLUMNS, 16, 16);
 
   const { data: events = [], isLoading, error } = useQuery({
     queryKey: queryKeys.events,
@@ -116,14 +118,18 @@ export function Events() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
         {events.map((event) => (
-          <EventCard key={event.event_id} event={event} />
+          <EventCard key={event.event_id} event={event} coverSize={coverSize} />
         ))}
       </div>
     </div>
   );
 }
 
-function EventCard({ event }: { event: EventSummary }) {
+// Columns of the card grid below (grid-cols-1 sm:grid-cols-2 lg:grid-cols-3,
+// gap-4 p-4) at base, sm, md, lg and xl, to size the cover thumbnails.
+const EVENT_COLUMNS = [1, 2, 2, 3, 3];
+
+function EventCard({ event, coverSize }: { event: EventSummary; coverSize: number }) {
   const navigate = useNavigate();
   return (
     <button
@@ -133,10 +139,11 @@ function EventCard({ event }: { event: EventSummary }) {
       {/* Cover photo */}
       <div className="aspect-video bg-gray-100 relative overflow-hidden">
         {event.cover_photo ? (
-          // Lazy: the list holds every event, and eager 1200px covers for all
-          // of them kept the Pi busy for many seconds on each visit.
+          // Lazy: the list holds every event, and eager covers for all of them
+          // kept the Pi busy for many seconds on each visit. Sized to the card:
+          // 600 px on a standard screen, 1200 px where the density needs it.
           <img
-            src={thumbnailUrl(event.cover_photo.file_hash, 1200)}
+            src={thumbnailUrl(event.cover_photo.file_hash, coverSize)}
             alt=""
             loading="lazy"
             decoding="async"

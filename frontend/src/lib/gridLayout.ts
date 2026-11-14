@@ -26,18 +26,45 @@ export function gridClasses(size: GridSize): string {
   return COLUMNS[size].map((n, i) => `${PREFIXES[i]}grid-cols-${n}`).join(" ");
 }
 
-function columnsAt(size: GridSize, viewportWidth: number): number {
-  let cols = COLUMNS[size][0]!;
+/** Columns in effect at a viewport width, from a per-breakpoint list. */
+function columnsAt(columns: number[], viewportWidth: number): number {
+  let cols = columns[0]!;
   BREAKPOINTS.forEach((bp, i) => {
-    if (viewportWidth >= bp) cols = COLUMNS[size][i]!;
+    if (viewportWidth >= bp && columns[i] !== undefined) cols = columns[i]!;
   });
   return cols;
 }
 
-/** Width of one square tile in CSS px, for a grid `containerWidth` wide. */
+/** Width of one cell in CSS px, for a grid `containerWidth` wide. */
+function cellWidth(cols: number, containerWidth: number, padding: number, gap: number): number {
+  return (containerWidth - 2 * padding - (cols - 1) * gap) / cols;
+}
+
 function tileWidth(size: GridSize, viewportWidth: number, containerWidth: number): number {
-  const cols = columnsAt(size, viewportWidth);
-  return (containerWidth - 2 * PADDING - (cols - 1) * GAP) / cols;
+  return cellWidth(columnsAt(COLUMNS[size], viewportWidth), containerWidth, PADDING, GAP);
+}
+
+// Stored thumbnail sizes (long edge), smallest first.
+const STORED_SIZES = [200, 600, 1200];
+
+/**
+ * Smallest stored thumbnail that still covers `devicePx` with its short edge
+ * (three quarters of the long edge for a 4:3 photo), so a cropped cover never
+ * has to be scaled up. The largest when nothing smaller will do.
+ */
+function coveringSize(devicePx: number): number {
+  return STORED_SIZES.find((s) => s * 0.75 >= devicePx) ?? STORED_SIZES[STORED_SIZES.length - 1]!;
+}
+
+/**
+ * Thumbnail size for a cover image filling one cell of a card grid (event
+ * covers), from the card's rendered width and the screen's pixel density.
+ * `columns` are the grid's columns at base, sm, md, lg and xl.
+ */
+export function cardThumbSize(columns: number[], padding: number, gap: number): number {
+  if (typeof window === "undefined") return 1200;
+  const width = cellWidth(columnsAt(columns, window.innerWidth), mainWidth(), padding, gap);
+  return coveringSize(width * (window.devicePixelRatio || 1));
 }
 
 /**
@@ -74,10 +101,19 @@ export function useGridThumbSize(size: GridSize): number {
   );
 }
 
+/** cardThumbSize, re-evaluated when the window (or its pixel density) changes. */
+export function useCardThumbSize(columns: number[], padding: number, gap: number): number {
+  return useSyncExternalStore(
+    subscribeResize,
+    () => cardThumbSize(columns, padding, gap),
+    () => 1200
+  );
+}
+
 /** Height a full-width grid of `count` photos will take, for a placeholder before it renders. */
 export function estimateGridHeight(size: GridSize, count: number): number {
   const vw = window.innerWidth;
-  const cols = columnsAt(size, vw);
+  const cols = columnsAt(COLUMNS[size], vw);
   const rows = Math.ceil(count / cols);
   return rows * tileWidth(size, vw, mainWidth()) + (rows - 1) * GAP + 2 * PADDING;
 }
