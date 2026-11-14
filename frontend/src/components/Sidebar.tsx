@@ -85,7 +85,12 @@ export function Sidebar() {
       >
         {/* Logo */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
-          <button onClick={() => navigate("/")} className="flex items-center gap-2 hover:opacity-80 transition-opacity">
+          <button
+            onClick={() => {
+              closeSidebar();
+              navigate("/");
+            }}
+            className="flex items-center gap-2 hover:opacity-80 transition-opacity">
             <Camera className="w-7 h-7 text-primary-600" />
             <h1 className="text-xl font-bold text-gray-900">Recasa</h1>
           </button>
@@ -97,7 +102,7 @@ export function Sidebar() {
           </button>
         </div>
 
-        {/* Navigation */}
+        {/* Navigation. On a phone the drawer covers the page, so following a link closes it. */}
         <nav className="flex-1 overflow-y-auto py-3 px-3">
           <div className="space-y-0.5">
             {navItems.map((item) => (
@@ -105,6 +110,7 @@ export function Sidebar() {
                 key={item.to}
                 to={item.to}
                 end={item.to === "/"}
+                onClick={closeSidebar}
                 className={({ isActive }) =>
                   clsx("sidebar-link", isActive && "active")
                 }
@@ -138,6 +144,7 @@ export function Sidebar() {
                   <NavLink
                     key={item.to}
                     to={item.to}
+                    onClick={closeSidebar}
                     className={({ isActive }) =>
                       clsx("sidebar-link", isActive && "active")
                     }
@@ -156,6 +163,7 @@ export function Sidebar() {
 
             <NavLink
               to="/pipeline"
+              onClick={closeSidebar}
               className={({ isActive }) =>
                 clsx("sidebar-link", isActive && "active")
               }
