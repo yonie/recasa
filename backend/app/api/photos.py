@@ -41,6 +41,7 @@ from backend.app.schemas.photo import (
     PhotoLocation,
     PhotoPage,
 )
+from backend.app.services.motion_photo import motion_video_path
 from backend.app.services.preview import (
     needs_preview,
     preview_path,
@@ -439,11 +440,19 @@ async def get_preview(file_hash: str, request: Request):
 
 @router.get("/{file_hash}/live")
 async def get_live_photo_video(file_hash: str, request: Request, session: SessionDep):
-    """Serve the Live Photo video."""
+    """Serve the Live Photo video, or a motion photo's extracted video."""
     require_file_hash(file_hash, "Live photo video not found")
     photo = await session.get(Photo, file_hash)
     if not photo or not photo.live_photo_video:
         raise HTTPException(status_code=404, detail="Live photo video not found")
+    if photo.motion_photo:
+        # Extracted into /data/motion_videos, not a library path.
+        stored = photo.live_photo_video
+        await session.close()
+        video_path = await asyncio.to_thread(motion_video_path, file_hash, stored)
+        if video_path is None:
+            raise HTTPException(status_code=404, detail="Video file not found on disk")
+        return file_response(request, video_path, "video/mp4")
     try:
         video_path = await _photo_file(session, photo.live_photo_video)
     except HTTPException:
