@@ -20,7 +20,7 @@ BASELINE = Path(__file__).with_name("schema_baseline.sql")
 # Indexes this code adds on top of the live schema (contract: CREATE INDEX IF
 # NOT EXISTS only, each one measured). Nothing else may change.
 ADDED_INDEXES = [
-    "CREATE INDEX idx_photos_hash_flagged ON photos (file_hash, flagged_for_removal);",
+    "CREATE INDEX ix_faces_encoded_file_hash ON faces (file_hash) WHERE encoding IS NOT NULL;",
 ]
 
 

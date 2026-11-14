@@ -103,12 +103,12 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
 # Indexes added after tables already existed (create_all won't add these).
 _ADDED_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_photo_tags_tag_id ON photo_tags (tag_id)",
-    # Covering index for "join to photos by hash, skip flagged ones": the tag
-    # counts probe photos once per photo_tags row (590k on the live index)
-    # and no longer have to read the wide photos rows. /api/tags 1.8s -> 1.2s.
+    # Faces that carry an encoding, for the distinct-faces count on the
+    # pipeline page (polled every 3s). Partial, so it skips the no-face marker
+    # rows. processing-stats 132ms -> 59ms on the Pi.
     (
-        "CREATE INDEX IF NOT EXISTS idx_photos_hash_flagged"
-        " ON photos (file_hash, flagged_for_removal)"
+        "CREATE INDEX IF NOT EXISTS ix_faces_encoded_file_hash"
+        " ON faces (file_hash) WHERE encoding IS NOT NULL"
     ),
 )
 
