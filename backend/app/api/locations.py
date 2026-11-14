@@ -32,7 +32,7 @@ async def list_countries(session: SessionDep):
         select(Photo.location_country, func.count(Photo.file_hash).label("count"))
         .where(Photo.location_country.is_not(None), VISIBLE)
         .group_by(Photo.location_country)
-        .order_by(func.count(Photo.file_hash).desc())
+        .order_by(func.count(Photo.file_hash).desc(), Photo.location_country)
     )
     return [{"country": row.location_country, "count": row.count} for row in result]
 
@@ -48,7 +48,7 @@ async def list_cities(session: SessionDep, country: str | None = None):
         )
         .where(Photo.location_city.is_not(None), VISIBLE)
         .group_by(Photo.location_city, Photo.location_country)
-        .order_by(func.count(Photo.file_hash).desc())
+        .order_by(func.count(Photo.file_hash).desc(), Photo.location_city, Photo.location_country)
     )
     if country:
         query = query.where(Photo.location_country == country)
@@ -129,7 +129,7 @@ async def get_trail(
             Photo.date_taken.is_not(None),
             VISIBLE,
         )
-        .order_by(Photo.date_taken.asc())
+        .order_by(Photo.date_taken.asc(), Photo.file_hash.asc())
     )
     if date_from:
         query = query.where(Photo.date_taken >= date_from.isoformat())

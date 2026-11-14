@@ -11,6 +11,7 @@ from backend.app.queries.photos import (
     SUMMARY_COLUMNS,
     VISIBLE,
     photo_page,
+    sorted_by,
     summary_select,
     to_summary,
 )
@@ -53,7 +54,10 @@ async def get_duplicates(
     group_ids = (
         (
             await session.execute(
-                select(DuplicateGroup.group_id).offset((page - 1) * page_size).limit(page_size)
+                select(DuplicateGroup.group_id)
+                .order_by(DuplicateGroup.group_id)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
             )
         )
         .scalars()
@@ -133,7 +137,7 @@ async def get_large_files(
     return await photo_page(
         session,
         stmt,
-        order_by=(Photo.file_size.desc(),),
+        order_by=sorted_by(Photo.file_size, descending=True, nulls_last=True),
         page=page,
         page_size=page_size,
     )

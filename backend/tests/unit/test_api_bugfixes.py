@@ -1,13 +1,14 @@
 """Regression tests for API-layer bugs that changed responses when fixed."""
 
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from api_fixtures import h, run_with_client, seed_rows  # noqa: E402
+from api_fixtures import h, photo, run_with_client, seed_rows  # noqa: E402
 
 from backend.app.models import (  # noqa: E402
     DuplicateGroup,
@@ -228,3 +229,88 @@ def test_person_thumbnail_url_needs_a_crop_everywhere():
         (1, expected[1]),
         (3, None),
     ]
+
+
+# --- ties sort by file_hash ---------------------------------------------------
+
+
+_SHUFFLED = [7, 2, 11, 5, 9, 1, 12, 4, 10, 3, 8, 6]
+_UNDATED = {4, 9}
+
+
+def _tied_rows() -> list[Any]:
+    """Twelve photos inserted out of hash order: ten share one timestamp and
+    one size, two have no date. All carry tag 1 and Lise's face."""
+    rows: list[Any] = [Tag(tag_id=1, name="tie"), Person(person_id=1, name="Lise", photo_count=12)]
+    for n in _SHUFFLED:
+        rows.append(
+            photo(
+                n,
+                date_taken=None if n in _UNDATED else datetime(2020, 1, 1, 12),
+                file_modified=datetime(2020, 1, 1, 12),
+                file_size=20_000_000,
+                file_path=f"2020/tie/{n}.jpg",
+            )
+        )
+        rows += [PhotoTag(file_hash=h(n), tag_id=1), Face(file_hash=h(n), person_id=1)]
+    return rows
+
+
+def _paged(client, url: str, **params: Any):
+    async def pages() -> list[int]:
+        found: list[int] = []
+        for page in (1, 2, 3, 4):
+            data = (
+                await client.get(url, params={**params, "page": page, "page_size": 4})
+            ).json()
+            found += [int(p["file_hash"], 16) for p in data["items"]]
+        return found
+
+    return pages()
+
+
+def test_paged_grids_break_ties_by_hash():
+    dated = sorted(set(_SHUFFLED) - _UNDATED)
+    newest = sorted(dated, reverse=True) + sorted(_UNDATED, reverse=True)
+
+    async def body(client):
+        return {
+            "desc": await _paged(client, "/api/photos"),
+            "asc": await _paged(client, "/api/photos", order="asc"),
+            "size": await _paged(client, "/api/photos", sort="file_size", order="desc"),
+            "person": await _paged(client, "/api/persons/1/photos"),
+            "tag": await _paged(client, "/api/tags/1/photos"),
+            "folder": await _paged(client, "/api/directories/2020"),
+            "large": await _paged(client, "/api/large-files"),
+            "search": await _paged(client, "/api/photos", search="jpg"),
+        }
+
+    found = run_with_client(body, _tied_rows())
+    assert found["desc"] == newest
+    # Oldest first is the same order reversed: undated first, then by hash.
+    assert found["asc"] == list(reversed(newest))
+    assert found["size"] == sorted(_SHUFFLED, reverse=True)
+    assert found["large"] == sorted(_SHUFFLED, reverse=True)
+    for key in ("person", "tag", "folder", "search"):
+        assert found[key] == newest, key
+
+
+def test_timeline_and_trail_break_ties_by_hash():
+    rows = _tied_rows()
+    for row in rows:
+        if isinstance(row, Photo):
+            row.gps_latitude, row.gps_longitude = 52.0, 5.0
+
+    async def body(client):
+        timeline = (await client.get("/api/timeline", params={"group_by": "year"})).json()
+        trail = (await client.get("/api/locations/trail")).json()
+        return timeline, trail
+
+    timeline, trail = run_with_client(body, rows)
+    # Undated photos fall back to file_modified, the same instant here, and
+    # come after the dated ones.
+    dated = sorted(set(_SHUFFLED) - _UNDATED, reverse=True)
+    assert [int(p["file_hash"], 16) for p in timeline[0]["photos"]] == dated + [9, 4]
+    assert [int(p["file_hash"], 16) for p in trail[0]["photos"]] == sorted(
+        set(_SHUFFLED) - _UNDATED
+    )[:4]

@@ -14,9 +14,24 @@ from backend.app.schemas.photo import PhotoPage, PhotoSummary
 # query plans were measured with.
 VISIBLE: ColumnElement[bool] = Photo.flagged_for_removal == False  # noqa: E712
 
+# Every photo order ends in file_hash, so it is total. Thousands of photos
+# share a timestamp (and a thousand have none); without the tiebreak SQLite
+# returns those in whatever order its plan gives, so a page boundary could
+# fall differently from one request to the next and scrolling would repeat
+# or skip photos. The tiebreak runs the same way as the main key, which
+# keeps an ascending order the exact reverse of the descending one.
+def sorted_by(column: Any, *, descending: bool, nulls_last: bool) -> tuple[Any, ...]:
+    """``column`` in the given direction, ties by file_hash the same way."""
+    if descending:
+        key, tiebreak = column.desc(), Photo.file_hash.desc()
+    else:
+        key, tiebreak = column.asc(), Photo.file_hash.asc()
+    return (key.nullslast() if nulls_last else key.nullsfirst(), tiebreak)
+
+
 # Grid orders. Undated photos sort after dated ones either way.
-NEWEST_FIRST = (Photo.date_taken.desc().nullslast(),)
-OLDEST_FIRST = (Photo.date_taken.asc().nullslast(),)
+NEWEST_FIRST = sorted_by(Photo.date_taken, descending=True, nulls_last=True)
+OLDEST_FIRST = sorted_by(Photo.date_taken, descending=False, nulls_last=True)
 
 # Just what a grid tile needs. Selecting these columns instead of whole Photo
 # entities skips the ORM identity map, which on a 40k-photo timeline was most
