@@ -1,6 +1,7 @@
 """Scanner change detection, indexing and cleanup against a temp library."""
 
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ from backend.app.services.scanner import (
     scan_directory,
 )
 
-from .helpers import set_mtime, touch_thumb, write_jpeg
+from .helpers import photo_row, set_mtime, touch_thumb, write_jpeg
 
 
 class Discovered:
@@ -84,21 +85,88 @@ async def test_fully_processed_photo_is_not_queued_by_full_rescan(db, photos_dir
 
 
 @pytest.mark.asyncio
-async def test_changed_file_is_rehashed(db, photos_dir):
+async def test_changed_file_is_rehashed_and_the_old_version_dropped(db, photos_dir):
     a = write_jpeg(photos_dir / "a.jpg", seed=4)
     await scan_directory()
     old = compute_file_hash(a)
+    async with db() as session:
+        photo = await session.get(Photo, old)
+        photo.is_favorite = True
+        photo.flagged_for_removal = True
+        session.add(Caption(file_hash=old, caption="old version", model="m"))
+        await session.commit()
     write_jpeg(a, seed=5)
     set_mtime(a, a.stat().st_mtime + 10)
     found = Discovered()
-    await scan_directory(on_file_discovered=found)
+    stats = await scan_directory(on_file_discovered=found)
     new = compute_file_hash(a)
     assert (new, "exif") in found.items
-    # In-place edits keep the old version's row (see report); scanning again
-    # must not trip over the path now holding two photos.
+    assert stats["removed"] == 1
+    photos = await _photos(db)
+    assert set(photos) == {new}
+    assert await _paths(db) == {"a.jpg": new}
+    # The owner's flags follow the edit; derived data of the old version goes.
+    assert photos[new].is_favorite and photos[new].flagged_for_removal
+    assert not photos[new].marked_for_print
+    async with db() as session:
+        assert await session.get(Caption, old) is None
     stats = await scan_directory()
-    assert stats["errors"] == 0
-    assert set(await _photos(db)) == {old, new}
+    assert (stats["errors"], stats["removed"], stats["new"]) == (0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_edit_keeps_an_old_version_that_lives_on_elsewhere(db, photos_dir):
+    """A hash with several paths (65 in the live index) only loses the path
+    that now holds other content; its copy elsewhere keeps photo and data."""
+    a = write_jpeg(photos_dir / "one" / "a.jpg", seed=30)
+    copy = photos_dir / "two" / "a.jpg"
+    copy.parent.mkdir()
+    shutil.copy2(a, copy)
+    await scan_directory()
+    old = compute_file_hash(a)
+    async with db() as session:
+        (await session.get(Photo, old)).is_favorite = True
+        session.add(Caption(file_hash=old, caption="kept", model="m"))
+        await session.commit()
+    write_jpeg(a, seed=31)
+    set_mtime(a, a.stat().st_mtime + 10)
+    await index_single_file(a)  # the watcher path drops it the same way
+    new = compute_file_hash(a)
+    assert await _paths(db) == {"one/a.jpg": new, "two/a.jpg": old}
+    photos = await _photos(db)
+    assert photos[old].file_path == "two/a.jpg" and photos[old].is_favorite
+    assert not photos[new].is_favorite  # the old version was not removed
+    async with db() as session:
+        assert (await session.get(Caption, old)).caption == "kept"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fast", [True, False])
+async def test_scan_heals_a_path_left_with_two_versions(db, photos_dir, fast):
+    """The live index has three paths listed under both their pre-edit and
+    their current hash, the current one unchanged on disk. The next scan,
+    fast or full, drops the stale row and the photo only it kept."""
+    a = write_jpeg(photos_dir / "2006" / "DSC01949.JPG", seed=32)
+    cur, stale = compute_file_hash(a), "f" * 64
+    st = a.stat()
+    async with db() as session:
+        session.add_all(photo_row(stale, "2006/DSC01949.JPG", file_size=st.st_size + 1))
+        session.add_all(photo_row(cur, "2006/DSC01949.JPG", file_size=st.st_size,
+                                  file_modified=datetime.fromtimestamp(st.st_mtime)))
+        session.add(Face(file_hash=stale, bbox_x=0, bbox_y=0, bbox_w=0, bbox_h=0, encoding=None))
+        await session.commit()
+    found = Discovered()
+    stats = await scan_directory(on_file_discovered=found, fast=fast)
+    assert (stats["removed"], stats["new"], stats["errors"]) == (1, 0, 0)
+    assert await _paths(db) == {"2006/DSC01949.JPG": cur}
+    async with db() as session:
+        assert await session.get(Photo, stale) is None
+        assert (await session.execute(select(Face).where(Face.file_hash == stale))).all() == []
+    scanner._dir_snapshot.clear()
+    scanner._seen_snapshot.clear()
+    stats = await scan_directory(fast=fast)
+    assert stats["removed"] == 0
+    assert await _paths(db) == {"2006/DSC01949.JPG": cur}
 
 
 @pytest.mark.asyncio

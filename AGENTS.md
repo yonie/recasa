@@ -240,6 +240,10 @@ The scanner (`backend/app/services/scanner.py`) has safeguards:
    and a symlinked file is only indexed when it resolves inside the library.
 6. **Refuses to empty the index**: cleanup does nothing when the library is
    unreadable or a sweep finds no photos at all (see docs/RASPBERRY-PI.md).
+7. **In-place edits replace the old version**: a file whose content changed
+   is indexed under its new hash, and the old hash loses that path. An old
+   version with no other copy left is removed like a deleted file; its
+   favourite, print and flag marks move to the new version.
 
 ### Common Issues
 

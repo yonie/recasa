@@ -314,8 +314,8 @@ def _collect_photo_files(
 
 
 # Known indexed paths: relative path -> [(file_hash, size, mtime timestamp)].
-# Usually one entry; a file edited in place keeps an entry per content
-# version (see _index_photo).
+# One entry per path, except a path that still lists an older content version
+# from an in-place edit (indexes written before _index_photo dropped those).
 KnownPaths = dict[str, list[tuple[str, int, float]]]
 
 
@@ -375,6 +375,7 @@ async def scan_directory(
         "updated": 0,
         "skipped": 0,
         "errors": 0,
+        "removed": 0,  # photos dropped from the index
         "discovered_files": {},
     }
 
@@ -427,10 +428,14 @@ async def scan_directory(
             break
 
         rel_path = str(filepath.relative_to(photos_dir))
-        unchanged_hash = _unchanged_hash(known.get(rel_path), file_stat)
+        entries = known.get(rel_path)
+        unchanged_hash = _unchanged_hash(entries, file_stat)
 
         try:
-            if unchanged_hash is not None:
+            # A path listed under several photos still carries an older
+            # version from an in-place edit: index it again, which hashes the
+            # file and drops the versions it no longer holds.
+            if unchanged_hash is not None and len(entries) == 1:
                 # Fast sweeps only look for new/changed/removed files;
                 # re-queueing incomplete stages of unchanged photos is the
                 # full rescan's job.
@@ -472,7 +477,7 @@ async def scan_directory(
             )
 
     if not cancelled:
-        await _cleanup_removed_files(seen_paths)
+        stats["removed"] += await _cleanup_removed_files(seen_paths)
         _dir_snapshot = {
             d: mtime for d, mtime in new_snapshot.items() if d not in error_dirs
         }
@@ -513,16 +518,17 @@ async def _index_photo(
     file_size = file_stat.st_size
     file_mtime = file_stat.st_mtime
 
-    # Already indexed at this path with the same size and mtime? A path can
-    # carry more than one photo (one per content version after an in-place
-    # edit), so look at all of them.
     path_hashes = (
         await session.execute(
             select(PhotoPath.file_hash).where(PhotoPath.file_path == relative_path)
         )
     ).scalars().all()
-    for path_hash in path_hashes:
-        existing_photo = await session.get(Photo, path_hash)
+
+    # Already indexed at this path with the same size and mtime? Only trusted
+    # when the path holds that one photo; a path still listing an older
+    # version from an in-place edit is hashed below to settle which it holds.
+    if len(path_hashes) == 1:
+        existing_photo = await session.get(Photo, path_hashes[0])
         if (
             existing_photo
             and existing_photo.file_size == file_size
@@ -532,12 +538,14 @@ async def _index_photo(
             # File unchanged - check if any processing is needed
             entry_stage = await _entry_stage(session, existing_photo)
             if entry_stage:
-                return (path_hash, entry_stage)
+                return (existing_photo.file_hash, entry_stage)
             stats["skipped"] += 1
             return None
 
     # Compute hash
     file_hash = await asyncio.to_thread(compute_file_hash, filepath)
+    # Content versions this path no longer holds (it was edited in place).
+    replaced = [h for h in path_hashes if h != file_hash]
 
     # Check if photo exists by hash
     existing_by_hash = await session.get(Photo, file_hash)
@@ -552,6 +560,7 @@ async def _index_photo(
             stats["updated"] += 1
         else:
             stats["skipped"] += 1
+        await _drop_replaced_versions(session, relative_path, replaced, existing_by_hash, stats)
 
         # Check if processing is needed
         entry_stage = await _entry_stage(session, existing_by_hash)
@@ -582,6 +591,7 @@ async def _index_photo(
         session.add(photo)
         session.add(PhotoPath(file_hash=file_hash, file_path=relative_path))
         stats["new"] += 1
+        await _drop_replaced_versions(session, relative_path, replaced, photo, stats)
         # Videos only need a poster thumbnail.
         return (file_hash, "thumbnails")
 
@@ -609,9 +619,79 @@ async def _index_photo(
     session.add(PhotoPath(file_hash=file_hash, file_path=relative_path))
 
     stats["new"] += 1
+    await _drop_replaced_versions(session, relative_path, replaced, photo, stats)
 
     # New photos always start at EXIF (core functionality, always enabled)
     return (file_hash, "exif")
+
+
+# What the owner set on a photo by hand. An edited photo is a new hash; when
+# the edit replaces the only copy of the old version, these move to the new one.
+_OWNER_FLAGS = ("is_favorite", "marked_for_print", "flagged_for_removal")
+
+
+async def _drop_replaced_versions(
+    session: AsyncSession, relative_path: str, replaced: list[str], current: Photo, stats: dict
+) -> None:
+    """Forget the older content versions of a file edited in place.
+
+    Only the (old hash, this path) rows go: an old version that still exists
+    elsewhere in the library keeps its photo and its other paths. One that
+    has no copy left is removed like a deleted file, and its owner flags
+    carry over to `current`, the version the path holds now.
+    """
+    if not replaced:
+        return
+    removed = await _remove_paths(session, [(h, relative_path) for h in replaced])
+    stats["removed"] = stats.get("removed", 0) + len(removed)
+    for old in removed:
+        for flag in _OWNER_FLAGS:
+            if getattr(old, flag):
+                setattr(current, flag, True)
+    logger.info(
+        "%s changed in place: dropped %d older version(s) from that path",
+        relative_path, len(replaced),
+    )
+
+
+async def _remove_paths(session: AsyncSession, pairs: list[tuple[str, str]]) -> list[Photo]:
+    """Delete these (file_hash, file_path) rows and settle their photos.
+
+    A photo left without any path is deleted with everything derived from
+    it; one whose stored file_path was among the removed ones is re-pointed
+    at a remaining copy. Returns the deleted photos. Callers hold
+    _index_lock and commit.
+    """
+    for file_hash, file_path in pairs:
+        await session.execute(
+            delete(PhotoPath).where(
+                PhotoPath.file_hash == file_hash, PhotoPath.file_path == file_path
+            )
+        )
+
+    removed: list[Photo] = []
+    for file_hash in dict.fromkeys(h for h, _ in pairs):
+        remaining = set(
+            (
+                await session.execute(
+                    select(PhotoPath.file_path).where(PhotoPath.file_hash == file_hash)
+                )
+            ).scalars()
+        )
+        photo = await session.get(Photo, file_hash)
+        if not photo:
+            continue
+        if not remaining:
+            # ORM delete: cascades to faces, caption, tags, hashes and
+            # stage failures through the Photo relationships.
+            await session.delete(photo)
+            removed.append(photo)
+        elif photo.file_path not in remaining:
+            # The copy the photo pointed at is gone but another remains:
+            # point at that one, or originals and thumbnails would be
+            # read from a path that no longer exists.
+            photo.file_path = min(remaining)
+    return removed
 
 
 def _removed_from_library(candidates: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -623,13 +703,15 @@ def _removed_from_library(candidates: list[tuple[str, str]]) -> list[tuple[str, 
     ]
 
 
-async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> None:
+async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> int:
     """Remove database entries for files that no longer exist on disk, or
     that are no longer library paths (hidden or temp, see is_library_path).
 
     When the caller provides the set of paths seen during its walk, only the
     paths missing from that set are stat-checked: at 40k photos, exists()
     on every DB path over a Docker bind mount is far too slow.
+
+    Returns how many photos were removed from the index.
     """
     async with async_session() as session:
         rows = (await session.execute(select(PhotoPath.file_hash, PhotoPath.file_path))).all()
@@ -641,10 +723,10 @@ async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> None:
     ]
     del rows
     if not candidates:
-        return
+        return 0
     removed_paths = await asyncio.to_thread(_removed_from_library, candidates)
     if not removed_paths:
-        return
+        return 0
 
     # Refuse to clean up when the library is *unavailable* rather than
     # emptied. Deleting here cascades to faces, captions, favourites and
@@ -664,7 +746,7 @@ async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> None:
             "was removed from the index.",
             len(removed_paths), settings.photos_dir,
         )
-        return
+        return 0
     if seen_paths is not None and not seen_paths:
         logger.error(
             "REFUSING to clean up %d indexed paths: the sweep of %s found "
@@ -672,39 +754,13 @@ async def _cleanup_removed_files(seen_paths: set[str] | None = None) -> None:
             "deleted. Nothing was removed from the index.",
             len(removed_paths), settings.photos_dir,
         )
-        return
+        return 0
 
     async with _index_lock, async_session() as session:
-        for file_hash, file_path in removed_paths:
-            await session.execute(
-                delete(PhotoPath).where(
-                    PhotoPath.file_hash == file_hash, PhotoPath.file_path == file_path
-                )
-            )
-
-        for file_hash in dict.fromkeys(h for h, _ in removed_paths):
-            remaining = set(
-                (
-                    await session.execute(
-                        select(PhotoPath.file_path).where(PhotoPath.file_hash == file_hash)
-                    )
-                ).scalars()
-            )
-            photo = await session.get(Photo, file_hash)
-            if not photo:
-                continue
-            if not remaining:
-                # ORM delete: cascades to faces, caption, tags, hashes and
-                # stage failures through the Photo relationships.
-                await session.delete(photo)
-            elif photo.file_path not in remaining:
-                # The copy the photo pointed at is gone but another remains:
-                # point at that one, or originals and thumbnails would be
-                # read from a path that no longer exists.
-                photo.file_path = min(remaining)
-
+        removed = await _remove_paths(session, removed_paths)
         await session.commit()
     logger.info("Cleaned up %d removed file paths", len(removed_paths))
+    return len(removed)
 
 
 async def index_single_file(filepath: Path) -> tuple[str, str] | None:
@@ -728,7 +784,7 @@ async def index_single_file(filepath: Path) -> tuple[str, str] | None:
         return None
 
     try:
-        stats = {"new": 0, "updated": 0, "skipped": 0, "errors": 0}
+        stats = {"new": 0, "updated": 0, "skipped": 0, "errors": 0, "removed": 0}
         async with _index_lock, async_session() as session:
             result = await _index_photo(session, filepath, stats)
             await session.commit()
