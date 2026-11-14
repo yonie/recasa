@@ -1,6 +1,6 @@
-import { lazy, Suspense, useCallback } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Globe, List, Map, MapPin } from "lucide-react";
 import { api } from "../api/client";
 import { queryKeys } from "../api/queryKeys";
@@ -13,13 +13,46 @@ import {
   PageTitle,
   PhotoListLayout,
 } from "../components/Page";
+import { usePipelineStatus } from "../hooks/useServerState";
 import { plural } from "../lib/format";
 
 // Leaflet is the largest dependency and only this page needs it.
 const MapView = lazy(() => import("./map/MapView").then((m) => ({ default: m.MapView })));
 
-// Location lists follow geocoding as it runs, so they poll.
+// While geocoding runs, location lists poll so new places appear as they
+// are resolved.
 const LOCATION_POLL_MS = 10_000;
+
+/**
+ * Poll interval for location queries: every 10 s while the geocoding queue
+ * has work, otherwise none (the map-points list alone is ~900 points, and the
+ * page used to re-request it every 10 s for as long as it was open). When
+ * geocoding finishes, one last refresh picks up its final results. The
+ * pipeline status this reads is the sidebar's poll, so it costs nothing extra.
+ */
+function useLocationPolling(): number | false {
+  const status = usePipelineStatus();
+  const queue = status?.queues?.geocoding;
+  const active = !!queue && queue.pending + queue.processing > 0;
+  const queryClient = useQueryClient();
+  const wasActive = useRef(active);
+
+  useEffect(() => {
+    if (wasActive.current && !active) {
+      for (const queryKey of [
+        queryKeys.countries,
+        queryKeys.mapPoints,
+        queryKeys.citiesAll,
+        queryKeys.locationPhotosAll,
+      ]) {
+        void queryClient.invalidateQueries({ queryKey });
+      }
+    }
+    wasActive.current = active;
+  }, [active, queryClient]);
+
+  return active ? LOCATION_POLL_MS : false;
+}
 
 /** Route segments arrive percent-encoded; titles and API calls want plain text. */
 const decoded = (segment: string | undefined) => (segment ? decodeURIComponent(segment) : "");
@@ -30,6 +63,7 @@ function locationPath(country: string, city?: string | null) {
 
 // Location city photos view (route: /locations/:country/:city)
 export function LocationCityPhotos() {
+  const poll = useLocationPolling();
   const params = useParams<{ country: string; city: string }>();
   const navigate = useNavigate();
   const country = decoded(params.country);
@@ -39,7 +73,7 @@ export function LocationCityPhotos() {
     queryKey: queryKeys.locationPhotos(params.country, params.city),
     queryFn: () => api.getLocationPhotos({ page_size: 200, country, city }),
     enabled: !!country && !!city,
-    refetchInterval: LOCATION_POLL_MS,
+    refetchInterval: poll,
   });
 
   if (isLoading) return <PageSpinner />;
@@ -65,6 +99,7 @@ export function LocationCityPhotos() {
 
 // Location country cities view (route: /locations/:country)
 export function LocationCountryCities() {
+  const poll = useLocationPolling();
   const params = useParams<{ country: string }>();
   const navigate = useNavigate();
   const country = decoded(params.country);
@@ -73,7 +108,7 @@ export function LocationCountryCities() {
     queryKey: queryKeys.cities(params.country),
     queryFn: () => api.getCities(country),
     enabled: !!country,
-    refetchInterval: LOCATION_POLL_MS,
+    refetchInterval: poll,
   });
 
   if (isLoading) return <PageSpinner />;
@@ -155,6 +190,7 @@ function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (mode: ViewM
 
 // Locations main view with map/countries toggle (route: /locations)
 export function Locations() {
+  const poll = useLocationPolling();
   const [searchParams, setSearchParams] = useSearchParams();
   const viewMode: ViewMode = (searchParams.get("view") || "map") === "map" ? "map" : "countries";
   const navigate = useNavigate();
@@ -162,19 +198,19 @@ export function Locations() {
   const countriesQuery = useQuery({
     queryKey: queryKeys.countries,
     queryFn: api.getCountries,
-    refetchInterval: LOCATION_POLL_MS,
+    refetchInterval: poll,
   });
   const mapQuery = useQuery({
     queryKey: queryKeys.mapPoints,
     queryFn: api.getMapPoints,
-    refetchInterval: LOCATION_POLL_MS,
+    refetchInterval: poll,
   });
   const countries = countriesQuery.data ?? [];
   const mapPoints = mapQuery.data ?? [];
 
   const setViewMode = (mode: ViewMode) => setSearchParams({ view: mode });
 
-  // Stable, so the map's memoized markers survive this page's 10s polling.
+  // Stable, so the map's memoized markers survive this page's re-renders.
   const handleLocationClick = useCallback(
     (city: string | null, country: string | null) => {
       if (country) navigate(locationPath(country, city));

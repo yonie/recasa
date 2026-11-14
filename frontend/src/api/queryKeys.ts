@@ -36,7 +36,9 @@ export const queryKeys = {
   eventPhotos: (id: number) => ["event-photos", id] as const,
 
   countries: ["countries"] as const,
+  citiesAll: ["cities"] as const,
   cities: (country: string | undefined) => ["cities", country] as const,
+  locationPhotosAll: ["location-photos"] as const,
   locationPhotos: (country: string | undefined, city: string | undefined) =>
     ["location-photos", country, city] as const,
   mapPoints: ["map-points"] as const,
